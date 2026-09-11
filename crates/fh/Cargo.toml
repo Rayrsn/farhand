@@ -11,3 +11,8 @@ tokio = { workspace = true, features = ["full"] }
 clap = { workspace = true, features = ["derive", "env"] }
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+fhd = { path = "../fhd" }
+tempfile = { workspace = true }

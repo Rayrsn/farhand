@@ -212,8 +212,11 @@ name = "fh"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "fhd",
  "fileset",
  "protocol",
+ "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -224,7 +227,10 @@ name = "fhd"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "fileset",
  "protocol",
+ "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
