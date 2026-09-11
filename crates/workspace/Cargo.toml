@@ -5,4 +5,12 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-thiserror.workspace = true
+protocol = { path = "../protocol" }
+fileset = { path = "../fileset" }
+sha2 = { workspace = true }
+hex = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -220,6 +220,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "workspace",
 ]
 
 [[package]]
@@ -234,6 +235,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "workspace",
 ]
 
 [[package]]
@@ -890,7 +892,13 @@ dependencies = [
 name = "workspace"
 version = "0.1.0"
 dependencies = [
+ "fileset",
+ "hex",
+ "protocol",
+ "sha2",
+ "tempfile",
  "thiserror",
+ "tracing",
 ]
 
 [[package]]

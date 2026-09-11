@@ -1,11 +1,11 @@
 use protocol::{
-    decode_json, read_frame, write_json_frame, HelloAckPayload, HelloPayload, LogPayload, MsgType,
-    ResultPayload, RunPayload, CURRENT_PROTOCOL_VERSION,
+    decode_json, read_frame, write_json_frame, HelloAckPayload, HelloPayload, LogPayload,
+    ManifestPayload, MsgType, NeedPayload, ResultPayload, RunPayload, CURRENT_PROTOCOL_VERSION,
 };
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
-use tempfile::tempdir;
 use tokio::io::{AsyncBufReadExt, AsyncWrite, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::process::Command;
@@ -15,9 +15,11 @@ use tracing::{error, info, warn};
 pub async fn run_server(
     listener: TcpListener,
     expected_token: Option<String>,
+    workdir: PathBuf,
     custom_shell: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let token = Arc::new(expected_token);
+    let workdir = Arc::new(workdir);
     let shell = Arc::new(custom_shell);
 
     loop {
@@ -25,9 +27,12 @@ pub async fn run_server(
             Ok((stream, addr)) => {
                 info!("Accepted connection from {}", addr);
                 let token_clone = Arc::clone(&token);
+                let workdir_clone = Arc::clone(&workdir);
                 let shell_clone = Arc::clone(&shell);
                 tokio::spawn(async move {
-                    if let Err(e) = handle_connection(stream, token_clone, shell_clone).await {
+                    if let Err(e) =
+                        handle_connection(stream, token_clone, workdir_clone, shell_clone).await
+                    {
                         error!("Connection from {} error: {}", addr, e);
                     }
                     info!("Connection from {} closed", addr);
@@ -43,6 +48,7 @@ pub async fn run_server(
 pub async fn handle_connection(
     mut stream: TcpStream,
     expected_token: Arc<Option<String>>,
+    workdir_root: Arc<PathBuf>,
     custom_shell: Arc<Option<String>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // 1. Handshake: Expect MsgHello
@@ -88,22 +94,56 @@ pub async fn handle_connection(
     write_json_frame(&mut stream, MsgType::HelloAck, &ack).await?;
     info!("Handshake successful for project '{}'", hello.project);
 
-    // 2. Receive FILES frame
+    // Resolve persistent workspace directory
+    let workspace_dir = workspace::resolve_workspace_dir(&workdir_root, &hello.project);
+    fs::create_dir_all(&workspace_dir)?;
+    info!("Using persistent workspace: {}", workspace_dir.display());
+
+    // 2. Receive MANIFEST frame
+    let (msg_type, payload) = read_frame(&mut stream).await?;
+    if msg_type != MsgType::Manifest {
+        return Err(format!("Expected MANIFEST frame, got {:?}", msg_type).into());
+    }
+    let manifest: ManifestPayload = decode_json(&payload)?;
+    info!(
+        "Received client manifest with {} files. Diffing against workspace cache...",
+        manifest.files.len()
+    );
+
+    let diff = workspace::diff_manifests(&workspace_dir, &manifest, &[])?;
+    info!(
+        "Diff computed: {} files needed, {} extraneous files flagged for deletion",
+        diff.want.len(),
+        diff.delete_extraneous.len()
+    );
+
+    // 3. Send NEED frame
+    let need = NeedPayload {
+        want: diff.want.clone(),
+        delete_extraneous: diff.delete_extraneous.clone(),
+    };
+    write_json_frame(&mut stream, MsgType::Need, &need).await?;
+
+    // 4. Receive FILES frame (delta tar.gz)
     let (msg_type, payload) = read_frame(&mut stream).await?;
     if msg_type != MsgType::Files {
         return Err(format!("Expected FILES frame, got {:?}", msg_type).into());
     }
 
-    // Stage 02: Extract into temporary workspace
-    let temp_workspace = tempdir()?;
-    info!(
-        "Unpacking {} bytes into temp workspace: {}",
-        payload.len(),
-        temp_workspace.path().display()
-    );
-    fileset::unpack_tar(temp_workspace.path(), &payload)?;
+    if !payload.is_empty() {
+        info!("Unpacking {} delta bytes into workspace", payload.len());
+        fileset::unpack_tar(&workspace_dir, &payload)?;
+    } else {
+        info!("Zero delta bytes uploaded (workspace up to date)");
+    }
 
-    // 3. Receive RUN frame
+    // Apply deletions of extraneous files
+    if !diff.delete_extraneous.is_empty() {
+        let deleted = workspace::apply_deletions(&workspace_dir, &diff.delete_extraneous)?;
+        info!("Deleted {} extraneous files from workspace", deleted);
+    }
+
+    // 5. Receive RUN frame
     let (msg_type, payload) = read_frame(&mut stream).await?;
     if msg_type != MsgType::Run {
         return Err(format!("Expected RUN frame, got {:?}", msg_type).into());
@@ -111,13 +151,13 @@ pub async fn handle_connection(
     let run: RunPayload = decode_json(&payload)?;
     info!("Executing command: {:?}", run.argv);
 
-    // 4. Execute command and stream output
+    // 6. Execute command and stream output
     let (read_half, write_half) = stream.into_split();
     let shared_writer = Arc::new(Mutex::new(write_half));
 
     let exit_code = execute_and_stream(
         shared_writer.clone(),
-        temp_workspace.path(),
+        &workspace_dir,
         &run.argv,
         custom_shell.as_deref(),
     )
@@ -125,7 +165,7 @@ pub async fn handle_connection(
 
     info!("Command exited with status code {}", exit_code);
 
-    // 5. Send RESULT frame
+    // 7. Send RESULT frame
     let result = ResultPayload {
         exit_code,
         error: None,
@@ -167,6 +207,7 @@ pub async fn execute_and_stream<W: AsyncWrite + Unpin + Send + 'static>(
         .map(|a| shell_escape(a))
         .collect::<Vec<_>>()
         .join(" ");
+
     let mut cmd = if let Some(shell_override) = custom_shell {
         let parts: Vec<&str> = shell_override.split_whitespace().collect();
         let mut c = Command::new(parts[0]);

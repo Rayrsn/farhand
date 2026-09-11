@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 protocol = { path = "../protocol" }
 fileset = { path = "../fileset" }
+workspace = { path = "../workspace" }
 tokio = { workspace = true, features = ["full"] }
 clap = { workspace = true, features = ["derive", "env"] }
 tracing.workspace = true

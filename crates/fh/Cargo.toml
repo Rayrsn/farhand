@@ -15,4 +15,5 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 fhd = { path = "../fhd" }
+workspace = { path = "../workspace" }
 tempfile = { workspace = true }

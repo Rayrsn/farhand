@@ -1,7 +1,8 @@
 use clap::Parser;
 use protocol::{
-    decode_json, read_frame, write_frame, write_json_frame, HelloAckPayload, HelloPayload,
-    LogPayload, MsgType, ResultPayload, RunPayload, CURRENT_PROTOCOL_VERSION,
+    decode_json, read_frame, write_frame, write_json_frame, FileEntry, HelloAckPayload,
+    HelloPayload, LogPayload, ManifestPayload, MsgType, NeedPayload, ResultPayload, RunPayload,
+    CURRENT_PROTOCOL_VERSION,
 };
 use std::io::Write;
 use std::path::PathBuf;
@@ -112,7 +113,7 @@ async fn main() {
         exit(EXIT_INFRA_ERROR);
     }
 
-    // 3. Scan & Pack local files
+    // 3. Scan local files & Build MANIFEST
     let scan_start = std::time::Instant::now();
     let scanned_files = match fileset::scan(&project_dir, &[]) {
         Ok(f) => f,
@@ -122,31 +123,97 @@ async fn main() {
         }
     };
 
-    let paths: Vec<String> = scanned_files.keys().cloned().collect();
-    let tar_gz = match fileset::pack_tar(&project_dir, &paths) {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("Error: failed to pack files into archive: {}", e);
-            exit(EXIT_INFRA_ERROR);
-        }
+    let manifest_files: Vec<FileEntry> = scanned_files
+        .values()
+        .map(|meta| FileEntry {
+            path: meta.path.clone(),
+            hash: meta.hash.clone(),
+            size: meta.size,
+            mode: meta.mode,
+        })
+        .collect();
+
+    let manifest = ManifestPayload {
+        files: manifest_files,
     };
 
     if cli.verbose {
         println!(
-            "Scanned {} files and packed {} bytes (compressed) in {:?}",
-            paths.len(),
-            tar_gz.len(),
+            "Scanned {} local files in {:?}",
+            manifest.files.len(),
             scan_start.elapsed()
         );
     }
 
-    // 4. Send FILES frame
-    if let Err(e) = write_frame(&mut stream, MsgType::Files, &tar_gz).await {
-        eprintln!("Error: failed to send FILES frame: {}", e);
+    // 4. Send MANIFEST frame
+    if let Err(e) = write_json_frame(&mut stream, MsgType::Manifest, &manifest).await {
+        eprintln!("Error: failed to send MANIFEST frame: {}", e);
         exit(EXIT_INFRA_ERROR);
     }
 
-    // 5. Send RUN frame
+    // 5. Receive NEED frame
+    let (msg_type, payload) = match read_frame(&mut stream).await {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("Error: failed to read NEED frame: {}", e);
+            exit(EXIT_INFRA_ERROR);
+        }
+    };
+
+    if msg_type != MsgType::Need {
+        eprintln!("Protocol error: expected NEED frame, received {:?}", msg_type);
+        exit(EXIT_INFRA_ERROR);
+    }
+
+    let need: NeedPayload = match decode_json(&payload) {
+        Ok(n) => n,
+        Err(e) => {
+            eprintln!("Error: invalid NEED payload: {}", e);
+            exit(EXIT_INFRA_ERROR);
+        }
+    };
+
+    // 6. Selective Delta Pack & Upload (FILES frame)
+    let sync_start = std::time::Instant::now();
+    if need.want.is_empty() {
+        if cli.verbose {
+            println!("[Delta Sync] Remote workspace is completely up to date. 0 files to transfer!");
+        }
+        if let Err(e) = write_frame(&mut stream, MsgType::Files, &[]).await {
+            eprintln!("Error: failed to send empty FILES frame: {}", e);
+            exit(EXIT_INFRA_ERROR);
+        }
+    } else {
+        if cli.verbose {
+            println!(
+                "[Delta Sync] Agent requested {} changed/missing files. Packing delta archive...",
+                need.want.len()
+            );
+        }
+        let tar_gz = match fileset::pack_tar(&project_dir, &need.want) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("Error: failed to pack delta files into archive: {}", e);
+                exit(EXIT_INFRA_ERROR);
+            }
+        };
+
+        if cli.verbose {
+            println!(
+                "[Delta Sync] Uploading {} bytes (compressed) across {} files in {:?}",
+                tar_gz.len(),
+                need.want.len(),
+                sync_start.elapsed()
+            );
+        }
+
+        if let Err(e) = write_frame(&mut stream, MsgType::Files, &tar_gz).await {
+            eprintln!("Error: failed to send FILES frame: {}", e);
+            exit(EXIT_INFRA_ERROR);
+        }
+    }
+
+    // 7. Send RUN frame
     let run = RunPayload {
         argv: cli.command,
         outputs: None,
@@ -160,7 +227,7 @@ async fn main() {
         exit(EXIT_INFRA_ERROR);
     }
 
-    // 6. Receive streamed LOG and final RESULT frames
+    // 8. Receive streamed LOG and final RESULT frames
     let mut exit_code = 1;
     let mut stdout = std::io::stdout();
     let mut stderr = std::io::stderr();

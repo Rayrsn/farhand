@@ -1,4 +1,5 @@
 use clap::Parser;
+use std::path::PathBuf;
 use tokio::net::TcpListener;
 use tracing::info;
 
@@ -10,6 +11,9 @@ struct Cli {
 
     #[arg(long, env = "FARHAND_TOKEN", help = "Shared authentication token")]
     token: Option<String>,
+
+    #[arg(long, help = "Root directory for persistent workspaces")]
+    workdir: Option<PathBuf>,
 
     #[arg(long, help = "Custom shell invocation (e.g. '/bin/sh -c')")]
     shell: Option<String>,
@@ -26,8 +30,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let cli = Cli::parse();
     let listener = TcpListener::bind(&cli.listen).await?;
-    info!("Farhand daemon listening on {}", cli.listen);
+    let workdir = cli.workdir.unwrap_or_else(workspace::default_workspaces_dir);
 
-    fhd::run_server(listener, cli.token, cli.shell).await?;
+    info!("Farhand daemon listening on {}", cli.listen);
+    info!("Persistent workspaces root: {}", workdir.display());
+
+    fhd::run_server(listener, cli.token, workdir, cli.shell).await?;
     Ok(())
 }
