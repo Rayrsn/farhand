@@ -139,6 +139,19 @@ pub async fn handle_connection(
     Ok(())
 }
 
+fn shell_escape(arg: &str) -> String {
+    if arg.is_empty() {
+        return "''".to_string();
+    }
+    if arg
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | ':' | '=' | '@'))
+    {
+        return arg.to_string();
+    }
+    format!("'{}'", arg.replace('\'', "'\\''"))
+}
+
 pub async fn execute_and_stream<W: AsyncWrite + Unpin + Send + 'static>(
     writer: Arc<Mutex<W>>,
     cwd: &Path,
@@ -149,7 +162,11 @@ pub async fn execute_and_stream<W: AsyncWrite + Unpin + Send + 'static>(
         return Ok(0);
     }
 
-    let joined_cmd = argv.join(" ");
+    let joined_cmd = argv
+        .iter()
+        .map(|a| shell_escape(a))
+        .collect::<Vec<_>>()
+        .join(" ");
     let mut cmd = if let Some(shell_override) = custom_shell {
         let parts: Vec<&str> = shell_override.split_whitespace().collect();
         let mut c = Command::new(parts[0]);
