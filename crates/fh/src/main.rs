@@ -29,6 +29,12 @@ struct Cli {
     #[arg(short, long, help = "Print detailed sync and timing statistics")]
     verbose: bool,
 
+    #[arg(long = "output", action = clap::ArgAction::Append, help = "Explicit path(s) to fetch back after a successful run (repeatable)")]
+    output: Vec<String>,
+
+    #[arg(long = "out-dir", default_value = "./farhand-out", help = "Local directory to extract artifacts into")]
+    out_dir: PathBuf,
+
     #[arg(trailing_var_arg = true, required = true, help = "Command to run remotely")]
     command: Vec<String>,
 }
@@ -213,10 +219,16 @@ async fn main() {
         }
     }
 
+    let outputs = if cli.output.is_empty() {
+        None
+    } else {
+        Some(cli.output.clone())
+    };
+
     // 7. Send RUN frame
     let run = RunPayload {
         argv: cli.command,
-        outputs: None,
+        outputs,
         cwd: None,
         template: None,
         no_cache: false,
@@ -227,15 +239,26 @@ async fn main() {
         exit(EXIT_INFRA_ERROR);
     }
 
-    // 8. Receive streamed LOG and final RESULT frames
+    // 8. Receive streamed LOG, RESULT, and optional ARTIFACTS frames
     let mut exit_code = 1;
     let mut stdout = std::io::stdout();
     let mut stderr = std::io::stderr();
+    let mut received_result = false;
 
     loop {
         let (msg_type, payload) = match read_frame(&mut stream).await {
             Ok(f) => f,
+            Err(protocol::FrameError::UnexpectedEof) => {
+                if received_result {
+                    break;
+                }
+                eprintln!("Error: connection dropped by agent before completion");
+                exit(EXIT_INFRA_ERROR);
+            }
             Err(e) => {
+                if received_result {
+                    break;
+                }
                 eprintln!("Error: connection dropped by agent: {}", e);
                 exit(EXIT_INFRA_ERROR);
             }
@@ -256,9 +279,32 @@ async fn main() {
             MsgType::Result => {
                 if let Ok(res) = decode_json::<ResultPayload>(&payload) {
                     exit_code = res.exit_code;
+                    received_result = true;
                     if let Some(err_msg) = res.error {
                         eprintln!("Remote error: {}", err_msg);
                     }
+                    if exit_code != 0 {
+                        // On command failure, no artifacts will be sent
+                        break;
+                    }
+                } else {
+                    eprintln!("Protocol error: failed to decode RESULT payload");
+                    exit(EXIT_INFRA_ERROR);
+                }
+            }
+            MsgType::Artifacts => {
+                let extract_start = std::time::Instant::now();
+                if let Err(e) = fileset::unpack_tar(&cli.out_dir, &payload) {
+                    eprintln!("Error: failed to extract build artifacts: {}", e);
+                    exit(EXIT_INFRA_ERROR);
+                }
+                if cli.verbose {
+                    println!(
+                        "[Artifacts] Extracted {} bytes into {} in {:?}",
+                        payload.len(),
+                        cli.out_dir.display(),
+                        extract_start.elapsed()
+                    );
                 }
                 break;
             }

@@ -225,3 +225,190 @@ async fn test_e2e_invalid_token_rejection() {
     assert!(!ack.ok);
     assert!(ack.error.unwrap().contains("Unauthorized"));
 }
+
+async fn client_roundtrip_with_artifacts(
+    server_addr: &str,
+    token: &str,
+    project_name: &str,
+    project_dir: &Path,
+    cmd_argv: &[String],
+    outputs: Option<Vec<String>>,
+    out_dir: &Path,
+) -> (i32, bool) {
+    let mut stream = TcpStream::connect(server_addr).await.unwrap();
+
+    let hello = HelloPayload {
+        token: token.to_string(),
+        project: project_name.to_string(),
+        protocol_version: CURRENT_PROTOCOL_VERSION,
+    };
+    write_json_frame(&mut stream, MsgType::Hello, &hello).await.unwrap();
+
+    let (msg_type, payload) = read_frame(&mut stream).await.unwrap();
+    assert_eq!(msg_type, MsgType::HelloAck);
+    let ack: HelloAckPayload = decode_json(&payload).unwrap();
+    assert!(ack.ok);
+
+    let scanned = fileset::scan(project_dir, &[]).unwrap();
+    let manifest_files: Vec<FileEntry> = scanned
+        .values()
+        .map(|m| FileEntry {
+            path: m.path.clone(),
+            hash: m.hash.clone(),
+            size: m.size,
+            mode: m.mode,
+        })
+        .collect();
+    let manifest = ManifestPayload {
+        files: manifest_files,
+    };
+    write_json_frame(&mut stream, MsgType::Manifest, &manifest).await.unwrap();
+
+    let (msg_type, payload) = read_frame(&mut stream).await.unwrap();
+    assert_eq!(msg_type, MsgType::Need);
+    let need: NeedPayload = decode_json(&payload).unwrap();
+
+    if need.want.is_empty() {
+        write_frame(&mut stream, MsgType::Files, &[]).await.unwrap();
+    } else {
+        let tar_gz = fileset::pack_tar(project_dir, &need.want).unwrap();
+        write_frame(&mut stream, MsgType::Files, &tar_gz).await.unwrap();
+    }
+
+    let run = RunPayload {
+        argv: cmd_argv.to_vec(),
+        outputs,
+        cwd: None,
+        template: None,
+        no_cache: false,
+    };
+    write_json_frame(&mut stream, MsgType::Run, &run).await.unwrap();
+
+    let mut exit_code = 1;
+    let mut got_artifacts = false;
+
+    loop {
+        let (msg_type, payload) = match read_frame(&mut stream).await {
+            Ok(f) => f,
+            Err(protocol::FrameError::UnexpectedEof) => break,
+            Err(e) => panic!("Connection error: {}", e),
+        };
+        match msg_type {
+            MsgType::Log => {}
+            MsgType::Result => {
+                let res: ResultPayload = decode_json(&payload).unwrap();
+                exit_code = res.exit_code;
+                if exit_code != 0 {
+                    break;
+                }
+            }
+            MsgType::Artifacts => {
+                fileset::unpack_tar(out_dir, &payload).unwrap();
+                got_artifacts = true;
+                break;
+            }
+            other => panic!("Unexpected frame: {:?}", other),
+        }
+    }
+
+    (exit_code, got_artifacts)
+}
+
+#[tokio::test]
+async fn test_e2e_artifact_retrieval_explicit() {
+    let workdir = tempdir().unwrap();
+    let (server_addr, _server_handle) = spawn_test_server(None, workdir.path().to_path_buf()).await;
+
+    let project_dir = tempdir().unwrap();
+    let out_dir = tempdir().unwrap();
+
+    let build_cmd = vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        "mkdir -p dist/assets && echo 'export const v = 1;' > dist/bundle.js && echo 'body {}' > dist/assets/app.css".to_string(),
+    ];
+
+    let (exit_code, got_artifacts) = client_roundtrip_with_artifacts(
+        &server_addr,
+        "",
+        "artifact-explicit",
+        project_dir.path(),
+        &build_cmd,
+        Some(vec!["dist".to_string()]),
+        out_dir.path(),
+    )
+    .await;
+
+    assert_eq!(exit_code, 0);
+    assert!(got_artifacts);
+    assert!(out_dir.path().join("dist/bundle.js").exists());
+    assert!(out_dir.path().join("dist/assets/app.css").exists());
+    let content = fs::read_to_string(out_dir.path().join("dist/bundle.js")).unwrap();
+    assert_eq!(content.trim(), "export const v = 1;");
+}
+
+#[tokio::test]
+async fn test_e2e_artifact_retrieval_preset_fallback() {
+    let workdir = tempdir().unwrap();
+    let (server_addr, _server_handle) = spawn_test_server(None, workdir.path().to_path_buf()).await;
+
+    let project_dir = tempdir().unwrap();
+    let out_dir = tempdir().unwrap();
+
+    // Create Cargo.toml in project to trigger "rust" preset
+    fs::write(project_dir.path().join("Cargo.toml"), "[package]\nname = \"test\"\n").unwrap();
+
+    let build_cmd = vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        "mkdir -p target/release && echo 'binary_payload' > target/release/my-bin".to_string(),
+    ];
+
+    // None outputs -> should auto-detect target/release via rust preset
+    let (exit_code, got_artifacts) = client_roundtrip_with_artifacts(
+        &server_addr,
+        "",
+        "artifact-preset",
+        project_dir.path(),
+        &build_cmd,
+        None,
+        out_dir.path(),
+    )
+    .await;
+
+    assert_eq!(exit_code, 0);
+    assert!(got_artifacts);
+    assert!(out_dir.path().join("target/release/my-bin").exists());
+    let content = fs::read_to_string(out_dir.path().join("target/release/my-bin")).unwrap();
+    assert_eq!(content.trim(), "binary_payload");
+}
+
+#[tokio::test]
+async fn test_e2e_no_artifacts_on_command_failure() {
+    let workdir = tempdir().unwrap();
+    let (server_addr, _server_handle) = spawn_test_server(None, workdir.path().to_path_buf()).await;
+
+    let project_dir = tempdir().unwrap();
+    let out_dir = tempdir().unwrap();
+
+    let failing_cmd = vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        "mkdir -p dist && echo 'partial' > dist/partial.txt && exit 7".to_string(),
+    ];
+
+    let (exit_code, got_artifacts) = client_roundtrip_with_artifacts(
+        &server_addr,
+        "",
+        "artifact-fail",
+        project_dir.path(),
+        &failing_cmd,
+        Some(vec!["dist".to_string()]),
+        out_dir.path(),
+    )
+    .await;
+
+    assert_eq!(exit_code, 7);
+    assert!(!got_artifacts, "Artifacts should never be returned on failure");
+    assert!(!out_dir.path().join("dist").exists());
+}

@@ -78,5 +78,45 @@ fi
 
 echo ""
 echo "================================================================"
+echo "TEST 6: Incremental delta sync (0 files/bytes uploaded on unchanged project)"
+echo "Command: fh --verbose ... -- echo 'checking delta sync'"
+echo "================================================================"
+OUTPUT_RUN=$(./target/debug/fh --host "127.0.0.1:${PORT}" --token "${TOKEN}" --verbose -- echo "checking delta sync")
+echo "${OUTPUT_RUN}"
+if echo "${OUTPUT_RUN}" | grep -q "0 files to transfer"; then
+  echo "[PASS] Test 6 confirmed remote agent required 0 delta files!"
+else
+  echo "[FAIL] Expected 0 delta files needed on rerun"
+  exit 1
+fi
+
+echo ""
+echo "================================================================"
+echo "TEST 7: Remote artifact retrieval (--output and --out-dir)"
+echo "Command: fh ... --output dist --out-dir /tmp/farhand-demo-out -- sh -c 'mkdir -p dist && echo \"built package content\" > dist/bundle.js'"
+echo "================================================================"
+rm -rf /tmp/farhand-demo-out
+./target/debug/fh --host "127.0.0.1:${PORT}" --token "${TOKEN}" --verbose \
+  --output dist \
+  --out-dir /tmp/farhand-demo-out \
+  -- sh -c 'mkdir -p dist && echo "built package content" > dist/bundle.js'
+
+if [ -f "/tmp/farhand-demo-out/dist/bundle.js" ]; then
+  CONTENT=$(cat /tmp/farhand-demo-out/dist/bundle.js)
+  echo "Retrieved artifact content: ${CONTENT}"
+  if [ "${CONTENT}" = "built package content" ]; then
+    echo "[PASS] Test 7 successfully retrieved and extracted remote artifact!"
+  else
+    echo "[FAIL] Artifact content mismatch: ${CONTENT}"
+    exit 1
+  fi
+else
+  echo "[FAIL] Expected artifact /tmp/farhand-demo-out/dist/bundle.js not found"
+  exit 1
+fi
+rm -rf /tmp/farhand-demo-out
+
+echo ""
+echo "================================================================"
 echo "ALL MANUAL END-TO-END TESTS PASSED SUCCESSFULLY!"
 echo "================================================================"

@@ -893,12 +893,14 @@ name = "workspace"
 version = "0.1.0"
 dependencies = [
  "fileset",
+ "glob",
  "hex",
  "protocol",
  "sha2",
  "tempfile",
  "thiserror",
  "tracing",
+ "walkdir",
 ]
 
 [[package]]

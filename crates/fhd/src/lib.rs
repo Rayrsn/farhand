@@ -1,6 +1,7 @@
 use protocol::{
-    decode_json, read_frame, write_json_frame, HelloAckPayload, HelloPayload, LogPayload,
-    ManifestPayload, MsgType, NeedPayload, ResultPayload, RunPayload, CURRENT_PROTOCOL_VERSION,
+    decode_json, read_frame, write_frame, write_json_frame, HelloAckPayload, HelloPayload,
+    LogPayload, ManifestPayload, MsgType, NeedPayload, ResultPayload, RunPayload,
+    CURRENT_PROTOCOL_VERSION,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -173,6 +174,19 @@ pub async fn handle_connection(
     {
         let mut writer = shared_writer.lock().await;
         write_json_frame(&mut *writer, MsgType::Result, &result).await?;
+    }
+
+    // 8. If command succeeded, resolve and send artifacts
+    if exit_code == 0 {
+        let artifact_paths =
+            workspace::resolve_artifact_paths(&workspace_dir, run.outputs.as_deref());
+        if !artifact_paths.is_empty() {
+            info!("Packing {} artifact paths", artifact_paths.len());
+            let tar_gz = fileset::pack_tar(&workspace_dir, &artifact_paths)?;
+            let mut writer = shared_writer.lock().await;
+            write_frame(&mut *writer, MsgType::Artifacts, &tar_gz).await?;
+            info!("Sent ARTIFACTS frame ({} bytes)", tar_gz.len());
+        }
     }
 
     drop(read_half);
