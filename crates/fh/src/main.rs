@@ -13,18 +13,32 @@ use tokio::net::TcpStream;
 const EXIT_INFRA_ERROR: i32 = 125;
 
 #[derive(Parser, Debug)]
-#[command(name = "fh", about = "Farhand client: offload build/test execution to remote agent")]
+#[command(
+    name = "fh",
+    about = "Farhand client: offload build/test execution to remote agent"
+)]
 struct Cli {
-    #[arg(long, env = "FARHAND_HOST", help = "Agent address, host:port (required, or from config)")]
+    #[arg(
+        long,
+        env = "FARHAND_HOST",
+        help = "Agent address, host:port (required, or from config)"
+    )]
     host: Option<String>,
 
-    #[arg(long, env = "FARHAND_TOKEN", help = "Shared authentication token (required, or from config)")]
+    #[arg(
+        long,
+        env = "FARHAND_TOKEN",
+        help = "Shared authentication token (required, or from config)"
+    )]
     token: Option<String>,
 
     #[arg(long, default_value = ".", help = "Local directory to sync")]
     dir: PathBuf,
 
-    #[arg(long, help = "Project name / workspace key (default: local dir basename)")]
+    #[arg(
+        long,
+        help = "Project name / workspace key (default: local dir basename)"
+    )]
     name: Option<String>,
 
     #[arg(long, help = "Path to configuration file (default: ./.farhand.yaml)")]
@@ -33,13 +47,20 @@ struct Cli {
     #[arg(long, help = "Allow connecting to an agent with no token configured")]
     insecure_skip_token: bool,
 
-    #[arg(short, long, help = "Print detailed sync, timing, and telemetry statistics")]
+    #[arg(
+        short,
+        long,
+        help = "Print detailed sync, timing, and telemetry statistics"
+    )]
     verbose: bool,
 
     #[arg(long = "output", action = clap::ArgAction::Append, help = "Explicit path(s) to fetch back after a successful run (repeatable)")]
     output: Vec<String>,
 
-    #[arg(long = "out-dir", help = "Local directory to extract artifacts into (default: ./farhand-out)")]
+    #[arg(
+        long = "out-dir",
+        help = "Local directory to extract artifacts into (default: ./farhand-out)"
+    )]
     out_dir: Option<PathBuf>,
 
     #[arg(long, help = "Force specific template by name")]
@@ -51,7 +72,11 @@ struct Cli {
     #[arg(long, help = "Bypass lockfile dependency caching hooks")]
     no_cache: bool,
 
-    #[arg(trailing_var_arg = true, required = true, help = "Command to run remotely")]
+    #[arg(
+        trailing_var_arg = true,
+        required = true,
+        help = "Command to run remotely"
+    )]
     command: Vec<String>,
 }
 
@@ -98,7 +123,11 @@ async fn main() {
     let project_dir = match cli.dir.canonicalize() {
         Ok(d) => d,
         Err(e) => {
-            eprintln!("Error: invalid project directory '{}': {}", cli.dir.display(), e);
+            eprintln!(
+                "Error: invalid project directory '{}': {}",
+                cli.dir.display(),
+                e
+            );
             exit(EXIT_INFRA_ERROR);
         }
     };
@@ -200,7 +229,10 @@ async fn main() {
     };
 
     if msg_type != MsgType::HelloAck {
-        eprintln!("Protocol error: expected HELLO_ACK, received {:?}", msg_type);
+        eprintln!(
+            "Protocol error: expected HELLO_ACK, received {:?}",
+            msg_type
+        );
         exit(EXIT_INFRA_ERROR);
     }
 
@@ -271,7 +303,10 @@ async fn main() {
     };
 
     if msg_type != MsgType::Need {
-        eprintln!("Protocol error: expected NEED frame, received {:?}", msg_type);
+        eprintln!(
+            "Protocol error: expected NEED frame, received {:?}",
+            msg_type
+        );
         exit(EXIT_INFRA_ERROR);
     }
 
@@ -287,7 +322,9 @@ async fn main() {
     let sync_start = Instant::now();
     if need.want.is_empty() {
         if verbose {
-            println!("[Delta Sync] Remote workspace is completely up to date. 0 files to transfer!");
+            println!(
+                "[Delta Sync] Remote workspace is completely up to date. 0 files to transfer!"
+            );
         }
         if let Err(e) = write_frame(&mut stream, MsgType::Files, &[]).await {
             eprintln!("Error: failed to send empty FILES frame: {}", e);

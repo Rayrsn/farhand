@@ -76,7 +76,10 @@ pub fn get_file_mode(metadata: &std::fs::Metadata) -> u32 {
 
 /// Scan a directory, applying default ignore rules, .gitignore, .farhand-ignore,
 /// and extra caller patterns. Returns a map of relative paths to FileMeta.
-pub fn scan(root: &Path, extra_ignores: &[String]) -> Result<HashMap<String, FileMeta>, FilesetError> {
+pub fn scan(
+    root: &Path,
+    extra_ignores: &[String],
+) -> Result<HashMap<String, FileMeta>, FilesetError> {
     let mut matcher = IgnoreMatcher::new();
     matcher.load_file(&root.join(".gitignore"));
     matcher.load_file(&root.join(".farhand-ignore"));
@@ -98,7 +101,7 @@ pub fn scan(root: &Path, extra_ignores: &[String]) -> Result<HashMap<String, Fil
             Err(_) => continue,
         };
 
-        let rel_wire_path = rel.to_string_lossy().replace('\\', "/");
+        let rel_wire_path = protocol::to_wire_path(rel);
         let is_dir = entry.file_type().is_dir();
 
         if is_dir {
@@ -157,7 +160,11 @@ mod tests {
 
         fs::write(root.join("src/main.rs"), b"fn main() {}").unwrap();
         fs::write(root.join("src/lib.rs"), b"pub fn add() {}").unwrap();
-        fs::write(root.join("node_modules/fake-pkg/index.js"), b"module.exports = 1;").unwrap();
+        fs::write(
+            root.join("node_modules/fake-pkg/index.js"),
+            b"module.exports = 1;",
+        )
+        .unwrap();
         fs::write(root.join("target/debug/binary"), b"ELF_DATA").unwrap();
         fs::write(root.join("temp.log"), b"log data").unwrap();
 

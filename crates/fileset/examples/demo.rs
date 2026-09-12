@@ -8,7 +8,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = Path::new(&target_dir);
 
     println!("=== Farhand Interactive Verification ===");
-    println!("Target directory to scan: {}", path.canonicalize()?.display());
+    println!(
+        "Target directory to scan: {}",
+        path.canonicalize()?.display()
+    );
     println!();
 
     // 1. Scan filesystem
@@ -24,7 +27,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         file_paths.push(rel_path.clone());
         println!(
             "  [{}] mode: {:04o} | {:>8} bytes | sha256: {}... | {}",
-            if meta.path.ends_with(".rs") { "CODE" } else { "FILE" },
+            if meta.path.ends_with(".rs") {
+                "CODE"
+            } else {
+                "FILE"
+            },
             meta.mode,
             meta.size,
             &meta.hash[..12],
@@ -33,7 +40,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!();
-    println!("Total raw size: {} bytes across {} files", total_bytes, files.len());
+    println!(
+        "Total raw size: {} bytes across {} files",
+        total_bytes,
+        files.len()
+    );
     println!("Verified: 'target/' and default ignore paths were automatically excluded.");
     println!();
 
@@ -49,13 +60,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 3. Unpack into a verification folder
     let unpack_dir = Path::new("farhand_demo_out");
-    println!("Step 3: Unpacking archive into '{}' with Zip-Slip protection...", unpack_dir.display());
+    println!(
+        "Step 3: Unpacking archive into '{}' with Zip-Slip protection...",
+        unpack_dir.display()
+    );
     if unpack_dir.exists() {
         fs::remove_dir_all(unpack_dir)?;
     }
 
     unpack_tar(unpack_dir, &compressed_archive)?;
-    println!("Archive unpacked successfully into '{}'.", unpack_dir.display());
+    println!(
+        "Archive unpacked successfully into '{}'.",
+        unpack_dir.display()
+    );
 
     // 4. Verify unpacked files
     let mut all_matched = true;
@@ -68,13 +85,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         let extracted_hash = fileset::hash_file(&extracted_file)?;
         if extracted_hash != original_meta.hash {
-            println!("  [FAIL] Hash mismatch for {}: expected {}, got {}", rel_path, original_meta.hash, extracted_hash);
+            println!(
+                "  [FAIL] Hash mismatch for {}: expected {}, got {}",
+                rel_path, original_meta.hash, extracted_hash
+            );
             all_matched = false;
         }
     }
 
     if all_matched {
-        println!("All {} extracted files match their original SHA-256 digests perfectly!", files.len());
+        println!(
+            "All {} extracted files match their original SHA-256 digests perfectly!",
+            files.len()
+        );
     }
 
     // Clean up demo directory

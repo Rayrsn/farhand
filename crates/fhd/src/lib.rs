@@ -206,16 +206,7 @@ fn shell_escape(arg: &str) -> String {
     format!("'{}'", arg.replace('\'', "'\\''"))
 }
 
-pub async fn execute_and_stream<W: AsyncWrite + Unpin + Send + 'static>(
-    writer: Arc<Mutex<W>>,
-    cwd: &Path,
-    argv: &[String],
-    custom_shell: Option<&str>,
-) -> Result<i32, Box<dyn std::error::Error>> {
-    if argv.is_empty() {
-        return Ok(0);
-    }
-
+pub fn build_shell_command(cwd: &Path, argv: &[String], custom_shell: Option<&str>) -> Command {
     let joined_cmd = argv
         .iter()
         .map(|a| shell_escape(a))
@@ -243,7 +234,20 @@ pub async fn execute_and_stream<W: AsyncWrite + Unpin + Send + 'static>(
     cmd.current_dir(cwd);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
+    cmd
+}
 
+pub async fn execute_and_stream<W: AsyncWrite + Unpin + Send + 'static>(
+    writer: Arc<Mutex<W>>,
+    cwd: &Path,
+    argv: &[String],
+    custom_shell: Option<&str>,
+) -> Result<i32, Box<dyn std::error::Error>> {
+    if argv.is_empty() {
+        return Ok(0);
+    }
+
+    let mut cmd = build_shell_command(cwd, argv, custom_shell);
     let mut child = cmd.spawn()?;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -253,12 +257,16 @@ pub async fn execute_and_stream<W: AsyncWrite + Unpin + Send + 'static>(
         if let Some(out) = stdout {
             let mut reader = BufReader::new(out).lines();
             while let Ok(Some(line)) = reader.next_line().await {
+                let clean_line = line.trim_end_matches('\r');
                 let payload = LogPayload {
                     stream: "stdout".into(),
-                    data: format!("{}\n", line),
+                    data: format!("{}\n", clean_line),
                 };
                 let mut w = writer_out.lock().await;
-                if write_json_frame(&mut *w, MsgType::Log, &payload).await.is_err() {
+                if write_json_frame(&mut *w, MsgType::Log, &payload)
+                    .await
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -270,12 +278,16 @@ pub async fn execute_and_stream<W: AsyncWrite + Unpin + Send + 'static>(
         if let Some(err) = stderr {
             let mut reader = BufReader::new(err).lines();
             while let Ok(Some(line)) = reader.next_line().await {
+                let clean_line = line.trim_end_matches('\r');
                 let payload = LogPayload {
                     stream: "stderr".into(),
-                    data: format!("{}\n", line),
+                    data: format!("{}\n", clean_line),
                 };
                 let mut w = writer_err.lock().await;
-                if write_json_frame(&mut *w, MsgType::Log, &payload).await.is_err() {
+                if write_json_frame(&mut *w, MsgType::Log, &payload)
+                    .await
+                    .is_err()
+                {
                     break;
                 }
             }

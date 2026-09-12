@@ -8,7 +8,10 @@ use std::path::{Path, PathBuf};
 use tempfile::tempdir;
 use tokio::net::{TcpListener, TcpStream};
 
-async fn spawn_test_server(token: Option<String>, workdir: PathBuf) -> (String, tokio::task::JoinHandle<()>) {
+async fn spawn_test_server(
+    token: Option<String>,
+    workdir: PathBuf,
+) -> (String, tokio::task::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap().to_string();
 
@@ -34,7 +37,9 @@ async fn client_roundtrip(
         project: project_name.to_string(),
         protocol_version: CURRENT_PROTOCOL_VERSION,
     };
-    write_json_frame(&mut stream, MsgType::Hello, &hello).await.unwrap();
+    write_json_frame(&mut stream, MsgType::Hello, &hello)
+        .await
+        .unwrap();
 
     // 2. HELLO_ACK
     let (msg_type, payload) = read_frame(&mut stream).await.unwrap();
@@ -53,8 +58,12 @@ async fn client_roundtrip(
             mode: m.mode,
         })
         .collect();
-    let manifest = ManifestPayload { files: manifest_files };
-    write_json_frame(&mut stream, MsgType::Manifest, &manifest).await.unwrap();
+    let manifest = ManifestPayload {
+        files: manifest_files,
+    };
+    write_json_frame(&mut stream, MsgType::Manifest, &manifest)
+        .await
+        .unwrap();
 
     // 4. NEED
     let (msg_type, payload) = read_frame(&mut stream).await.unwrap();
@@ -66,7 +75,9 @@ async fn client_roundtrip(
         write_frame(&mut stream, MsgType::Files, &[]).await.unwrap();
     } else {
         let tar_gz = fileset::pack_tar(project_dir, &need.want).unwrap();
-        write_frame(&mut stream, MsgType::Files, &tar_gz).await.unwrap();
+        write_frame(&mut stream, MsgType::Files, &tar_gz)
+            .await
+            .unwrap();
     }
 
     // 6. RUN
@@ -77,7 +88,9 @@ async fn client_roundtrip(
         template: None,
         no_cache: false,
     };
-    write_json_frame(&mut stream, MsgType::Run, &run).await.unwrap();
+    write_json_frame(&mut stream, MsgType::Run, &run)
+        .await
+        .unwrap();
 
     // 7. Stream LOGs and RESULT
     let mut output = String::new();
@@ -106,7 +119,8 @@ async fn client_roundtrip(
 async fn test_e2e_persistent_workspace_and_delta_sync() {
     let token = "test-token-delta".to_string();
     let workdir = tempdir().unwrap();
-    let (server_addr, _handle) = spawn_test_server(Some(token.clone()), workdir.path().to_path_buf()).await;
+    let (server_addr, _handle) =
+        spawn_test_server(Some(token.clone()), workdir.path().to_path_buf()).await;
 
     let project_dir = tempdir().unwrap();
     let file1 = project_dir.path().join("src/lib.rs");
@@ -153,11 +167,18 @@ async fn test_e2e_persistent_workspace_and_delta_sync() {
     assert_eq!(code2, 0);
     assert!(out2.contains("run2-done"));
     // CRITICAL: want must be completely empty!
-    assert!(need2.want.is_empty(), "Expected 0 files to transfer, got: {:?}", need2.want);
+    assert!(
+        need2.want.is_empty(),
+        "Expected 0 files to transfer, got: {:?}",
+        need2.want
+    );
     assert!(need2.delete_extraneous.is_empty());
 
     // CRITICAL: Section 5.1 deletion safety - remote cached dep must STILL exist!
-    assert!(remote_dep.exists(), "Remote dependency in node_modules was deleted!");
+    assert!(
+        remote_dep.exists(),
+        "Remote dependency in node_modules was deleted!"
+    );
 
     // --- RUN 3: Add new file locally, delete old file ---
     fs::remove_file(&file1).unwrap();
@@ -179,8 +200,14 @@ async fn test_e2e_persistent_workspace_and_delta_sync() {
     assert_eq!(need3.want, vec!["src/new.rs"]);
     // Deleted file should be flagged and removed
     assert_eq!(need3.delete_extraneous, vec!["src/lib.rs"]);
-    assert!(!resolved_ws.join("src/lib.rs").exists(), "Old file was not pruned from workspace");
-    assert!(resolved_ws.join("src/new.rs").exists(), "New file was not placed in workspace");
+    assert!(
+        !resolved_ws.join("src/lib.rs").exists(),
+        "Old file was not pruned from workspace"
+    );
+    assert!(
+        resolved_ws.join("src/new.rs").exists(),
+        "New file was not placed in workspace"
+    );
 
     // Remote dep still intact
     assert!(remote_dep.exists());
@@ -217,7 +244,9 @@ async fn test_e2e_invalid_token_rejection() {
         project: "test-auth".into(),
         protocol_version: CURRENT_PROTOCOL_VERSION,
     };
-    write_json_frame(&mut stream, MsgType::Hello, &hello).await.unwrap();
+    write_json_frame(&mut stream, MsgType::Hello, &hello)
+        .await
+        .unwrap();
 
     let (msg_type, payload) = read_frame(&mut stream).await.unwrap();
     assert_eq!(msg_type, MsgType::HelloAck);
@@ -242,7 +271,9 @@ async fn client_roundtrip_with_artifacts(
         project: project_name.to_string(),
         protocol_version: CURRENT_PROTOCOL_VERSION,
     };
-    write_json_frame(&mut stream, MsgType::Hello, &hello).await.unwrap();
+    write_json_frame(&mut stream, MsgType::Hello, &hello)
+        .await
+        .unwrap();
 
     let (msg_type, payload) = read_frame(&mut stream).await.unwrap();
     assert_eq!(msg_type, MsgType::HelloAck);
@@ -262,7 +293,9 @@ async fn client_roundtrip_with_artifacts(
     let manifest = ManifestPayload {
         files: manifest_files,
     };
-    write_json_frame(&mut stream, MsgType::Manifest, &manifest).await.unwrap();
+    write_json_frame(&mut stream, MsgType::Manifest, &manifest)
+        .await
+        .unwrap();
 
     let (msg_type, payload) = read_frame(&mut stream).await.unwrap();
     assert_eq!(msg_type, MsgType::Need);
@@ -272,7 +305,9 @@ async fn client_roundtrip_with_artifacts(
         write_frame(&mut stream, MsgType::Files, &[]).await.unwrap();
     } else {
         let tar_gz = fileset::pack_tar(project_dir, &need.want).unwrap();
-        write_frame(&mut stream, MsgType::Files, &tar_gz).await.unwrap();
+        write_frame(&mut stream, MsgType::Files, &tar_gz)
+            .await
+            .unwrap();
     }
 
     let run = RunPayload {
@@ -282,7 +317,9 @@ async fn client_roundtrip_with_artifacts(
         template: None,
         no_cache: false,
     };
-    write_json_frame(&mut stream, MsgType::Run, &run).await.unwrap();
+    write_json_frame(&mut stream, MsgType::Run, &run)
+        .await
+        .unwrap();
 
     let mut exit_code = 1;
     let mut got_artifacts = false;
@@ -356,7 +393,11 @@ async fn test_e2e_artifact_retrieval_preset_fallback() {
     let out_dir = tempdir().unwrap();
 
     // Create Cargo.toml in project to trigger "rust" preset
-    fs::write(project_dir.path().join("Cargo.toml"), "[package]\nname = \"test\"\n").unwrap();
+    fs::write(
+        project_dir.path().join("Cargo.toml"),
+        "[package]\nname = \"test\"\n",
+    )
+    .unwrap();
 
     let build_cmd = vec![
         "sh".to_string(),
@@ -409,7 +450,10 @@ async fn test_e2e_no_artifacts_on_command_failure() {
     .await;
 
     assert_eq!(exit_code, 7);
-    assert!(!got_artifacts, "Artifacts should never be returned on failure");
+    assert!(
+        !got_artifacts,
+        "Artifacts should never be returned on failure"
+    );
     assert!(!out_dir.path().join("dist").exists());
 }
 
@@ -484,5 +528,8 @@ async fn test_cli_config_file_resolution_and_telemetry() {
     // Verify artifact was unpacked into out_dir specified in .farhand.yaml
     let artifact_file = out_dir.path().join("out/artifact.txt");
     assert!(artifact_file.exists());
-    assert_eq!(fs::read_to_string(artifact_file).unwrap().trim(), "config-built");
+    assert_eq!(
+        fs::read_to_string(artifact_file).unwrap().trim(),
+        "config-built"
+    );
 }

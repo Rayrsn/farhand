@@ -255,6 +255,7 @@ dependencies = [
  "flate2",
  "glob",
  "hex",
+ "protocol",
  "sha2",
  "tar",
  "tempfile",

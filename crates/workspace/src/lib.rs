@@ -26,7 +26,13 @@ pub fn resolve_workspace_dir(base_dir: &Path, project_name: &str) -> PathBuf {
 
     let clean_name: String = project_name
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
 
     base_dir.join(format!("{}-{}", clean_name, short_hash))
@@ -38,9 +44,7 @@ pub fn default_workspaces_dir() -> PathBuf {
         return PathBuf::from(override_dir);
     }
 
-    if let Some(home) = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-    {
+    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
         PathBuf::from(home).join(".farhand").join("workspaces")
     } else {
         std::env::temp_dir().join("farhand").join("workspaces")
@@ -53,7 +57,8 @@ pub fn diff_manifests(
     client_manifest: &ManifestPayload,
     extra_ignores: &[String],
 ) -> Result<DiffResult, FilesetError> {
-    let mut client_map: HashMap<&str, &FileEntry> = HashMap::with_capacity(client_manifest.files.len());
+    let mut client_map: HashMap<&str, &FileEntry> =
+        HashMap::with_capacity(client_manifest.files.len());
     for f in &client_manifest.files {
         client_map.insert(&f.path, f);
     }
@@ -108,12 +113,12 @@ pub fn apply_deletions(workspace_root: &Path, to_delete: &[String]) -> std::io::
     let mut count = 0;
 
     for rel_path in to_delete {
-        let clean_rel = rel_path.trim_matches('/');
-        if clean_rel.starts_with("..") || clean_rel.is_empty() {
-            continue;
-        }
+        let safe_rel = match protocol::from_wire_path(rel_path) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
 
-        let target = canonical_root.join(clean_rel);
+        let target = canonical_root.join(&safe_rel);
         if target.exists() {
             if let Ok(canonical_target) = target.canonicalize() {
                 if canonical_target.starts_with(&canonical_root)
@@ -151,7 +156,9 @@ mod tests {
         let dir1 = resolve_workspace_dir(base, "my-app");
         let dir2 = resolve_workspace_dir(base, "my-app");
         assert_eq!(dir1, dir2);
-        assert!(dir1.to_string_lossy().starts_with("/var/farhand/workspaces/my-app-"));
+        assert!(dir1
+            .to_string_lossy()
+            .starts_with("/var/farhand/workspaces/my-app-"));
 
         let dir3 = resolve_workspace_dir(base, "other-project");
         assert_ne!(dir1, dir3);
@@ -203,7 +210,11 @@ mod tests {
         };
 
         let diff = diff_manifests(&ws, &manifest, &[]).unwrap();
-        assert!(diff.want.is_empty(), "Unchanged files should not be in want: {:?}", diff.want);
+        assert!(
+            diff.want.is_empty(),
+            "Unchanged files should not be in want: {:?}",
+            diff.want
+        );
         assert!(diff.delete_extraneous.is_empty());
     }
 
@@ -260,7 +271,10 @@ mod tests {
         assert_eq!(diff.delete_extraneous, vec!["src/old_deleted_file.rs"]);
 
         // CRITICAL: node_modules and target files MUST NOT be in delete_extraneous
-        assert!(!diff.delete_extraneous.iter().any(|p| p.contains("node_modules")));
+        assert!(!diff
+            .delete_extraneous
+            .iter()
+            .any(|p| p.contains("node_modules")));
         assert!(!diff.delete_extraneous.iter().any(|p| p.contains("target")));
 
         // Test apply_deletions

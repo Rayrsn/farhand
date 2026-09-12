@@ -112,8 +112,8 @@ pub fn interpolate_env(content: &str) -> String {
 
 /// Load and parse a `.farhand.yaml` file from the given path.
 pub fn load_config(path: &Path) -> Result<Config, ConfigError> {
-    let raw_content = fs::read_to_string(path)
-        .map_err(|e| ConfigError::Io(path.display().to_string(), e))?;
+    let raw_content =
+        fs::read_to_string(path).map_err(|e| ConfigError::Io(path.display().to_string(), e))?;
     let interpolated = interpolate_env(&raw_content);
     let config: Config = serde_yaml::from_str(&interpolated)
         .map_err(|e| ConfigError::Yaml(path.display().to_string(), e))?;
@@ -160,14 +160,8 @@ mod tests {
             interpolate_env("host: ${TEST_UNDEFINED_VAR:-192.168.1.100:9876}"),
             "host: 192.168.1.100:9876"
         );
-        assert_eq!(
-            interpolate_env("token: ${TEST_UNDEFINED_VAR}"),
-            "token: "
-        );
-        assert_eq!(
-            interpolate_env("escaped: $$100"),
-            "escaped: $100"
-        );
+        assert_eq!(interpolate_env("token: ${TEST_UNDEFINED_VAR}"), "token: ");
+        assert_eq!(interpolate_env("escaped: $$100"), "escaped: $100");
     }
 
     #[test]

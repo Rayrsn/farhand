@@ -30,7 +30,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let cli = Cli::parse();
     let listener = TcpListener::bind(&cli.listen).await?;
-    let workdir = cli.workdir.unwrap_or_else(workspace::default_workspaces_dir);
+    let workdir = cli
+        .workdir
+        .unwrap_or_else(workspace::default_workspaces_dir);
 
     info!("Farhand daemon listening on {}", cli.listen);
     info!("Persistent workspaces root: {}", workdir.display());

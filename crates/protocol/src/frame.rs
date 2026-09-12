@@ -65,8 +65,7 @@ pub async fn read_frame<R: AsyncRead + Unpin>(
         Err(e) => return Err(FrameError::Io(e)),
     }
 
-    let msg_type = MsgType::from_u8(header[0])
-        .ok_or(FrameError::InvalidMsgType(header[0]))?;
+    let msg_type = MsgType::from_u8(header[0]).ok_or(FrameError::InvalidMsgType(header[0]))?;
 
     let length = u32::from_be_bytes([header[1], header[2], header[3], header[4]]) as usize;
     if length > MAX_PAYLOAD_SIZE {
@@ -111,7 +110,9 @@ mod tests {
     async fn test_frame_roundtrip_bytes() {
         let mut buffer = Vec::new();
         let payload = b"hello from farhand wire protocol";
-        write_frame(&mut buffer, MsgType::Hello, payload).await.unwrap();
+        write_frame(&mut buffer, MsgType::Hello, payload)
+            .await
+            .unwrap();
 
         let mut cursor = Cursor::new(buffer);
         let (msg_type, read_payload) = read_frame(&mut cursor).await.unwrap();
@@ -146,7 +147,9 @@ mod tests {
         };
 
         let mut buffer = Vec::new();
-        write_json_frame(&mut buffer, MsgType::Hello, &payload).await.unwrap();
+        write_json_frame(&mut buffer, MsgType::Hello, &payload)
+            .await
+            .unwrap();
 
         let mut cursor = Cursor::new(buffer);
         let (msg_type, raw_bytes) = read_frame(&mut cursor).await.unwrap();
