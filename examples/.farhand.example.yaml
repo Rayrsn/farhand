@@ -1,0 +1,45 @@
+# ==============================================================================
+# Farhand Project Configuration (.farhand.yaml)
+# ==============================================================================
+# Place this file in your project root to offload commands to your remote agent
+# without having to pass long CLI flags every time.
+#
+# Documentation: docs/configuration.md
+# ==============================================================================
+
+# Remote agent connection string (host:port). Required unless --host or FARHAND_HOST is set.
+host: 192.168.1.50:9876
+
+# Shared authentication bearer token.
+# Supports environment variable expansion: ${VAR}, ${VAR:-default}, $VAR.
+token: ${FARHAND_TOKEN}
+
+# Project identifier and persistent workspace folder key on the remote agent.
+# Defaults to the local directory's basename if omitted.
+# name: my-project
+
+# Specific artifact files, folders, or glob patterns to retrieve after exit code 0.
+# If omitted or empty, preset auto-detection (e.g. dist, target/release) is used.
+outputs:
+  - dist/
+  - target/release/my-app
+  # - coverage/lcov.info
+
+# Local directory where retrieved artifacts will be extracted.
+# Defaults to ./farhand-out
+outDir: ./farhand-out
+
+# Set to true to print detailed scan, sync, and execution telemetry on every run.
+verbose: false
+
+# Force a specific build environment template by name (e.g. rust, npm, python).
+# template: rust
+
+# Target specific agent tags in multi-agent routing environments (e.g. gpu, linux-arm64).
+# agentTag: default
+
+# Allow connecting to an agent without a shared token (insecure).
+insecureSkipToken: false
+
+# Bypass lockfile-based dependency caching hooks on the remote agent.
+noCache: false
