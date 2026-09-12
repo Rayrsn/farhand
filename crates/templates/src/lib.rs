@@ -52,6 +52,8 @@ pub struct Template {
     pub r#match: MatchConditions,
     #[serde(default)]
     pub outputs: Vec<String>,
+    #[serde(rename = "outputsIgnore", default)]
+    pub outputs_ignore: Vec<String>,
     #[serde(rename = "ignoreExtra", default)]
     pub ignore_extra: Vec<String>,
     #[serde(default)]
@@ -285,6 +287,31 @@ pub fn resolve_template_extra_ignores(
     extra_ignores.sort();
     extra_ignores.dedup();
     extra_ignores
+}
+
+/// Resolve candidate output ignore patterns declared by matching templates.
+pub fn resolve_template_outputs_ignores(
+    workspace_root: &Path,
+    explicit_template: Option<&str>,
+) -> Vec<String> {
+    let templates = load_templates(Some(workspace_root));
+    let mut outputs_ignores = Vec::new();
+
+    if let Some(target_name) = explicit_template {
+        if let Some(lt) = templates.get(target_name) {
+            outputs_ignores.extend(lt.template.outputs_ignore.clone());
+        }
+    } else {
+        for lt in templates.values() {
+            if matches_workspace(&lt.template, workspace_root) {
+                outputs_ignores.extend(lt.template.outputs_ignore.clone());
+            }
+        }
+    }
+
+    outputs_ignores.sort();
+    outputs_ignores.dedup();
+    outputs_ignores
 }
 
 /// Save a template into the user or project directory.

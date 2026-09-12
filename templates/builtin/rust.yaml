@@ -6,6 +6,18 @@ match:
 outputs:
   - target/release
   - target/debug
+outputsIgnore:
+  - "*/deps"
+  - "*/deps/*"
+  - "*/build"
+  - "*/build/*"
+  - "*/incremental"
+  - "*/incremental/*"
+  - "*/.fingerprint"
+  - "*/.fingerprint/*"
+  - "*.d"
+  - "*.rlib"
+  - "*.rmeta"
 ignoreExtra:
   - target
 hints:

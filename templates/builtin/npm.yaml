@@ -8,6 +8,11 @@ outputs:
   - build
   - .next
   - out
+outputsIgnore:
+  - "*/cache"
+  - "*/cache/*"
+  - ".next/cache"
+  - ".next/cache/*"
 ignoreExtra:
   - node_modules
   - .npm

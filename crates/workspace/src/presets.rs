@@ -60,15 +60,17 @@ pub fn resolve_artifact_paths(
     requested_outputs: Option<&[String]>,
     explicit_template: Option<&str>,
 ) -> Vec<String> {
-    let candidates: Vec<String> = match requested_outputs {
-        Some(outs) if !outs.is_empty() => outs.to_vec(),
+    let (candidates, output_ignores): (Vec<String>, Vec<String>) = match requested_outputs {
+        Some(outs) if !outs.is_empty() => (outs.to_vec(), Vec::new()),
         _ => {
             let tmpl_candidates =
                 templates::resolve_template_outputs(workspace_root, explicit_template);
+            let tmpl_ignores =
+                templates::resolve_template_outputs_ignores(workspace_root, explicit_template);
             if !tmpl_candidates.is_empty() {
-                tmpl_candidates
+                (tmpl_candidates, tmpl_ignores)
             } else {
-                detect_preset_outputs(workspace_root)
+                (detect_preset_outputs(workspace_root), Vec::new())
             }
         }
     };
@@ -97,13 +99,23 @@ pub fn resolve_artifact_paths(
             let pattern_str = format!("{}/{}", canonical_root.to_string_lossy(), clean);
             if let Ok(entries) = glob::glob(&pattern_str) {
                 for entry in entries.flatten() {
-                    add_path_or_dir(&canonical_root, &entry, &mut resolved_paths);
+                    add_path_or_dir(
+                        &canonical_root,
+                        &entry,
+                        &output_ignores,
+                        &mut resolved_paths,
+                    );
                 }
             }
         } else {
             let candidate_path = canonical_root.join(clean);
             if candidate_path.exists() {
-                add_path_or_dir(&canonical_root, &candidate_path, &mut resolved_paths);
+                add_path_or_dir(
+                    &canonical_root,
+                    &candidate_path,
+                    &output_ignores,
+                    &mut resolved_paths,
+                );
             }
         }
     }
@@ -113,7 +125,54 @@ pub fn resolve_artifact_paths(
     resolved_paths
 }
 
-fn add_path_or_dir(canonical_root: &Path, target: &Path, out: &mut Vec<String>) {
+fn is_artifact_ignored(rel_str: &str, output_ignores: &[String]) -> bool {
+    let clean = rel_str.trim().trim_matches('/');
+    if clean.is_empty() {
+        return false;
+    }
+
+    // Check path segments against built-in intermediate compiler caches
+    let segments: Vec<&str> = clean.split('/').collect();
+    for seg in &segments {
+        if matches!(
+            *seg,
+            "deps" | "incremental" | ".fingerprint" | "__pycache__" | ".git" | "node_modules"
+        ) {
+            return true;
+        }
+    }
+
+    // Check against template outputsIgnore patterns
+    for pattern in output_ignores {
+        let pat_clean = pattern.trim().trim_matches('/');
+        if pat_clean.contains('*') || pat_clean.contains('?') || pat_clean.contains('[') {
+            if let Ok(glob_pat) = glob::Pattern::new(pat_clean) {
+                if glob_pat.matches(clean) {
+                    return true;
+                }
+                if let Some(file_name) = clean.rsplit('/').next() {
+                    if glob_pat.matches(file_name) {
+                        return true;
+                    }
+                }
+            }
+        } else if clean == pat_clean
+            || clean.starts_with(&format!("{}/", pat_clean))
+            || clean.ends_with(&format!("/{}", pat_clean))
+        {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn add_path_or_dir(
+    canonical_root: &Path,
+    target: &Path,
+    output_ignores: &[String],
+    out: &mut Vec<String>,
+) {
     let canonical_target = match target.canonicalize() {
         Ok(c) => c,
         Err(_) => return,
@@ -125,23 +184,40 @@ fn add_path_or_dir(canonical_root: &Path, target: &Path, out: &mut Vec<String>) 
     }
 
     if target.is_dir() {
-        for entry in WalkDir::new(target).into_iter().filter_map(Result::ok) {
+        let mut it = WalkDir::new(target).into_iter();
+        loop {
+            let entry = match it.next() {
+                Some(Ok(e)) => e,
+                Some(Err(_)) => continue,
+                None => break,
+            };
+
             // Verify entry canonical path also stays within root
             if let Ok(canon_entry) = entry.path().canonicalize() {
                 if !canon_entry.starts_with(canonical_root) {
                     continue;
                 }
             }
+
             if let Ok(rel) = entry.path().strip_prefix(canonical_root) {
                 let rel_str = rel.to_string_lossy().replace('\\', "/");
-                if !rel_str.is_empty() {
-                    out.push(rel_str);
+                if rel_str.is_empty() {
+                    continue;
                 }
+
+                if is_artifact_ignored(&rel_str, output_ignores) {
+                    if entry.file_type().is_dir() {
+                        it.skip_current_dir();
+                    }
+                    continue;
+                }
+
+                out.push(rel_str);
             }
         }
     } else if let Ok(rel) = target.strip_prefix(canonical_root) {
         let rel_str = rel.to_string_lossy().replace('\\', "/");
-        if !rel_str.is_empty() {
+        if !rel_str.is_empty() && !is_artifact_ignored(&rel_str, output_ignores) {
             out.push(rel_str);
         }
     }
@@ -274,5 +350,36 @@ mod tests {
         let paths = resolve_artifact_paths(root, None, None);
         assert!(paths.contains(&"dist".to_string()));
         assert!(paths.contains(&"dist/app.js".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_artifact_paths_excludes_intermediate_compiler_caches() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+
+        // Create Cargo.toml to trigger rust template
+        File::create(root.join("Cargo.toml")).unwrap();
+        let release_dir = root.join("target").join("release");
+        let deps_dir = release_dir.join("deps");
+        let build_dir = release_dir.join("build");
+        let inc_dir = release_dir.join("incremental");
+        fs::create_dir_all(&deps_dir).unwrap();
+        fs::create_dir_all(&build_dir).unwrap();
+        fs::create_dir_all(&inc_dir).unwrap();
+
+        // Output binary (should be retrieved)
+        File::create(release_dir.join("app-bin")).unwrap();
+        // Intermediate caches (should be EXCLUDED)
+        File::create(deps_dir.join("libfoo.rlib")).unwrap();
+        File::create(build_dir.join("build-script.o")).unwrap();
+        File::create(inc_dir.join("inc.bin")).unwrap();
+        File::create(release_dir.join("app-bin.d")).unwrap();
+
+        let paths = resolve_artifact_paths(root, None, None);
+        assert!(paths.contains(&"target/release/app-bin".to_string()));
+        assert!(!paths.contains(&"target/release/deps/libfoo.rlib".to_string()));
+        assert!(!paths.contains(&"target/release/build/build-script.o".to_string()));
+        assert!(!paths.contains(&"target/release/incremental/inc.bin".to_string()));
+        assert!(!paths.contains(&"target/release/app-bin.d".to_string()));
     }
 }

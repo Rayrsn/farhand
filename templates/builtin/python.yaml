@@ -7,7 +7,10 @@ match:
     - requirements.txt
 outputs:
   - dist
-  - build
+outputsIgnore:
+  - "__pycache__"
+  - "*.pyc"
+  - "*.pyo"
 ignoreExtra:
   - .venv
   - __pycache__
