@@ -227,6 +227,7 @@ dependencies = [
  "protocol",
  "serde_json",
  "tempfile",
+ "templates",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -242,6 +243,7 @@ dependencies = [
  "protocol",
  "serde_json",
  "tempfile",
+ "templates",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -730,7 +732,13 @@ dependencies = [
 name = "templates"
 version = "0.1.0"
 dependencies = [
+ "glob",
+ "protocol",
+ "serde",
+ "serde_yaml",
+ "tempfile",
  "thiserror",
+ "tracing",
 ]
 
 [[package]]
@@ -950,6 +958,7 @@ dependencies = [
  "protocol",
  "sha2",
  "tempfile",
+ "templates",
  "thiserror",
  "tracing",
  "walkdir",

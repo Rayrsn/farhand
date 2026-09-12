@@ -1,0 +1,14 @@
+name: maven
+description: Java projects built with Apache Maven
+match:
+  anyFile:
+    - pom.xml
+outputs:
+  - target/*.jar
+  - target/*.war
+ignoreExtra:
+  - target
+hints:
+  installCommand: mvn dependency:go-offline
+  lockfiles:
+    - pom.xml

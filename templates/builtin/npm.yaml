@@ -1,0 +1,19 @@
+name: npm
+description: Node.js and JavaScript/TypeScript projects using npm, yarn, or pnpm
+match:
+  anyFile:
+    - package.json
+outputs:
+  - dist
+  - build
+  - .next
+  - out
+ignoreExtra:
+  - node_modules
+  - .npm
+hints:
+  installCommand: npm install
+  lockfiles:
+    - package-lock.json
+    - yarn.lock
+    - pnpm-lock.yaml

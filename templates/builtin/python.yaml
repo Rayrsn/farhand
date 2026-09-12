@@ -1,0 +1,20 @@
+name: python
+description: Python projects using pip, poetry, or setup.py
+match:
+  anyFile:
+    - pyproject.toml
+    - setup.py
+    - requirements.txt
+outputs:
+  - dist
+  - build
+ignoreExtra:
+  - .venv
+  - __pycache__
+  - "*.pyc"
+hints:
+  installCommand: pip install -r requirements.txt
+  lockfiles:
+    - poetry.lock
+    - Pipfile.lock
+    - requirements.txt

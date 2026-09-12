@@ -1,8 +1,8 @@
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use protocol::{
     decode_json, read_frame, write_frame, write_json_frame, FileEntry, HelloAckPayload,
-    HelloPayload, LogPayload, ManifestPayload, MsgType, NeedPayload, ResultPayload, RunPayload,
-    CURRENT_PROTOCOL_VERSION,
+    HelloPayload, LogPayload, ManifestPayload, MsgType, NeedPayload, PutTemplatePayload,
+    ResultPayload, RunPayload, CURRENT_PROTOCOL_VERSION,
 };
 use std::io::Write;
 use std::path::PathBuf;
@@ -18,6 +18,9 @@ const EXIT_INFRA_ERROR: i32 = 125;
     about = "Farhand client: offload build/test execution to remote agent"
 )]
 struct Cli {
+    #[command(subcommand)]
+    subcommand: Option<Subcommands>,
+
     #[arg(
         long,
         env = "FARHAND_HOST",
@@ -72,12 +75,41 @@ struct Cli {
     #[arg(long, help = "Bypass lockfile dependency caching hooks")]
     no_cache: bool,
 
-    #[arg(
-        trailing_var_arg = true,
-        required = true,
-        help = "Command to run remotely"
-    )]
+    #[arg(trailing_var_arg = true, help = "Command to run remotely")]
     command: Vec<String>,
+}
+
+#[derive(Subcommand, Debug)]
+enum Subcommands {
+    /// Manage build and detection templates
+    Templates {
+        #[command(subcommand)]
+        action: TemplateAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum TemplateAction {
+    /// List all available templates and their resolution sources
+    List,
+    /// Display the raw YAML definition of a template
+    Show {
+        /// Name of the template to display
+        name: String,
+    },
+    /// Initialize a template in .farhand/templates/<name>.yaml
+    Init {
+        /// Name of the template to initialize
+        name: String,
+    },
+    /// Upload a template to the remote agent daemon
+    Push {
+        /// Name of the template to upload
+        name: String,
+        /// Scope on agent host ("project" or "user")
+        #[arg(long, default_value = "project")]
+        scope: String,
+    },
 }
 
 #[derive(Debug, Default)]
@@ -132,6 +164,59 @@ async fn main() {
         }
     };
 
+    // Check for local template subcommands that do not require remote connection
+    if let Some(Subcommands::Templates { ref action }) = cli.subcommand {
+        match action {
+            TemplateAction::List => {
+                let available = templates::load_templates(Some(&project_dir));
+                let mut names: Vec<_> = available.keys().collect();
+                names.sort();
+                println!("{:<12} {:<10} {:<40}", "NAME", "SOURCE", "DESCRIPTION");
+                println!("{:-<12} {:-<10} {:-<40}", "", "", "");
+                for name in names {
+                    let t = &available[name];
+                    println!(
+                        "{:<12} {:<10} {}",
+                        t.template.name, t.source, t.template.description
+                    );
+                }
+                exit(0);
+            }
+            TemplateAction::Show { name } => {
+                let available = templates::load_templates(Some(&project_dir));
+                if let Some(t) = available.get(name) {
+                    print!("{}", t.raw_yaml);
+                    exit(0);
+                } else {
+                    eprintln!("Error: template '{}' not found", name);
+                    exit(EXIT_INFRA_ERROR);
+                }
+            }
+            TemplateAction::Init { name } => {
+                let available = templates::load_templates(Some(&project_dir));
+                let yaml_content = if let Some(t) = available.get(name) {
+                    t.raw_yaml.clone()
+                } else {
+                    format!(
+                        "name: {}\ndescription: Custom {} build toolchain\nmatch:\n  anyFile:\n    - {}.json\noutputs:\n  - dist\nignoreExtra: []\n",
+                        name, name, name
+                    )
+                };
+                match templates::save_template(Some(&project_dir), name, &yaml_content, "project") {
+                    Ok(p) => {
+                        println!("Initialized template at {}", p.display());
+                        exit(0);
+                    }
+                    Err(e) => {
+                        eprintln!("Error saving template: {}", e);
+                        exit(EXIT_INFRA_ERROR);
+                    }
+                }
+            }
+            TemplateAction::Push { .. } => {}
+        }
+    }
+
     // Load configuration from .farhand.yaml or explicit --config path
     let (config_path, is_explicit_config) = match &cli.config {
         Some(p) => (p.clone(), true),
@@ -169,6 +254,114 @@ async fn main() {
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "unnamed_project".into())
     });
+
+    // Handle remote template subcommands (Push)
+    if let Some(Subcommands::Templates {
+        action: TemplateAction::Push { name, scope },
+    }) = cli.subcommand
+    {
+        let available = templates::load_templates(Some(&project_dir));
+        let t = match available.get(&name) {
+            Some(t) => t,
+            None => {
+                eprintln!("Error: template '{}' not found locally", name);
+                exit(EXIT_INFRA_ERROR);
+            }
+        };
+
+        let mut stream = match TcpStream::connect(&host).await {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Error: unable to reach agent at {}: {}", host, e);
+                exit(EXIT_INFRA_ERROR);
+            }
+        };
+
+        let hello = HelloPayload {
+            token,
+            project: project_name,
+            protocol_version: CURRENT_PROTOCOL_VERSION,
+        };
+        if let Err(e) = write_json_frame(&mut stream, MsgType::Hello, &hello).await {
+            eprintln!("Error: failed to send HELLO: {}", e);
+            exit(EXIT_INFRA_ERROR);
+        }
+        let (msg_type, payload) = match read_frame(&mut stream).await {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("Error: failed to read HELLO_ACK: {}", e);
+                exit(EXIT_INFRA_ERROR);
+            }
+        };
+        if msg_type != MsgType::HelloAck {
+            eprintln!("Protocol error: expected HELLO_ACK, got {:?}", msg_type);
+            exit(EXIT_INFRA_ERROR);
+        }
+        let ack: HelloAckPayload = match decode_json(&payload) {
+            Ok(a) => a,
+            Err(e) => {
+                eprintln!("Error: invalid HELLO_ACK: {}", e);
+                exit(EXIT_INFRA_ERROR);
+            }
+        };
+        if !ack.ok {
+            eprintln!(
+                "Authentication failed: {}",
+                ack.error.as_deref().unwrap_or("rejected")
+            );
+            exit(EXIT_INFRA_ERROR);
+        }
+
+        let put = PutTemplatePayload {
+            name: name.clone(),
+            yaml: t.raw_yaml.clone(),
+            scope: scope.clone(),
+        };
+        if let Err(e) = write_json_frame(&mut stream, MsgType::PutTemplate, &put).await {
+            eprintln!("Error: failed to send PUT_TEMPLATE: {}", e);
+            exit(EXIT_INFRA_ERROR);
+        }
+
+        let (msg_type, payload) = match read_frame(&mut stream).await {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("Error: failed to read response for PUT_TEMPLATE: {}", e);
+                exit(EXIT_INFRA_ERROR);
+            }
+        };
+        if msg_type != MsgType::HelloAck {
+            eprintln!(
+                "Protocol error: expected response frame, got {:?}",
+                msg_type
+            );
+            exit(EXIT_INFRA_ERROR);
+        }
+        let ack: HelloAckPayload = match decode_json(&payload) {
+            Ok(a) => a,
+            Err(e) => {
+                eprintln!("Error decoding response: {}", e);
+                exit(EXIT_INFRA_ERROR);
+            }
+        };
+        if ack.ok {
+            println!(
+                "Template '{}' uploaded successfully to remote agent (scope: {})",
+                name, scope
+            );
+            exit(0);
+        } else {
+            eprintln!(
+                "Failed to upload template: {}",
+                ack.error.as_deref().unwrap_or("unknown error")
+            );
+            exit(EXIT_INFRA_ERROR);
+        }
+    }
+
+    if cli.command.is_empty() {
+        eprintln!("Error: no remote command specified. Usage: fh [OPTIONS] <COMMAND>...");
+        exit(EXIT_INFRA_ERROR);
+    }
 
     let verbose = cli.verbose || cfg.verbose;
 

@@ -100,18 +100,56 @@ pub async fn handle_connection(
     fs::create_dir_all(&workspace_dir)?;
     info!("Using persistent workspace: {}", workspace_dir.display());
 
-    // 2. Receive MANIFEST frame
+    // 2. Receive next frame: PUT_TEMPLATE or MANIFEST
     let (msg_type, payload) = read_frame(&mut stream).await?;
-    if msg_type != MsgType::Manifest {
-        return Err(format!("Expected MANIFEST frame, got {:?}", msg_type).into());
-    }
-    let manifest: ManifestPayload = decode_json(&payload)?;
+    let manifest: ManifestPayload = if msg_type == MsgType::PutTemplate {
+        let put_req: protocol::PutTemplatePayload = decode_json(&payload)?;
+        info!(
+            "Received PUT_TEMPLATE for '{}' (scope: {})",
+            put_req.name, put_req.scope
+        );
+        match templates::save_template(
+            Some(&workspace_dir),
+            &put_req.name,
+            &put_req.yaml,
+            &put_req.scope,
+        ) {
+            Ok(saved_path) => {
+                info!("Saved template to {}", saved_path.display());
+                let ack = HelloAckPayload {
+                    ok: true,
+                    error: None,
+                };
+                write_json_frame(&mut stream, MsgType::HelloAck, &ack).await?;
+                return Ok(());
+            }
+            Err(e) => {
+                warn!("Failed to save template: {}", e);
+                let ack = HelloAckPayload {
+                    ok: false,
+                    error: Some(e.to_string()),
+                };
+                write_json_frame(&mut stream, MsgType::HelloAck, &ack).await?;
+                return Err(format!("Failed to save template: {}", e).into());
+            }
+        }
+    } else if msg_type == MsgType::Manifest {
+        decode_json(&payload)?
+    } else {
+        return Err(format!(
+            "Expected MANIFEST or PUT_TEMPLATE frame, got {:?}",
+            msg_type
+        )
+        .into());
+    };
+
     info!(
         "Received client manifest with {} files. Diffing against workspace cache...",
         manifest.files.len()
     );
 
-    let diff = workspace::diff_manifests(&workspace_dir, &manifest, &[])?;
+    let extra_ignores = templates::resolve_template_extra_ignores(&workspace_dir, None);
+    let diff = workspace::diff_manifests(&workspace_dir, &manifest, &extra_ignores)?;
     info!(
         "Diff computed: {} files needed, {} extraneous files flagged for deletion",
         diff.want.len(),
@@ -178,8 +216,11 @@ pub async fn handle_connection(
 
     // 8. If command succeeded, resolve and send artifacts
     if exit_code == 0 {
-        let artifact_paths =
-            workspace::resolve_artifact_paths(&workspace_dir, run.outputs.as_deref());
+        let artifact_paths = workspace::resolve_artifact_paths(
+            &workspace_dir,
+            run.outputs.as_deref(),
+            run.template.as_deref(),
+        );
         if !artifact_paths.is_empty() {
             info!("Packing {} artifact paths", artifact_paths.len());
             let tar_gz = fileset::pack_tar(&workspace_dir, &artifact_paths)?;

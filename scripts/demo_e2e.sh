@@ -170,5 +170,51 @@ fi
 
 echo ""
 echo "================================================================"
+echo "TEST 10: Template listing, display, and local init"
+echo "Command: fh templates list && fh templates show rust"
+echo "================================================================"
+./target/debug/fh templates list
+./target/debug/fh templates show rust | head -n 10
+echo "[PASS] Test 10 template CLI inspection successful!"
+
+echo ""
+echo "================================================================"
+echo "TEST 11: Dynamic template installation (fh templates push) and artifact extraction"
+echo "================================================================"
+DEMO_TMPL_DIR=$(mktemp -d)
+mkdir -p "${DEMO_TMPL_DIR}/.farhand/templates"
+cat <<EOF > "${DEMO_TMPL_DIR}/.farhand/templates/zig.yaml"
+name: zig
+description: Zig build toolchain
+match:
+  anyFile:
+    - build.zig
+outputs:
+  - zig-out
+EOF
+
+touch "${DEMO_TMPL_DIR}/build.zig"
+(
+  cd "${DEMO_TMPL_DIR}"
+  "${OLDPWD}/target/debug/fh" --host "127.0.0.1:${PORT}" --token "${TOKEN}" templates push zig
+  "${OLDPWD}/target/debug/fh" --host "127.0.0.1:${PORT}" --token "${TOKEN}" --out-dir ./out -- sh -c 'mkdir -p zig-out && echo "zig-built-artifact" > zig-out/main'
+)
+
+if [ -f "${DEMO_TMPL_DIR}/out/zig-out/main" ]; then
+  ZIG_CONTENT=$(cat "${DEMO_TMPL_DIR}/out/zig-out/main")
+  if [ "${ZIG_CONTENT}" = "zig-built-artifact" ]; then
+    echo "[PASS] Test 11 dynamically uploaded template and retrieved output using template auto-detection!"
+  else
+    echo "[FAIL] Unexpected content in zig-out: ${ZIG_CONTENT}"
+    exit 1
+  fi
+else
+  echo "[FAIL] Expected artifact ${DEMO_TMPL_DIR}/out/zig-out/main not found"
+  exit 1
+fi
+rm -rf "${DEMO_TMPL_DIR}"
+
+echo ""
+echo "================================================================"
 echo "ALL MANUAL END-TO-END TESTS PASSED SUCCESSFULLY!"
 echo "================================================================"

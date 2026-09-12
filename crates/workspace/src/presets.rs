@@ -58,10 +58,19 @@ pub fn detect_preset_outputs(workspace_root: &Path) -> Vec<String> {
 pub fn resolve_artifact_paths(
     workspace_root: &Path,
     requested_outputs: Option<&[String]>,
+    explicit_template: Option<&str>,
 ) -> Vec<String> {
     let candidates: Vec<String> = match requested_outputs {
         Some(outs) if !outs.is_empty() => outs.to_vec(),
-        _ => detect_preset_outputs(workspace_root),
+        _ => {
+            let tmpl_candidates =
+                templates::resolve_template_outputs(workspace_root, explicit_template);
+            if !tmpl_candidates.is_empty() {
+                tmpl_candidates
+            } else {
+                detect_preset_outputs(workspace_root)
+            }
+        }
     };
 
     let canonical_root = match workspace_root.canonicalize() {
@@ -183,7 +192,7 @@ mod tests {
             .unwrap();
 
         // Explicitly request "dist"
-        let paths = resolve_artifact_paths(root, Some(&["dist".to_string()]));
+        let paths = resolve_artifact_paths(root, Some(&["dist".to_string()]), None);
         assert!(paths.contains(&"dist".to_string()));
         assert!(paths.contains(&"dist/bundle.js".to_string()));
         assert!(paths.contains(&"dist/sub".to_string()));
@@ -202,7 +211,7 @@ mod tests {
         File::create(release_dir.join("my-bin")).unwrap();
 
         // Pass None for requested_outputs; should detect target/release
-        let paths = resolve_artifact_paths(root, None);
+        let paths = resolve_artifact_paths(root, None, None);
         assert!(paths.contains(&"target/release".to_string()));
         assert!(paths.contains(&"target/release/my-bin".to_string()));
         // target/debug was not created, so it should not be in paths
@@ -220,7 +229,7 @@ mod tests {
         File::create(out.join("test2.log")).unwrap();
         File::create(out.join("other.txt")).unwrap();
 
-        let paths = resolve_artifact_paths(root, Some(&["out/*.log".to_string()]));
+        let paths = resolve_artifact_paths(root, Some(&["out/*.log".to_string()]), None);
         assert_eq!(paths, vec!["out/test1.log", "out/test2.log"]);
     }
 
@@ -237,6 +246,7 @@ mod tests {
                 "../../etc/passwd".to_string(),
                 "out/../../escaped".to_string(),
             ]),
+            None,
         );
         assert!(paths.is_empty());
     }
@@ -246,7 +256,23 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
 
-        let paths = resolve_artifact_paths(root, Some(&["does_not_exist".to_string()]));
+        let paths = resolve_artifact_paths(root, Some(&["does_not_exist".to_string()]), None);
         assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_artifact_paths_template_integration() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+
+        // Create package.json and dist/app.js
+        File::create(root.join("package.json")).unwrap();
+        let dist = root.join("dist");
+        fs::create_dir_all(&dist).unwrap();
+        File::create(dist.join("app.js")).unwrap();
+
+        let paths = resolve_artifact_paths(root, None, None);
+        assert!(paths.contains(&"dist".to_string()));
+        assert!(paths.contains(&"dist/app.js".to_string()));
     }
 }

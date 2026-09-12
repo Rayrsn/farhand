@@ -1,0 +1,12 @@
+name: go
+description: Go projects using Go modules
+match:
+  anyFile:
+    - go.mod
+outputs:
+  - bin
+  - dist
+hints:
+  installCommand: go mod download
+  lockfiles:
+    - go.sum

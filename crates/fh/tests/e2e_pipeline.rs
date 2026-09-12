@@ -533,3 +533,211 @@ async fn test_cli_config_file_resolution_and_telemetry() {
         "config-built"
     );
 }
+
+#[test]
+fn test_cli_templates_list_and_show() {
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+        .args(["templates", "list"])
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("NAME"));
+    assert!(stdout.contains("SOURCE"));
+    assert!(stdout.contains("rust"));
+    assert!(stdout.contains("npm"));
+    assert!(stdout.contains("go"));
+    assert!(stdout.contains("builtin"));
+
+    let show_out = std::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+        .args(["templates", "show", "rust"])
+        .output()
+        .unwrap();
+
+    assert_eq!(show_out.status.code(), Some(0));
+    let show_stdout = String::from_utf8_lossy(&show_out.stdout);
+    assert!(show_stdout.contains("name: rust"));
+    assert!(show_stdout.contains("Cargo.lock"));
+}
+
+#[test]
+fn test_cli_templates_init() {
+    let project_dir = tempdir().unwrap();
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+        .current_dir(project_dir.path())
+        .args(["templates", "init", "rust"])
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(0));
+    let created_file = project_dir.path().join(".farhand/templates/rust.yaml");
+    assert!(created_file.exists());
+
+    let list_out = std::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+        .current_dir(project_dir.path())
+        .args(["templates", "list"])
+        .output()
+        .unwrap();
+
+    assert_eq!(list_out.status.code(), Some(0));
+    let list_stdout = String::from_utf8_lossy(&list_out.stdout);
+    // Project override for rust should now show "project" source
+    assert!(list_stdout.contains("rust"));
+    assert!(list_stdout.contains("project"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_e2e_template_monorepo_union_and_explicit_template() {
+    let token = "template-token-456".to_string();
+    let workdir = tempdir().unwrap();
+    let (server_addr, _server_handle) =
+        spawn_test_server(Some(token.clone()), workdir.path().to_path_buf()).await;
+
+    let project_dir = tempdir().unwrap();
+    let out_dir1 = tempdir().unwrap();
+    let out_dir2 = tempdir().unwrap();
+
+    // Setup monorepo: both Cargo.toml and package.json exist
+    fs::write(
+        project_dir.path().join("Cargo.toml"),
+        "[package]\nname = \"mono\"\n",
+    )
+    .unwrap();
+    fs::write(
+        project_dir.path().join("package.json"),
+        "{\"name\": \"mono\"}\n",
+    )
+    .unwrap();
+
+    // 1. Run build without --template -> monorepo union (both target/release and dist fetched)
+    let build_cmd = "mkdir -p target/release dist && echo 'rust-bin' > target/release/mono-bin && echo 'web-bundle' > dist/bundle.js";
+    let output1 = tokio::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+        .current_dir(project_dir.path())
+        .args([
+            "--host",
+            &server_addr,
+            "--token",
+            &token,
+            "--out-dir",
+            &out_dir1.path().display().to_string(),
+            "--",
+            "sh",
+            "-c",
+            build_cmd,
+        ])
+        .output()
+        .await
+        .unwrap();
+
+    assert_eq!(output1.status.code(), Some(0));
+    assert!(out_dir1.path().join("target/release/mono-bin").exists());
+    assert!(out_dir1.path().join("dist/bundle.js").exists());
+
+    // 2. Run build WITH explicit --template rust -> ONLY target/release fetched, dist is NOT fetched
+    let output2 = tokio::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+        .current_dir(project_dir.path())
+        .args([
+            "--host",
+            &server_addr,
+            "--token",
+            &token,
+            "--template",
+            "rust",
+            "--out-dir",
+            &out_dir2.path().display().to_string(),
+            "--",
+            "sh",
+            "-c",
+            build_cmd,
+        ])
+        .output()
+        .await
+        .unwrap();
+
+    assert_eq!(output2.status.code(), Some(0));
+    assert!(out_dir2.path().join("target/release/mono-bin").exists());
+    assert!(
+        !out_dir2.path().join("dist/bundle.js").exists(),
+        "Explicit --template rust should NOT retrieve dist artifacts"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_e2e_put_template_wire_and_usage() {
+    let token = "put-template-tok".to_string();
+    let workdir = tempdir().unwrap();
+    let (server_addr, _server_handle) =
+        spawn_test_server(Some(token.clone()), workdir.path().to_path_buf()).await;
+
+    let project_dir = tempdir().unwrap();
+    let out_dir = tempdir().unwrap();
+
+    // Create a custom zig template locally
+    let zig_yaml = r#"
+name: zig
+description: Zig toolchain
+match:
+  anyFile:
+    - build.zig
+outputs:
+  - zig-out
+"#;
+    let template_dir = project_dir.path().join(".farhand/templates");
+    fs::create_dir_all(&template_dir).unwrap();
+    fs::write(template_dir.join("zig.yaml"), zig_yaml).unwrap();
+
+    // Push template using fh templates push
+    let push_out = tokio::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+        .current_dir(project_dir.path())
+        .args([
+            "--host",
+            &server_addr,
+            "--token",
+            &token,
+            "templates",
+            "push",
+            "zig",
+        ])
+        .output()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        push_out.status.code(),
+        Some(0),
+        "templates push failed: {}",
+        String::from_utf8_lossy(&push_out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&push_out.stdout).contains("uploaded successfully"));
+
+    // Add build.zig to project and run remote build
+    fs::write(project_dir.path().join("build.zig"), "// zig build").unwrap();
+    let run_out = tokio::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+        .current_dir(project_dir.path())
+        .args([
+            "--host",
+            &server_addr,
+            "--token",
+            &token,
+            "--out-dir",
+            &out_dir.path().display().to_string(),
+            "--",
+            "sh",
+            "-c",
+            "mkdir -p zig-out && echo 'zig-binary' > zig-out/app",
+        ])
+        .output()
+        .await
+        .unwrap();
+
+    assert_eq!(run_out.status.code(), Some(0));
+    assert!(out_dir.path().join("zig-out/app").exists());
+    assert_eq!(
+        fs::read_to_string(out_dir.path().join("zig-out/app"))
+            .unwrap()
+            .trim(),
+        "zig-binary"
+    );
+}

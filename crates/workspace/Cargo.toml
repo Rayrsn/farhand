@@ -13,6 +13,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 walkdir = { workspace = true }
 glob = { workspace = true }
+templates = { path = "../templates" }
 
 [dev-dependencies]
 tempfile = { workspace = true }

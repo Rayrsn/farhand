@@ -1,0 +1,14 @@
+name: rust
+description: Rust projects built with Cargo
+match:
+  anyFile:
+    - Cargo.toml
+outputs:
+  - target/release
+  - target/debug
+ignoreExtra:
+  - target
+hints:
+  installCommand: cargo fetch
+  lockfiles:
+    - Cargo.lock
