@@ -17,6 +17,13 @@ struct Cli {
 
     #[arg(long, help = "Custom shell invocation (e.g. '/bin/sh -c')")]
     shell: Option<String>,
+
+    #[arg(
+        long = "max-concurrent-runs",
+        alias = "max-runs",
+        help = "Maximum parallel runs across projects (default: CPU count)"
+    )]
+    max_concurrent_runs: Option<usize>,
 }
 
 #[tokio::main]
@@ -37,6 +44,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Farhand daemon listening on {}", cli.listen);
     info!("Persistent workspaces root: {}", workdir.display());
 
-    fhd::run_server(listener, cli.token, workdir, cli.shell).await?;
+    fhd::run_server(
+        listener,
+        cli.token,
+        workdir,
+        cli.shell,
+        cli.max_concurrent_runs,
+    )
+    .await?;
     Ok(())
 }

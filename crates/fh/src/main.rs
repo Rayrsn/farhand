@@ -486,28 +486,47 @@ async fn main() {
         exit(EXIT_INFRA_ERROR);
     }
 
-    // 5. Receive NEED frame
-    let (msg_type, payload) = match read_frame(&mut stream).await {
-        Ok(f) => f,
-        Err(e) => {
-            eprintln!("Error: failed to read NEED frame: {}", e);
-            exit(EXIT_INFRA_ERROR);
-        }
-    };
+    // 5. Receive NEED frame (handling optional QUEUED frames first)
+    let need: NeedPayload = loop {
+        let (msg_type, payload) = match read_frame(&mut stream).await {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("Error: failed to read NEED frame: {}", e);
+                exit(EXIT_INFRA_ERROR);
+            }
+        };
 
-    if msg_type != MsgType::Need {
-        eprintln!(
-            "Protocol error: expected NEED frame, received {:?}",
-            msg_type
-        );
-        exit(EXIT_INFRA_ERROR);
-    }
-
-    let need: NeedPayload = match decode_json(&payload) {
-        Ok(n) => n,
-        Err(e) => {
-            eprintln!("Error: invalid NEED payload: {}", e);
-            exit(EXIT_INFRA_ERROR);
+        match msg_type {
+            MsgType::Queued => {
+                let queued: protocol::QueuedPayload = match decode_json(&payload) {
+                    Ok(q) => q,
+                    Err(e) => {
+                        eprintln!("Error: invalid QUEUED payload: {}", e);
+                        exit(EXIT_INFRA_ERROR);
+                    }
+                };
+                println!(
+                    "[farhand] Build queued on agent (reason: {}, position: {}). Waiting for remote workspace...",
+                    queued.reason, queued.position
+                );
+            }
+            MsgType::Need => {
+                let n: NeedPayload = match decode_json(&payload) {
+                    Ok(n) => n,
+                    Err(e) => {
+                        eprintln!("Error: invalid NEED payload: {}", e);
+                        exit(EXIT_INFRA_ERROR);
+                    }
+                };
+                break n;
+            }
+            other => {
+                eprintln!(
+                    "Protocol error: expected NEED or QUEUED frame, received {:?}",
+                    other
+                );
+                exit(EXIT_INFRA_ERROR);
+            }
         }
     };
 

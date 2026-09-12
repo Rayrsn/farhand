@@ -8,6 +8,9 @@ use std::path::{Path, PathBuf};
 pub mod presets;
 pub use presets::{detect_preset_outputs, resolve_artifact_paths, Preset, DEFAULT_PRESETS};
 
+pub mod lock;
+pub use lock::WorkspaceLockManager;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffResult {
     /// List of forward-slash relative paths the agent needs the client to upload

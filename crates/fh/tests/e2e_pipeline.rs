@@ -12,11 +12,19 @@ async fn spawn_test_server(
     token: Option<String>,
     workdir: PathBuf,
 ) -> (String, tokio::task::JoinHandle<()>) {
+    spawn_test_server_with_concurrency(token, workdir, None).await
+}
+
+async fn spawn_test_server_with_concurrency(
+    token: Option<String>,
+    workdir: PathBuf,
+    max_concurrent_runs: Option<usize>,
+) -> (String, tokio::task::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap().to_string();
 
     let handle = tokio::spawn(async move {
-        let _ = fhd::run_server(listener, token, workdir, None).await;
+        let _ = fhd::run_server(listener, token, workdir, None, max_concurrent_runs).await;
     });
 
     (addr, handle)
@@ -65,10 +73,15 @@ async fn client_roundtrip(
         .await
         .unwrap();
 
-    // 4. NEED
-    let (msg_type, payload) = read_frame(&mut stream).await.unwrap();
-    assert_eq!(msg_type, MsgType::Need);
-    let need: NeedPayload = decode_json(&payload).unwrap();
+    // 4. NEED (may receive QUEUED first)
+    let need: NeedPayload = loop {
+        let (msg_type, payload) = read_frame(&mut stream).await.unwrap();
+        if msg_type == MsgType::Queued {
+            continue;
+        }
+        assert_eq!(msg_type, MsgType::Need);
+        break decode_json(&payload).unwrap();
+    };
 
     // 5. FILES
     if need.want.is_empty() {
@@ -297,9 +310,14 @@ async fn client_roundtrip_with_artifacts(
         .await
         .unwrap();
 
-    let (msg_type, payload) = read_frame(&mut stream).await.unwrap();
-    assert_eq!(msg_type, MsgType::Need);
-    let need: NeedPayload = decode_json(&payload).unwrap();
+    let need: NeedPayload = loop {
+        let (msg_type, payload) = read_frame(&mut stream).await.unwrap();
+        if msg_type == MsgType::Queued {
+            continue;
+        }
+        assert_eq!(msg_type, MsgType::Need);
+        break decode_json(&payload).unwrap();
+    };
 
     if need.want.is_empty() {
         write_frame(&mut stream, MsgType::Files, &[]).await.unwrap();
@@ -740,4 +758,260 @@ outputs:
             .trim(),
         "zig-binary"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_e2e_concurrency_project_workspace_locking_and_queued() {
+    let token = "concurrency-proj-token".to_string();
+    let workdir = tempdir().unwrap();
+    let (server_addr, _server_handle) =
+        spawn_test_server(Some(token.clone()), workdir.path().to_path_buf()).await;
+
+    let project_dir = tempdir().unwrap();
+    fs::write(project_dir.path().join("main.txt"), "hello").unwrap();
+    let project_name = "serialized-project";
+
+    // Client 1 runs a slow command holding the project workspace
+    let server_addr_clone = server_addr.clone();
+    let token_clone = token.clone();
+    let pdir1 = project_dir.path().to_path_buf();
+    let task1 = tokio::spawn(async move {
+        client_roundtrip(
+            &server_addr_clone,
+            &token_clone,
+            project_name,
+            &pdir1,
+            &[
+                "sh".into(),
+                "-c".into(),
+                "sleep 0.6 && echo task1-finished".into(),
+            ],
+        )
+        .await
+    });
+
+    // Give task1 time to connect, handshake, and hold the workspace lock
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // Client 2 connects for the same project. It MUST receive QUEUED (reason: project_busy)
+    let mut stream2 = TcpStream::connect(&server_addr).await.unwrap();
+    let hello2 = HelloPayload {
+        token: token.clone(),
+        project: project_name.to_string(),
+        protocol_version: CURRENT_PROTOCOL_VERSION,
+    };
+    write_json_frame(&mut stream2, MsgType::Hello, &hello2)
+        .await
+        .unwrap();
+
+    let (msg_type, _payload) = read_frame(&mut stream2).await.unwrap();
+    assert_eq!(msg_type, MsgType::HelloAck);
+
+    let manifest2 = ManifestPayload { files: Vec::new() };
+    write_json_frame(&mut stream2, MsgType::Manifest, &manifest2)
+        .await
+        .unwrap();
+
+    // Verify task2 gets MsgType::Queued with reason project_busy
+    let (msg_type, payload) = read_frame(&mut stream2).await.unwrap();
+    assert_eq!(msg_type, MsgType::Queued);
+    let queued: protocol::QueuedPayload = decode_json(&payload).unwrap();
+    assert_eq!(queued.reason, "project_busy");
+
+    // Wait for task 1 to finish
+    let (_need1, out1, code1) = task1.await.unwrap();
+    assert_eq!(code1, 0);
+    assert!(out1.contains("task1-finished"));
+
+    // Now client 2 should receive NEED as the lock freed up
+    let (msg_type, payload) = read_frame(&mut stream2).await.unwrap();
+    assert_eq!(msg_type, MsgType::Need);
+    let _need2: NeedPayload = decode_json(&payload).unwrap();
+
+    // Complete client 2 run
+    write_frame(&mut stream2, MsgType::Files, &[])
+        .await
+        .unwrap();
+    let run2 = RunPayload {
+        argv: vec!["echo".into(), "task2-finished".into()],
+        outputs: None,
+        cwd: None,
+        template: None,
+        no_cache: false,
+    };
+    write_json_frame(&mut stream2, MsgType::Run, &run2)
+        .await
+        .unwrap();
+
+    let mut out2 = String::new();
+    loop {
+        let (msg_type, payload) = read_frame(&mut stream2).await.unwrap();
+        match msg_type {
+            MsgType::Log => {
+                let log: LogPayload = decode_json(&payload).unwrap();
+                out2.push_str(&log.data);
+            }
+            MsgType::Result => {
+                let res: ResultPayload = decode_json(&payload).unwrap();
+                assert_eq!(res.exit_code, 0);
+                break;
+            }
+            other => panic!("Unexpected frame: {:?}", other),
+        }
+    }
+    assert!(out2.contains("task2-finished"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_e2e_concurrency_global_semaphore_limit() {
+    let token = "concurrency-sem-token".to_string();
+    let workdir = tempdir().unwrap();
+    // Agent limited to max 1 concurrent run across all projects
+    let (server_addr, _server_handle) = spawn_test_server_with_concurrency(
+        Some(token.clone()),
+        workdir.path().to_path_buf(),
+        Some(1),
+    )
+    .await;
+
+    let project_dir = tempdir().unwrap();
+
+    // Client 1 on project-A
+    let server_addr_clone = server_addr.clone();
+    let token_clone = token.clone();
+    let pdir1 = project_dir.path().to_path_buf();
+    let task1 = tokio::spawn(async move {
+        client_roundtrip(
+            &server_addr_clone,
+            &token_clone,
+            "project-alpha",
+            &pdir1,
+            &[
+                "sh".into(),
+                "-c".into(),
+                "sleep 0.6 && echo alpha-done".into(),
+            ],
+        )
+        .await
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    // Client 2 connects for DIFFERENT project-B. Should get QUEUED with concurrency_limit
+    let mut stream2 = TcpStream::connect(&server_addr).await.unwrap();
+    let hello2 = HelloPayload {
+        token: token.clone(),
+        project: "project-beta".to_string(),
+        protocol_version: CURRENT_PROTOCOL_VERSION,
+    };
+    write_json_frame(&mut stream2, MsgType::Hello, &hello2)
+        .await
+        .unwrap();
+
+    let (msg_type, _) = read_frame(&mut stream2).await.unwrap();
+    assert_eq!(msg_type, MsgType::HelloAck);
+
+    let manifest2 = ManifestPayload { files: Vec::new() };
+    write_json_frame(&mut stream2, MsgType::Manifest, &manifest2)
+        .await
+        .unwrap();
+
+    // Verify task2 gets MsgType::Queued with reason concurrency_limit
+    let (msg_type, payload) = read_frame(&mut stream2).await.unwrap();
+    assert_eq!(msg_type, MsgType::Queued);
+    let queued: protocol::QueuedPayload = decode_json(&payload).unwrap();
+    assert_eq!(queued.reason, "concurrency_limit");
+
+    let (_, out1, code1) = task1.await.unwrap();
+    assert_eq!(code1, 0);
+    assert!(out1.contains("alpha-done"));
+
+    // Complete client 2
+    let (msg_type, _) = read_frame(&mut stream2).await.unwrap();
+    assert_eq!(msg_type, MsgType::Need);
+    write_frame(&mut stream2, MsgType::Files, &[])
+        .await
+        .unwrap();
+    let run2 = RunPayload {
+        argv: vec!["echo".into(), "beta-done".into()],
+        outputs: None,
+        cwd: None,
+        template: None,
+        no_cache: false,
+    };
+    write_json_frame(&mut stream2, MsgType::Run, &run2)
+        .await
+        .unwrap();
+
+    let mut out2 = String::new();
+    loop {
+        let (msg_type, payload) = read_frame(&mut stream2).await.unwrap();
+        match msg_type {
+            MsgType::Log => {
+                let log: LogPayload = decode_json(&payload).unwrap();
+                out2.push_str(&log.data);
+            }
+            MsgType::Result => {
+                let res: ResultPayload = decode_json(&payload).unwrap();
+                assert_eq!(res.exit_code, 0);
+                break;
+            }
+            other => panic!("Unexpected frame: {:?}", other),
+        }
+    }
+    assert!(out2.contains("beta-done"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_e2e_client_disconnect_terminates_remote_process_group() {
+    let token = "disconnect-token".to_string();
+    let workdir = tempdir().unwrap();
+    let (server_addr, _server_handle) =
+        spawn_test_server(Some(token.clone()), workdir.path().to_path_buf()).await;
+
+    let mut stream = TcpStream::connect(&server_addr).await.unwrap();
+    let hello = HelloPayload {
+        token,
+        project: "disconnect-test".to_string(),
+        protocol_version: CURRENT_PROTOCOL_VERSION,
+    };
+    write_json_frame(&mut stream, MsgType::Hello, &hello)
+        .await
+        .unwrap();
+
+    let (msg_type, _) = read_frame(&mut stream).await.unwrap();
+    assert_eq!(msg_type, MsgType::HelloAck);
+
+    let manifest = ManifestPayload { files: Vec::new() };
+    write_json_frame(&mut stream, MsgType::Manifest, &manifest)
+        .await
+        .unwrap();
+
+    let (msg_type, _) = read_frame(&mut stream).await.unwrap();
+    assert_eq!(msg_type, MsgType::Need);
+    write_frame(&mut stream, MsgType::Files, &[]).await.unwrap();
+
+    // Start a command that sleeps for 60 seconds
+    let run = RunPayload {
+        argv: vec!["sh".into(), "-c".into(), "echo started && sleep 60".into()],
+        outputs: None,
+        cwd: None,
+        template: None,
+        no_cache: false,
+    };
+    write_json_frame(&mut stream, MsgType::Run, &run)
+        .await
+        .unwrap();
+
+    // Read until we see "started"
+    let (msg_type, payload) = read_frame(&mut stream).await.unwrap();
+    assert_eq!(msg_type, MsgType::Log);
+    let log: LogPayload = decode_json(&payload).unwrap();
+    assert!(log.data.contains("started"));
+
+    // Drop the stream abruptly (simulating Ctrl-C on client)
+    drop(stream);
+
+    // The agent detects EOF, kills the child process group, and exits the task
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 }

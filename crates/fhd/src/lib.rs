@@ -18,10 +18,19 @@ pub async fn run_server(
     expected_token: Option<String>,
     workdir: PathBuf,
     custom_shell: Option<String>,
+    max_concurrent_runs: Option<usize>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let token = Arc::new(expected_token);
     let workdir = Arc::new(workdir);
     let shell = Arc::new(custom_shell);
+
+    let max_runs = max_concurrent_runs.unwrap_or_else(|| {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)
+    });
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(max_runs));
+    let lock_manager = workspace::WorkspaceLockManager::new();
 
     loop {
         match listener.accept().await {
@@ -30,9 +39,18 @@ pub async fn run_server(
                 let token_clone = Arc::clone(&token);
                 let workdir_clone = Arc::clone(&workdir);
                 let shell_clone = Arc::clone(&shell);
+                let semaphore_clone = Arc::clone(&semaphore);
+                let lock_manager_clone = lock_manager.clone();
                 tokio::spawn(async move {
-                    if let Err(e) =
-                        handle_connection(stream, token_clone, workdir_clone, shell_clone).await
+                    if let Err(e) = handle_connection(
+                        stream,
+                        token_clone,
+                        workdir_clone,
+                        shell_clone,
+                        semaphore_clone,
+                        lock_manager_clone,
+                    )
+                    .await
                     {
                         error!("Connection from {} error: {}", addr, e);
                     }
@@ -51,6 +69,8 @@ pub async fn handle_connection(
     expected_token: Arc<Option<String>>,
     workdir_root: Arc<PathBuf>,
     custom_shell: Arc<Option<String>>,
+    semaphore: Arc<tokio::sync::Semaphore>,
+    lock_manager: workspace::WorkspaceLockManager,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // 1. Handshake: Expect MsgHello
     let (msg_type, payload) = read_frame(&mut stream).await?;
@@ -143,6 +163,42 @@ pub async fn handle_connection(
         .into());
     };
 
+    // Acquire per-project lock to ensure serialized execution on the same project workspace
+    let project_mutex = lock_manager.get_lock(&hello.project).await;
+    let _project_guard = match project_mutex.clone().try_lock_owned() {
+        Ok(guard) => guard,
+        Err(_) => {
+            info!(
+                "Project '{}' is busy. Sending QUEUED frame...",
+                hello.project
+            );
+            let queued = protocol::QueuedPayload {
+                position: 1,
+                reason: "project_busy".to_string(),
+            };
+            write_json_frame(&mut stream, MsgType::Queued, &queued).await?;
+            project_mutex.lock_owned().await
+        }
+    };
+
+    // Acquire global concurrency permit
+    let _permit = match semaphore.clone().try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => {
+            info!("Agent concurrency limit reached. Sending QUEUED frame...");
+            let queued = protocol::QueuedPayload {
+                position: 1,
+                reason: "concurrency_limit".to_string(),
+            };
+            write_json_frame(&mut stream, MsgType::Queued, &queued).await?;
+            semaphore
+                .clone()
+                .acquire_owned()
+                .await
+                .map_err(|e| e.to_string())?
+        }
+    };
+
     info!(
         "Received client manifest with {} files. Diffing against workspace cache...",
         manifest.files.len()
@@ -191,11 +247,12 @@ pub async fn handle_connection(
     info!("Executing command: {:?}", run.argv);
 
     // 6. Execute command and stream output
-    let (read_half, write_half) = stream.into_split();
+    let (mut read_half, write_half) = stream.into_split();
     let shared_writer = Arc::new(Mutex::new(write_half));
 
     let exit_code = execute_and_stream(
         shared_writer.clone(),
+        &mut read_half,
         &workspace_dir,
         &run.argv,
         custom_shell.as_deref(),
@@ -275,11 +332,42 @@ pub fn build_shell_command(cwd: &Path, argv: &[String], custom_shell: Option<&st
     cmd.current_dir(cwd);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
+
+    #[cfg(unix)]
+    cmd.process_group(0);
+
     cmd
 }
 
-pub async fn execute_and_stream<W: AsyncWrite + Unpin + Send + 'static>(
+pub async fn kill_process_group(child: &mut tokio::process::Child) {
+    if let Some(pid) = child.id() {
+        #[cfg(unix)]
+        {
+            unsafe {
+                libc::kill(-(pid as i32), libc::SIGTERM);
+            }
+            tokio::select! {
+                _ = child.wait() => {}
+                _ = tokio::time::sleep(std::time::Duration::from_secs(3)) => {
+                    unsafe {
+                        libc::kill(-(pid as i32), libc::SIGKILL);
+                    }
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = child.kill().await;
+        }
+    }
+}
+
+pub async fn execute_and_stream<
+    W: AsyncWrite + Unpin + Send + 'static,
+    R: tokio::io::AsyncRead + Unpin + Send,
+>(
     writer: Arc<Mutex<W>>,
+    reader: &mut R,
     cwd: &Path,
     argv: &[String],
     custom_shell: Option<&str>,
@@ -335,8 +423,26 @@ pub async fn execute_and_stream<W: AsyncWrite + Unpin + Send + 'static>(
         }
     });
 
-    let status = child.wait().await?;
-    let _ = tokio::join!(stdout_handle, stderr_handle);
+    let disconnect_monitor = async {
+        use tokio::io::AsyncReadExt;
+        let mut buf = [0u8; 1];
+        match reader.read(&mut buf).await {
+            Ok(0) => true,  // EOF: client disconnected
+            Err(_) => true, // Connection reset/error
+            Ok(_) => false,
+        }
+    };
 
-    Ok(status.code().unwrap_or(1))
+    tokio::select! {
+        status_res = child.wait() => {
+            let status = status_res?;
+            let _ = tokio::join!(stdout_handle, stderr_handle);
+            Ok(status.code().unwrap_or(1))
+        }
+        _ = disconnect_monitor => {
+            warn!("Client disconnected while command was executing. Terminating process group.");
+            kill_process_group(&mut child).await;
+            Err("Client disconnected".into())
+        }
+    }
 }

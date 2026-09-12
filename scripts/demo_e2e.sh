@@ -216,5 +216,39 @@ rm -rf "${DEMO_TMPL_DIR}"
 
 echo ""
 echo "================================================================"
+echo "TEST 12: Concurrency & Job Queuing (serialized project runs with QUEUED frame)"
+echo "================================================================"
+CONCURRENCY_DIR=$(mktemp -d)
+(
+  cd "${CONCURRENCY_DIR}"
+  # Run first job in background holding workspace for 1 second
+  "${OLDPWD}/target/debug/fh" --host "127.0.0.1:${PORT}" --token "${TOKEN}" --name "demo-queued-project" \
+    -- sh -c 'sleep 1 && echo "job-1-finished"' > out1.log 2>&1 &
+  JOB1_PID=$!
+
+  # Sleep briefly to ensure job 1 connects and acquires project lock
+  sleep 0.2
+
+  # Run second job targeting the same project
+  "${OLDPWD}/target/debug/fh" --host "127.0.0.1:${PORT}" --token "${TOKEN}" --name "demo-queued-project" \
+    -- echo "job-2-finished" > out2.log 2>&1
+
+  wait ${JOB1_PID}
+)
+
+OUT2_CONTENT=$(cat "${CONCURRENCY_DIR}/out2.log")
+echo "Job 2 Output:"
+echo "${OUT2_CONTENT}"
+
+if echo "${OUT2_CONTENT}" | grep -q "Build queued on agent"; then
+  echo "[PASS] Test 12 verified second job received QUEUED status and safely waited for project lock!"
+else
+  echo "[FAIL] Expected 'Build queued on agent' in job 2 output"
+  exit 1
+fi
+rm -rf "${CONCURRENCY_DIR}"
+
+echo ""
+echo "================================================================"
 echo "ALL MANUAL END-TO-END TESTS PASSED SUCCESSFULLY!"
 echo "================================================================"
