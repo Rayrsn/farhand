@@ -231,15 +231,30 @@ async fn main() {
         }
     };
 
-    // Precedence: CLI Flags > Environment Variables > Config File > Defaults
-    let host = cli.host.or(cfg.host).unwrap_or_else(|| {
+    let verbose = cli.verbose || cfg.verbose;
+
+    // Precedence: CLI Flags > Environment Variables > Multi-Agent Pool > Config Host > Defaults
+    let (host, host_token) = if let Some(h) = cli.host {
+        (h, None)
+    } else if !cfg.agents.is_empty() {
+        let tag = cli.agent_tag.as_deref().or(cfg.agent_tag.as_deref());
+        match fh::select_best_agent(&cfg.agents, tag, verbose).await {
+            Ok(selected) => (selected.host, selected.token),
+            Err(e) => {
+                eprintln!("Error: failed to select agent from pool: {}", e);
+                exit(EXIT_INFRA_ERROR);
+            }
+        }
+    } else if let Some(h) = cfg.host {
+        (h, None)
+    } else {
         eprintln!("Error: agent host address is required (use --host, FARHAND_HOST env, or configure in .farhand.yaml)");
         exit(EXIT_INFRA_ERROR);
-    });
+    };
 
     let insecure_skip_token = cli.insecure_skip_token || cfg.insecure_skip_token;
 
-    let token = cli.token.or(cfg.token).unwrap_or_else(|| {
+    let token = cli.token.or(host_token).or(cfg.token).unwrap_or_else(|| {
         if insecure_skip_token {
             String::new()
         } else {
@@ -362,8 +377,6 @@ async fn main() {
         eprintln!("Error: no remote command specified. Usage: fh [OPTIONS] <COMMAND>...");
         exit(EXIT_INFRA_ERROR);
     }
-
-    let verbose = cli.verbose || cfg.verbose;
 
     let outputs = if !cli.output.is_empty() {
         Some(cli.output)

@@ -24,6 +24,13 @@ struct Cli {
         help = "Maximum parallel runs across projects (default: CPU count)"
     )]
     max_concurrent_runs: Option<usize>,
+
+    #[arg(
+        long = "tag",
+        action = clap::ArgAction::Append,
+        help = "Agent capability tags (repeatable, e.g. '--tag lan --tag gpu')"
+    )]
+    tags: Vec<String>,
 }
 
 #[tokio::main]
@@ -50,6 +57,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         workdir,
         cli.shell,
         cli.max_concurrent_runs,
+        cli.tags,
     )
     .await?;
     Ok(())

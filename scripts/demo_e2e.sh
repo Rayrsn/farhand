@@ -9,11 +9,12 @@ TOKEN="demo-secret-123"
 
 echo ""
 echo "=== Starting 'fhd' Daemon on 127.0.0.1:${PORT} in the background ==="
-./target/debug/fhd --listen "127.0.0.1:${PORT}" --token "${TOKEN}" &
+./target/debug/fhd --listen "127.0.0.1:${PORT}" --token "${TOKEN}" --tag lan --tag cpu &
 DAEMON_PID=$!
+DAEMON2_PID=""
 
-# Ensure daemon is stopped when script exits
-trap "echo ''; echo '=== Stopping fhd Daemon (PID: ${DAEMON_PID}) ==='; kill -9 ${DAEMON_PID} 2>/dev/null || true" EXIT
+# Ensure daemons are stopped when script exits
+trap "echo ''; echo '=== Stopping fhd Daemons ==='; kill -9 ${DAEMON_PID} ${DAEMON2_PID} 2>/dev/null || true" EXIT
 
 # Wait a brief moment for socket to bind
 sleep 0.5
@@ -250,5 +251,42 @@ rm -rf "${CONCURRENCY_DIR}"
 
 echo ""
 echo "================================================================"
+echo "TEST 13: Multi-agent pool probing, least-busy dispatching, and tag filtering"
+echo "================================================================"
+PORT2=9877
+TOKEN2="demo-gpu-secret"
+./target/debug/fhd --listen "127.0.0.1:${PORT2}" --token "${TOKEN2}" --tag gpu --tag fast &
+DAEMON2_PID=$!
+sleep 0.5
+
+POOL_DIR=$(mktemp -d)
+cat <<EOF > "${POOL_DIR}/.farhand.yaml"
+name: pool-demo-project
+agents:
+  - host: 127.0.0.1:${PORT}
+    token: ${TOKEN}
+    tags: [lan, cpu]
+  - host: 127.0.0.1:${PORT2}
+    token: ${TOKEN2}
+    tags: [gpu, fast]
+EOF
+
+(
+  cd "${POOL_DIR}"
+  echo "--- Subtest 13A: Route specifically to GPU agent via --agent-tag gpu ---"
+  "${OLDPWD}/target/debug/fh" --agent-tag gpu --verbose -- echo "running on gpu node"
+
+  echo "--- Subtest 13B: Route specifically to CPU agent via --agent-tag cpu ---"
+  "${OLDPWD}/target/debug/fh" --agent-tag cpu --verbose -- echo "running on cpu node"
+
+  echo "--- Subtest 13C: Dynamic load-aware selection across agent pool ---"
+  "${OLDPWD}/target/debug/fh" --verbose -- echo "running on least busy node"
+)
+echo "[PASS] Test 13 multi-agent pool routing and tag filtering succeeded!"
+rm -rf "${POOL_DIR}"
+
+echo ""
+echo "================================================================"
 echo "ALL MANUAL END-TO-END TESTS PASSED SUCCESSFULLY!"
 echo "================================================================"
+

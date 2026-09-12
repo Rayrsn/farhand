@@ -13,17 +13,45 @@ use tokio::process::Command;
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
+pub fn get_hostname() -> String {
+    #[cfg(unix)]
+    {
+        let mut buf = [0u8; 256];
+        let res = unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) };
+        if res == 0 {
+            let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+            if let Ok(s) = std::str::from_utf8(&buf[..len]) {
+                if !s.is_empty() {
+                    return s.to_string();
+                }
+            }
+        }
+    }
+    std::env::var("HOSTNAME")
+        .or_else(|_| std::env::var("COMPUTERNAME"))
+        .unwrap_or_else(|_| "fhd-agent".to_string())
+}
+
+#[derive(Clone)]
+pub struct ServerContext {
+    pub expected_token: Option<String>,
+    pub workdir_root: PathBuf,
+    pub custom_shell: Option<String>,
+    pub semaphore: Arc<tokio::sync::Semaphore>,
+    pub lock_manager: workspace::WorkspaceLockManager,
+    pub tags: Vec<String>,
+    pub queue_depth: Arc<std::sync::atomic::AtomicUsize>,
+    pub max_runs: usize,
+}
+
 pub async fn run_server(
     listener: TcpListener,
     expected_token: Option<String>,
     workdir: PathBuf,
     custom_shell: Option<String>,
     max_concurrent_runs: Option<usize>,
+    tags: Vec<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let token = Arc::new(expected_token);
-    let workdir = Arc::new(workdir);
-    let shell = Arc::new(custom_shell);
-
     let max_runs = max_concurrent_runs.unwrap_or_else(|| {
         std::thread::available_parallelism()
             .map(|n| n.get())
@@ -31,27 +59,26 @@ pub async fn run_server(
     });
     let semaphore = Arc::new(tokio::sync::Semaphore::new(max_runs));
     let lock_manager = workspace::WorkspaceLockManager::new();
+    let queue_depth = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+    let ctx = Arc::new(ServerContext {
+        expected_token,
+        workdir_root: workdir,
+        custom_shell,
+        semaphore,
+        lock_manager,
+        tags,
+        queue_depth,
+        max_runs,
+    });
 
     loop {
         match listener.accept().await {
             Ok((stream, addr)) => {
                 info!("Accepted connection from {}", addr);
-                let token_clone = Arc::clone(&token);
-                let workdir_clone = Arc::clone(&workdir);
-                let shell_clone = Arc::clone(&shell);
-                let semaphore_clone = Arc::clone(&semaphore);
-                let lock_manager_clone = lock_manager.clone();
+                let ctx_clone = Arc::clone(&ctx);
                 tokio::spawn(async move {
-                    if let Err(e) = handle_connection(
-                        stream,
-                        token_clone,
-                        workdir_clone,
-                        shell_clone,
-                        semaphore_clone,
-                        lock_manager_clone,
-                    )
-                    .await
-                    {
+                    if let Err(e) = handle_connection(stream, ctx_clone).await {
                         error!("Connection from {} error: {}", addr, e);
                     }
                     info!("Connection from {} closed", addr);
@@ -66,21 +93,45 @@ pub async fn run_server(
 
 pub async fn handle_connection(
     mut stream: TcpStream,
-    expected_token: Arc<Option<String>>,
-    workdir_root: Arc<PathBuf>,
-    custom_shell: Arc<Option<String>>,
-    semaphore: Arc<tokio::sync::Semaphore>,
-    lock_manager: workspace::WorkspaceLockManager,
+    ctx: Arc<ServerContext>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // 1. Handshake: Expect MsgHello
+    // 1. First frame: can be STATUS probe or HELLO handshake
     let (msg_type, payload) = read_frame(&mut stream).await?;
+
+    if msg_type == MsgType::Status {
+        let status_req: protocol::StatusRequestPayload = decode_json(&payload)?;
+        if let Some(expected) = ctx.expected_token.as_deref() {
+            if !expected.is_empty() && status_req.token != expected {
+                let ack = HelloAckPayload {
+                    ok: false,
+                    error: Some("Unauthorized STATUS request".into()),
+                };
+                write_json_frame(&mut stream, MsgType::HelloAck, &ack).await?;
+                return Err("Unauthorized STATUS request".into());
+            }
+        }
+        let active_runs = ctx
+            .max_runs
+            .saturating_sub(ctx.semaphore.available_permits());
+        let depth = ctx.queue_depth.load(std::sync::atomic::Ordering::Relaxed);
+        let resp = protocol::StatusResponsePayload {
+            active_runs,
+            max_runs: ctx.max_runs,
+            queue_depth: depth,
+            hostname: get_hostname(),
+            tags: ctx.tags.clone(),
+        };
+        write_json_frame(&mut stream, MsgType::StatusResp, &resp).await?;
+        return Ok(());
+    }
+
     if msg_type != MsgType::Hello {
         let ack = HelloAckPayload {
             ok: false,
-            error: Some("Expected HELLO frame".into()),
+            error: Some("Expected HELLO or STATUS frame".into()),
         };
         write_json_frame(&mut stream, MsgType::HelloAck, &ack).await?;
-        return Err("Protocol error: expected HELLO".into());
+        return Err("Protocol error: expected HELLO or STATUS".into());
     }
 
     let hello: HelloPayload = decode_json(&payload)?;
@@ -96,8 +147,8 @@ pub async fn handle_connection(
         return Err("Protocol version mismatch".into());
     }
 
-    if let Some(token) = expected_token.as_ref() {
-        if &hello.token != token {
+    if let Some(token) = ctx.expected_token.as_deref() {
+        if hello.token != token {
             let ack = HelloAckPayload {
                 ok: false,
                 error: Some("Unauthorized: invalid auth token".into()),
@@ -116,7 +167,7 @@ pub async fn handle_connection(
     info!("Handshake successful for project '{}'", hello.project);
 
     // Resolve persistent workspace directory
-    let workspace_dir = workspace::resolve_workspace_dir(&workdir_root, &hello.project);
+    let workspace_dir = workspace::resolve_workspace_dir(&ctx.workdir_root, &hello.project);
     fs::create_dir_all(&workspace_dir)?;
     info!("Using persistent workspace: {}", workspace_dir.display());
 
@@ -164,7 +215,7 @@ pub async fn handle_connection(
     };
 
     // Acquire per-project lock to ensure serialized execution on the same project workspace
-    let project_mutex = lock_manager.get_lock(&hello.project).await;
+    let project_mutex = ctx.lock_manager.get_lock(&hello.project).await;
     let _project_guard = match project_mutex.clone().try_lock_owned() {
         Ok(guard) => guard,
         Err(_) => {
@@ -172,30 +223,38 @@ pub async fn handle_connection(
                 "Project '{}' is busy. Sending QUEUED frame...",
                 hello.project
             );
+            ctx.queue_depth
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let pos = ctx.queue_depth.load(std::sync::atomic::Ordering::Relaxed);
             let queued = protocol::QueuedPayload {
-                position: 1,
+                position: pos,
                 reason: "project_busy".to_string(),
             };
             write_json_frame(&mut stream, MsgType::Queued, &queued).await?;
-            project_mutex.lock_owned().await
+            let guard = project_mutex.lock_owned().await;
+            ctx.queue_depth
+                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            guard
         }
     };
 
     // Acquire global concurrency permit
-    let _permit = match semaphore.clone().try_acquire_owned() {
+    let _permit = match ctx.semaphore.clone().try_acquire_owned() {
         Ok(permit) => permit,
         Err(_) => {
             info!("Agent concurrency limit reached. Sending QUEUED frame...");
+            ctx.queue_depth
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let pos = ctx.queue_depth.load(std::sync::atomic::Ordering::Relaxed);
             let queued = protocol::QueuedPayload {
-                position: 1,
+                position: pos,
                 reason: "concurrency_limit".to_string(),
             };
             write_json_frame(&mut stream, MsgType::Queued, &queued).await?;
-            semaphore
-                .clone()
-                .acquire_owned()
-                .await
-                .map_err(|e| e.to_string())?
+            let permit_res = ctx.semaphore.clone().acquire_owned().await;
+            ctx.queue_depth
+                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            permit_res.map_err(|e| e.to_string())?
         }
     };
 
@@ -255,7 +314,7 @@ pub async fn handle_connection(
         &mut read_half,
         &workspace_dir,
         &run.argv,
-        custom_shell.as_deref(),
+        ctx.custom_shell.as_deref(),
     )
     .await?;
 

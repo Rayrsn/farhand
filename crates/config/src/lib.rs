@@ -17,6 +17,14 @@ pub enum ConfigError {
     Yaml(String, #[source] serde_yaml::Error),
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct AgentConfig {
+    pub host: String,
+    pub token: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
 /// Project-local configuration parsed from `.farhand.yaml`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -37,6 +45,8 @@ pub struct Config {
     pub agent_tag: Option<String>,
     #[serde(alias = "no_cache", default)]
     pub no_cache: bool,
+    #[serde(default)]
+    pub agents: Vec<AgentConfig>,
 }
 
 /// Expands environment variable expressions in a string.
@@ -229,5 +239,35 @@ no_cache: false
         let missing = dir.path().join("nonexistent.yaml");
         let res = load_config_optional(&missing, true);
         assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_parse_agents_list() {
+        std::env::set_var("AGENT_ONE_HOST", "10.0.0.1:9876");
+        std::env::set_var("AGENT_ONE_TOKEN", "secret-one");
+
+        let yaml = r#"
+name: multi-agent-app
+agents:
+  - host: ${AGENT_ONE_HOST}
+    token: ${AGENT_ONE_TOKEN}
+    tags: [lan, fast, x86_64]
+  - host: 10.0.0.2:9876
+    token: secret-two
+    tags: [cloud, gpu]
+"#;
+        let dir = tempdir().unwrap();
+        let config_path = dir.path().join(".farhand.yaml");
+        fs::write(&config_path, yaml).unwrap();
+
+        let cfg = load_config(&config_path).unwrap();
+        assert_eq!(cfg.agents.len(), 2);
+        assert_eq!(cfg.agents[0].host, "10.0.0.1:9876");
+        assert_eq!(cfg.agents[0].token.as_deref(), Some("secret-one"));
+        assert_eq!(cfg.agents[0].tags, vec!["lan", "fast", "x86_64"]);
+
+        assert_eq!(cfg.agents[1].host, "10.0.0.2:9876");
+        assert_eq!(cfg.agents[1].token.as_deref(), Some("secret-two"));
+        assert_eq!(cfg.agents[1].tags, vec!["cloud", "gpu"]);
     }
 }

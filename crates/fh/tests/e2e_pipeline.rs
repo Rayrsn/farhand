@@ -15,19 +15,28 @@ async fn spawn_test_server(
     spawn_test_server_with_concurrency(token, workdir, None).await
 }
 
-async fn spawn_test_server_with_concurrency(
+async fn spawn_test_server_with_tags(
     token: Option<String>,
     workdir: PathBuf,
     max_concurrent_runs: Option<usize>,
+    tags: Vec<String>,
 ) -> (String, tokio::task::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap().to_string();
 
     let handle = tokio::spawn(async move {
-        let _ = fhd::run_server(listener, token, workdir, None, max_concurrent_runs).await;
+        let _ = fhd::run_server(listener, token, workdir, None, max_concurrent_runs, tags).await;
     });
 
     (addr, handle)
+}
+
+async fn spawn_test_server_with_concurrency(
+    token: Option<String>,
+    workdir: PathBuf,
+    max_concurrent_runs: Option<usize>,
+) -> (String, tokio::task::JoinHandle<()>) {
+    spawn_test_server_with_tags(token, workdir, max_concurrent_runs, vec![]).await
 }
 
 async fn client_roundtrip(
@@ -1014,4 +1023,145 @@ async fn test_e2e_client_disconnect_terminates_remote_process_group() {
 
     // The agent detects EOF, kills the child process group, and exits the task
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+}
+
+#[tokio::test]
+async fn test_e2e_multi_agent_pool_least_busy_dispatch() {
+    let token = "pool-secret".to_string();
+    let workdir_a = tempdir().unwrap();
+    let workdir_b = tempdir().unwrap();
+
+    let (addr_a, _handle_a) =
+        spawn_test_server(Some(token.clone()), workdir_a.path().to_path_buf()).await;
+    let (addr_b, _handle_b) =
+        spawn_test_server(Some(token.clone()), workdir_b.path().to_path_buf()).await;
+
+    // Occupy agent A with a running task
+    let mut stream_a = TcpStream::connect(&addr_a).await.unwrap();
+    let hello = HelloPayload {
+        token: token.clone(),
+        project: "busy-proj".into(),
+        protocol_version: CURRENT_PROTOCOL_VERSION,
+    };
+    write_json_frame(&mut stream_a, MsgType::Hello, &hello)
+        .await
+        .unwrap();
+    let _ = read_frame(&mut stream_a).await.unwrap();
+    let manifest = ManifestPayload { files: Vec::new() };
+    write_json_frame(&mut stream_a, MsgType::Manifest, &manifest)
+        .await
+        .unwrap();
+    let _ = read_frame(&mut stream_a).await.unwrap();
+    write_frame(&mut stream_a, MsgType::Files, &[])
+        .await
+        .unwrap();
+
+    let run = RunPayload {
+        argv: vec!["sh".into(), "-c".into(), "echo busy && sleep 3".into()],
+        outputs: None,
+        cwd: None,
+        template: None,
+        no_cache: false,
+    };
+    write_json_frame(&mut stream_a, MsgType::Run, &run)
+        .await
+        .unwrap();
+    let _ = read_frame(&mut stream_a).await.unwrap(); // log "busy"
+
+    // Both agents are in the pool
+    let agents = vec![
+        config::AgentConfig {
+            host: addr_a.clone(),
+            token: Some(token.clone()),
+            tags: vec!["generic".into()],
+        },
+        config::AgentConfig {
+            host: addr_b.clone(),
+            token: Some(token.clone()),
+            tags: vec!["generic".into()],
+        },
+    ];
+
+    // select_best_agent should pick agent B because agent A has active_runs == 1
+    let best = fh::select_best_agent(&agents, None, false).await.unwrap();
+    assert_eq!(best.host, addr_b);
+}
+
+#[tokio::test]
+async fn test_e2e_multi_agent_pool_tag_filtering() {
+    let token = "pool-secret".to_string();
+    let workdir_a = tempdir().unwrap();
+    let workdir_b = tempdir().unwrap();
+
+    let (addr_a, _handle_a) = spawn_test_server_with_tags(
+        Some(token.clone()),
+        workdir_a.path().to_path_buf(),
+        None,
+        vec!["cpu".into(), "fast".into()],
+    )
+    .await;
+    let (addr_b, _handle_b) = spawn_test_server_with_tags(
+        Some(token.clone()),
+        workdir_b.path().to_path_buf(),
+        None,
+        vec!["gpu".into(), "cuda".into()],
+    )
+    .await;
+
+    let agents = vec![
+        config::AgentConfig {
+            host: addr_a.clone(),
+            token: Some(token.clone()),
+            tags: vec!["cpu".into(), "fast".into()],
+        },
+        config::AgentConfig {
+            host: addr_b.clone(),
+            token: Some(token.clone()),
+            tags: vec!["gpu".into(), "cuda".into()],
+        },
+    ];
+
+    // Filter by "gpu" -> should select addr_b
+    let selected_gpu = fh::select_best_agent(&agents, Some("gpu"), false)
+        .await
+        .unwrap();
+    assert_eq!(selected_gpu.host, addr_b);
+
+    // Filter by "fast" -> should select addr_a
+    let selected_cpu = fh::select_best_agent(&agents, Some("fast"), false)
+        .await
+        .unwrap();
+    assert_eq!(selected_cpu.host, addr_a);
+
+    // Filter by nonexistent tag -> error
+    let err = fh::select_best_agent(&agents, Some("nonexistent"), false).await;
+    assert!(err.is_err());
+}
+
+#[tokio::test]
+async fn test_e2e_multi_agent_pool_offline_failover() {
+    let token = "pool-secret".to_string();
+    let workdir_live = tempdir().unwrap();
+
+    let (addr_live, _handle) =
+        spawn_test_server(Some(token.clone()), workdir_live.path().to_path_buf()).await;
+    // Port 1 on localhost is virtually guaranteed closed/unreachable
+    let addr_offline = "127.0.0.1:1".to_string();
+
+    let agents = vec![
+        config::AgentConfig {
+            host: addr_offline,
+            token: Some(token.clone()),
+            tags: vec![],
+        },
+        config::AgentConfig {
+            host: addr_live.clone(),
+            token: Some(token.clone()),
+            tags: vec![],
+        },
+    ];
+
+    // Candidate 1 fails, candidate 2 succeeds -> best is live agent
+    let best = fh::select_best_agent(&agents, None, false).await.unwrap();
+    assert_eq!(best.host, addr_live);
 }
