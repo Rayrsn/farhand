@@ -7,6 +7,7 @@ use protocol::{
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::exit;
+use std::time::Instant;
 use tokio::net::TcpStream;
 
 const EXIT_INFRA_ERROR: i32 = 125;
@@ -14,10 +15,10 @@ const EXIT_INFRA_ERROR: i32 = 125;
 #[derive(Parser, Debug)]
 #[command(name = "fh", about = "Farhand client: offload build/test execution to remote agent")]
 struct Cli {
-    #[arg(long, default_value = "127.0.0.1:9876", help = "Agent address, host:port")]
-    host: String,
+    #[arg(long, env = "FARHAND_HOST", help = "Agent address, host:port (required, or from config)")]
+    host: Option<String>,
 
-    #[arg(long, env = "FARHAND_TOKEN", help = "Shared authentication token")]
+    #[arg(long, env = "FARHAND_TOKEN", help = "Shared authentication token (required, or from config)")]
     token: Option<String>,
 
     #[arg(long, default_value = ".", help = "Local directory to sync")]
@@ -26,22 +27,73 @@ struct Cli {
     #[arg(long, help = "Project name / workspace key (default: local dir basename)")]
     name: Option<String>,
 
-    #[arg(short, long, help = "Print detailed sync and timing statistics")]
+    #[arg(long, help = "Path to configuration file (default: ./.farhand.yaml)")]
+    config: Option<PathBuf>,
+
+    #[arg(long, help = "Allow connecting to an agent with no token configured")]
+    insecure_skip_token: bool,
+
+    #[arg(short, long, help = "Print detailed sync, timing, and telemetry statistics")]
     verbose: bool,
 
     #[arg(long = "output", action = clap::ArgAction::Append, help = "Explicit path(s) to fetch back after a successful run (repeatable)")]
     output: Vec<String>,
 
-    #[arg(long = "out-dir", default_value = "./farhand-out", help = "Local directory to extract artifacts into")]
-    out_dir: PathBuf,
+    #[arg(long = "out-dir", help = "Local directory to extract artifacts into (default: ./farhand-out)")]
+    out_dir: Option<PathBuf>,
+
+    #[arg(long, help = "Force specific template by name")]
+    template: Option<String>,
+
+    #[arg(long, help = "Pin to agent with tag (multi-agent mode)")]
+    agent_tag: Option<String>,
+
+    #[arg(long, help = "Bypass lockfile dependency caching hooks")]
+    no_cache: bool,
 
     #[arg(trailing_var_arg = true, required = true, help = "Command to run remotely")]
     command: Vec<String>,
 }
 
+#[derive(Debug, Default)]
+struct Telemetry {
+    scan_duration: std::time::Duration,
+    upload_duration: std::time::Duration,
+    remote_duration: std::time::Duration,
+    download_duration: std::time::Duration,
+    files_scanned: usize,
+    files_uploaded: usize,
+    bytes_uploaded: u64,
+    bytes_downloaded: u64,
+}
+
+impl Telemetry {
+    fn print_summary(&self, project: &str, host: &str) {
+        println!("=== Farhand Execution Summary ===");
+        println!("[Project]       {}", project);
+        println!("[Agent]         {}", host);
+        println!("---------------------------------");
+        println!(
+            "[Scan]          {} files in {:?}",
+            self.files_scanned, self.scan_duration
+        );
+        println!(
+            "[Delta Sync]    {} files ({} bytes) in {:?}",
+            self.files_uploaded, self.bytes_uploaded, self.upload_duration
+        );
+        println!("[Remote Build]  Completed in {:?}", self.remote_duration);
+        println!(
+            "[Artifacts]     {} bytes in {:?}",
+            self.bytes_downloaded, self.download_duration
+        );
+        println!("---------------------------------");
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
+    let mut telemetry = Telemetry::default();
 
     let project_dir = match cli.dir.canonicalize() {
         Ok(d) => d,
@@ -51,27 +103,76 @@ async fn main() {
         }
     };
 
-    let project_name = cli.name.unwrap_or_else(|| {
+    // Load configuration from .farhand.yaml or explicit --config path
+    let (config_path, is_explicit_config) = match &cli.config {
+        Some(p) => (p.clone(), true),
+        None => (project_dir.join(".farhand.yaml"), false),
+    };
+
+    let cfg = match config::load_config_optional(&config_path, is_explicit_config) {
+        Ok(c) => c.unwrap_or_default(),
+        Err(e) => {
+            eprintln!("Error loading configuration: {}", e);
+            exit(EXIT_INFRA_ERROR);
+        }
+    };
+
+    // Precedence: CLI Flags > Environment Variables > Config File > Defaults
+    let host = cli.host.or(cfg.host).unwrap_or_else(|| {
+        eprintln!("Error: agent host address is required (use --host, FARHAND_HOST env, or configure in .farhand.yaml)");
+        exit(EXIT_INFRA_ERROR);
+    });
+
+    let insecure_skip_token = cli.insecure_skip_token || cfg.insecure_skip_token;
+
+    let token = cli.token.or(cfg.token).unwrap_or_else(|| {
+        if insecure_skip_token {
+            String::new()
+        } else {
+            eprintln!("Error: shared auth token is required (use --token, FARHAND_TOKEN env, or configure in .farhand.yaml)");
+            exit(EXIT_INFRA_ERROR);
+        }
+    });
+
+    let project_name = cli.name.or(cfg.name).unwrap_or_else(|| {
         project_dir
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "unnamed_project".into())
     });
 
-    if cli.verbose {
+    let verbose = cli.verbose || cfg.verbose;
+
+    let outputs = if !cli.output.is_empty() {
+        Some(cli.output)
+    } else if !cfg.outputs.is_empty() {
+        Some(cfg.outputs)
+    } else {
+        None
+    };
+
+    let out_dir = cli
+        .out_dir
+        .or_else(|| cfg.out_dir.map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("./farhand-out"));
+
+    let template = cli.template.or(cfg.template);
+    let no_cache = cli.no_cache || cfg.no_cache;
+
+    if verbose {
         println!("=== Farhand Remote Runner ===");
-        println!("Connecting to agent at: {}", cli.host);
+        println!("Connecting to agent at: {}", host);
         println!("Project: {} ({})", project_name, project_dir.display());
         println!("Remote command: {:?}", cli.command);
     }
 
     // 1. Connect TCP to agent
-    let mut stream = match TcpStream::connect(&cli.host).await {
+    let mut stream = match TcpStream::connect(&host).await {
         Ok(s) => s,
         Err(e) => {
             eprintln!(
                 "Error: unable to reach agent at {} ({}).\nHint: ensure fhd is running and reachable.",
-                cli.host, e
+                host, e
             );
             exit(EXIT_INFRA_ERROR);
         }
@@ -79,8 +180,8 @@ async fn main() {
 
     // 2. Handshake: Send HELLO
     let hello = HelloPayload {
-        token: cli.token.unwrap_or_default(),
-        project: project_name,
+        token,
+        project: project_name.clone(),
         protocol_version: CURRENT_PROTOCOL_VERSION,
     };
 
@@ -120,7 +221,7 @@ async fn main() {
     }
 
     // 3. Scan local files & Build MANIFEST
-    let scan_start = std::time::Instant::now();
+    let scan_start = Instant::now();
     let scanned_files = match fileset::scan(&project_dir, &[]) {
         Ok(f) => f,
         Err(e) => {
@@ -143,11 +244,14 @@ async fn main() {
         files: manifest_files,
     };
 
-    if cli.verbose {
+    telemetry.scan_duration = scan_start.elapsed();
+    telemetry.files_scanned = manifest.files.len();
+
+    if verbose {
         println!(
             "Scanned {} local files in {:?}",
             manifest.files.len(),
-            scan_start.elapsed()
+            telemetry.scan_duration
         );
     }
 
@@ -180,17 +284,20 @@ async fn main() {
     };
 
     // 6. Selective Delta Pack & Upload (FILES frame)
-    let sync_start = std::time::Instant::now();
+    let sync_start = Instant::now();
     if need.want.is_empty() {
-        if cli.verbose {
+        if verbose {
             println!("[Delta Sync] Remote workspace is completely up to date. 0 files to transfer!");
         }
         if let Err(e) = write_frame(&mut stream, MsgType::Files, &[]).await {
             eprintln!("Error: failed to send empty FILES frame: {}", e);
             exit(EXIT_INFRA_ERROR);
         }
+        telemetry.upload_duration = sync_start.elapsed();
+        telemetry.files_uploaded = 0;
+        telemetry.bytes_uploaded = 0;
     } else {
-        if cli.verbose {
+        if verbose {
             println!(
                 "[Delta Sync] Agent requested {} changed/missing files. Packing delta archive...",
                 need.want.len()
@@ -204,11 +311,14 @@ async fn main() {
             }
         };
 
-        if cli.verbose {
+        let upload_len = tar_gz.len() as u64;
+        let want_len = need.want.len();
+
+        if verbose {
             println!(
                 "[Delta Sync] Uploading {} bytes (compressed) across {} files in {:?}",
-                tar_gz.len(),
-                need.want.len(),
+                upload_len,
+                want_len,
                 sync_start.elapsed()
             );
         }
@@ -217,23 +327,22 @@ async fn main() {
             eprintln!("Error: failed to send FILES frame: {}", e);
             exit(EXIT_INFRA_ERROR);
         }
-    }
 
-    let outputs = if cli.output.is_empty() {
-        None
-    } else {
-        Some(cli.output.clone())
-    };
+        telemetry.upload_duration = sync_start.elapsed();
+        telemetry.files_uploaded = want_len;
+        telemetry.bytes_uploaded = upload_len;
+    }
 
     // 7. Send RUN frame
     let run = RunPayload {
         argv: cli.command,
         outputs,
         cwd: None,
-        template: None,
-        no_cache: false,
+        template,
+        no_cache,
     };
 
+    let remote_start = Instant::now();
     if let Err(e) = write_json_frame(&mut stream, MsgType::Run, &run).await {
         eprintln!("Error: failed to send RUN frame: {}", e);
         exit(EXIT_INFRA_ERROR);
@@ -277,6 +386,7 @@ async fn main() {
                 }
             }
             MsgType::Result => {
+                telemetry.remote_duration = remote_start.elapsed();
                 if let Ok(res) = decode_json::<ResultPayload>(&payload) {
                     exit_code = res.exit_code;
                     received_result = true;
@@ -293,27 +403,34 @@ async fn main() {
                 }
             }
             MsgType::Artifacts => {
-                let extract_start = std::time::Instant::now();
-                if let Err(e) = fileset::unpack_tar(&cli.out_dir, &payload) {
+                let extract_start = Instant::now();
+                if let Err(e) = fileset::unpack_tar(&out_dir, &payload) {
                     eprintln!("Error: failed to extract build artifacts: {}", e);
                     exit(EXIT_INFRA_ERROR);
                 }
-                if cli.verbose {
+                telemetry.download_duration = extract_start.elapsed();
+                telemetry.bytes_downloaded = payload.len() as u64;
+
+                if verbose {
                     println!(
                         "[Artifacts] Extracted {} bytes into {} in {:?}",
                         payload.len(),
-                        cli.out_dir.display(),
-                        extract_start.elapsed()
+                        out_dir.display(),
+                        telemetry.download_duration
                     );
                 }
                 break;
             }
             other => {
-                if cli.verbose {
+                if verbose {
                     println!("[farhand] Received control frame: {:?}", other);
                 }
             }
         }
+    }
+
+    if verbose {
+        telemetry.print_summary(&project_name, &host);
     }
 
     exit(exit_code);

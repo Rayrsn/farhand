@@ -118,5 +118,57 @@ rm -rf /tmp/farhand-demo-out
 
 echo ""
 echo "================================================================"
+echo "TEST 8: Project config (.farhand.yaml) zero-flag execution & telemetry"
+echo "================================================================"
+DEMO_PROJECT_DIR=$(mktemp -d)
+cat <<EOF > "${DEMO_PROJECT_DIR}/.farhand.yaml"
+host: 127.0.0.1:${PORT}
+token: \${DEMO_ENV_TOKEN}
+name: demo-cfg-app
+verbose: true
+outDir: ${DEMO_PROJECT_DIR}/out
+outputs:
+  - build/
+EOF
+
+export DEMO_ENV_TOKEN="${TOKEN}"
+(
+  cd "${DEMO_PROJECT_DIR}"
+  "${OLDPWD}/target/debug/fh" -- sh -c 'mkdir -p build && echo "config-produced-binary" > build/binary'
+)
+
+if [ -f "${DEMO_PROJECT_DIR}/out/build/binary" ]; then
+  CFG_CONTENT=$(cat "${DEMO_PROJECT_DIR}/out/build/binary")
+  if [ "${CFG_CONTENT}" = "config-produced-binary" ]; then
+    echo "[PASS] Test 8 successfully executed with zero flags and extracted artifacts via .farhand.yaml!"
+  else
+    echo "[FAIL] Unexpected content: ${CFG_CONTENT}"
+    exit 1
+  fi
+else
+  echo "[FAIL] Artifact ${DEMO_PROJECT_DIR}/out/build/binary not found"
+  exit 1
+fi
+rm -rf "${DEMO_PROJECT_DIR}"
+unset DEMO_ENV_TOKEN
+
+echo ""
+echo "================================================================"
+echo "TEST 9: Unreachable host returns reserved exit code 125"
+echo "Command: fh --host 127.0.0.1:1 --token abc -- echo unreachable"
+echo "================================================================"
+set +e
+./target/debug/fh --host 127.0.0.1:1 --token abc -- echo unreachable
+UNREACHABLE_CODE=$?
+set -e
+if [ "${UNREACHABLE_CODE}" -eq 125 ]; then
+  echo "[PASS] Test 9 properly returned exit code 125 on unreachable host!"
+else
+  echo "[FAIL] Expected exit code 125, got ${UNREACHABLE_CODE}"
+  exit 1
+fi
+
+echo ""
+echo "================================================================"
 echo "ALL MANUAL END-TO-END TESTS PASSED SUCCESSFULLY!"
 echo "================================================================"

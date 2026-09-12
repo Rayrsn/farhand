@@ -412,3 +412,77 @@ async fn test_e2e_no_artifacts_on_command_failure() {
     assert!(!got_artifacts, "Artifacts should never be returned on failure");
     assert!(!out_dir.path().join("dist").exists());
 }
+
+#[test]
+fn test_cli_unreachable_agent_exit_code_125() {
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+        .args([
+            "--host",
+            "127.0.0.1:1",
+            "--token",
+            "dummy",
+            "--",
+            "echo",
+            "test",
+        ])
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(125));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("unable to reach agent at 127.0.0.1:1"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_cli_config_file_resolution_and_telemetry() {
+    let token = "config-token-123".to_string();
+    let workdir = tempdir().unwrap();
+    let (server_addr, _server_handle) =
+        spawn_test_server(Some(token.clone()), workdir.path().to_path_buf()).await;
+
+    let project_dir = tempdir().unwrap();
+    let out_dir = tempdir().unwrap();
+
+    // Create .farhand.yaml in project directory
+    let yaml_content = format!(
+        "host: {}\ntoken: {}\nname: test-config-app\noutDir: {}\noutputs:\n  - out/\n",
+        server_addr,
+        token,
+        out_dir.path().display()
+    );
+    fs::write(project_dir.path().join(".farhand.yaml"), yaml_content).unwrap();
+
+    // Execute fh pointing to project_dir without passing --host or --token flags
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+        .current_dir(project_dir.path())
+        .args([
+            "--verbose",
+            "--",
+            "sh",
+            "-c",
+            "mkdir -p out && echo 'config-built' > out/artifact.txt",
+        ])
+        .output()
+        .await
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "fh failed: stderr={}",
+        stderr
+    );
+    assert!(stdout.contains("=== Farhand Execution Summary ==="));
+    assert!(stdout.contains("[Scan]"));
+    assert!(stdout.contains("[Delta Sync]"));
+    assert!(stdout.contains("[Remote Build]"));
+    assert!(stdout.contains("[Artifacts]"));
+
+    // Verify artifact was unpacked into out_dir specified in .farhand.yaml
+    let artifact_file = out_dir.path().join("out/artifact.txt");
+    assert!(artifact_file.exists());
+    assert_eq!(fs::read_to_string(artifact_file).unwrap().trim(), "config-built");
+}

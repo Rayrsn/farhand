@@ -1,1 +1,239 @@
 //! Configuration management crate for farhand.
+//!
+//! Handles loading `.farhand.yaml`, environment variable interpolation (`${VAR}`),
+//! and configuration parsing.
+
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::Path;
+use thiserror::Error;
+
+#[derive(Error, Debug)]
+pub enum ConfigError {
+    #[error("I/O error reading configuration file '{0}': {1}")]
+    Io(String, #[source] std::io::Error),
+
+    #[error("YAML syntax error in configuration file '{0}': {1}")]
+    Yaml(String, #[source] serde_yaml::Error),
+}
+
+/// Project-local configuration parsed from `.farhand.yaml`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Config {
+    pub host: Option<String>,
+    pub token: Option<String>,
+    pub name: Option<String>,
+    #[serde(default)]
+    pub outputs: Vec<String>,
+    #[serde(alias = "out_dir")]
+    pub out_dir: Option<String>,
+    #[serde(alias = "insecure_skip_token", default)]
+    pub insecure_skip_token: bool,
+    #[serde(default)]
+    pub verbose: bool,
+    pub template: Option<String>,
+    #[serde(alias = "agent_tag")]
+    pub agent_tag: Option<String>,
+    #[serde(alias = "no_cache", default)]
+    pub no_cache: bool,
+}
+
+/// Expands environment variable expressions in a string.
+///
+/// Supported syntax:
+/// - `${VAR}`: Value of `VAR`, or empty string if unset.
+/// - `${VAR:-default}`: Value of `VAR`, or `default` if unset or empty.
+/// - `$VAR`: Value of `VAR` (alphanumeric + underscore identifier), or empty string if unset.
+/// - `$$`: Escaped literal `$`.
+pub fn interpolate_env(content: &str) -> String {
+    let mut result = String::with_capacity(content.len());
+    let mut chars = content.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '$' {
+            if let Some(&next_c) = chars.peek() {
+                if next_c == '$' {
+                    chars.next();
+                    result.push('$');
+                    continue;
+                }
+                if next_c == '{' {
+                    chars.next(); // consume '{'
+                    let mut var_expr = String::new();
+                    let mut closed = false;
+                    for inner in chars.by_ref() {
+                        if inner == '}' {
+                            closed = true;
+                            break;
+                        }
+                        var_expr.push(inner);
+                    }
+                    if closed {
+                        if let Some((var_name, default_val)) = var_expr.split_once(":-") {
+                            match std::env::var(var_name) {
+                                Ok(val) if !val.is_empty() => result.push_str(&val),
+                                _ => result.push_str(default_val),
+                            }
+                        } else if let Ok(val) = std::env::var(&var_expr) {
+                            result.push_str(&val);
+                        }
+                    } else {
+                        // Unclosed brace, keep literal prefix
+                        result.push('$');
+                        result.push('{');
+                        result.push_str(&var_expr);
+                    }
+                    continue;
+                }
+                if next_c.is_ascii_alphabetic() || next_c == '_' {
+                    let mut var_name = String::new();
+                    while let Some(&ident_c) = chars.peek() {
+                        if ident_c.is_ascii_alphanumeric() || ident_c == '_' {
+                            var_name.push(chars.next().unwrap());
+                        } else {
+                            break;
+                        }
+                    }
+                    if let Ok(val) = std::env::var(&var_name) {
+                        result.push_str(&val);
+                    }
+                    continue;
+                }
+            }
+            result.push('$');
+        } else {
+            result.push(c);
+        }
+    }
+
+    result
+}
+
+/// Load and parse a `.farhand.yaml` file from the given path.
+pub fn load_config(path: &Path) -> Result<Config, ConfigError> {
+    let raw_content = fs::read_to_string(path)
+        .map_err(|e| ConfigError::Io(path.display().to_string(), e))?;
+    let interpolated = interpolate_env(&raw_content);
+    let config: Config = serde_yaml::from_str(&interpolated)
+        .map_err(|e| ConfigError::Yaml(path.display().to_string(), e))?;
+    Ok(config)
+}
+
+/// Load configuration if it exists.
+///
+/// If `is_explicit` is true and the file does not exist, returns an `Err(ConfigError::Io)`.
+/// If `is_explicit` is false and the file does not exist, returns `Ok(None)`.
+pub fn load_config_optional(path: &Path, is_explicit: bool) -> Result<Option<Config>, ConfigError> {
+    if !path.exists() {
+        if is_explicit {
+            return Err(ConfigError::Io(
+                path.display().to_string(),
+                std::io::Error::new(std::io::ErrorKind::NotFound, "file not found"),
+            ));
+        }
+        return Ok(None);
+    }
+    load_config(path).map(Some)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_interpolate_env_vars() {
+        std::env::set_var("TEST_FARHAND_VAR", "my_secret_token");
+        std::env::set_var("TEST_FARHAND_PORT", "9876");
+
+        assert_eq!(
+            interpolate_env("token: ${TEST_FARHAND_VAR}"),
+            "token: my_secret_token"
+        );
+        assert_eq!(
+            interpolate_env("host: 127.0.0.1:$TEST_FARHAND_PORT"),
+            "host: 127.0.0.1:9876"
+        );
+        assert_eq!(
+            interpolate_env("host: ${TEST_UNDEFINED_VAR:-192.168.1.100:9876}"),
+            "host: 192.168.1.100:9876"
+        );
+        assert_eq!(
+            interpolate_env("token: ${TEST_UNDEFINED_VAR}"),
+            "token: "
+        );
+        assert_eq!(
+            interpolate_env("escaped: $$100"),
+            "escaped: $100"
+        );
+    }
+
+    #[test]
+    fn test_parse_full_config() {
+        std::env::set_var("TEST_CONFIG_TOKEN", "interpolated-secret");
+
+        let yaml = r#"
+host: 192.168.1.50:9876
+token: ${TEST_CONFIG_TOKEN}
+name: custom-project
+outputs:
+  - dist/
+  - coverage.lcov
+outDir: ./custom-out
+insecureSkipToken: true
+verbose: true
+template: rust-wasm
+agentTag: gpu
+noCache: true
+"#;
+        let dir = tempdir().unwrap();
+        let config_path = dir.path().join(".farhand.yaml");
+        let mut file = fs::File::create(&config_path).unwrap();
+        file.write_all(yaml.as_bytes()).unwrap();
+
+        let cfg = load_config(&config_path).unwrap();
+        assert_eq!(cfg.host.as_deref(), Some("192.168.1.50:9876"));
+        assert_eq!(cfg.token.as_deref(), Some("interpolated-secret"));
+        assert_eq!(cfg.name.as_deref(), Some("custom-project"));
+        assert_eq!(cfg.outputs, vec!["dist/", "coverage.lcov"]);
+        assert_eq!(cfg.out_dir.as_deref(), Some("./custom-out"));
+        assert!(cfg.insecure_skip_token);
+        assert!(cfg.verbose);
+        assert_eq!(cfg.template.as_deref(), Some("rust-wasm"));
+        assert_eq!(cfg.agent_tag.as_deref(), Some("gpu"));
+        assert!(cfg.no_cache);
+    }
+
+    #[test]
+    fn test_parse_snake_case_aliases() {
+        let yaml = r#"
+out_dir: ./snake-out
+insecure_skip_token: false
+agent_tag: build-box
+no_cache: false
+"#;
+        let cfg: Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.out_dir.as_deref(), Some("./snake-out"));
+        assert!(!cfg.insecure_skip_token);
+        assert_eq!(cfg.agent_tag.as_deref(), Some("build-box"));
+        assert!(!cfg.no_cache);
+    }
+
+    #[test]
+    fn test_load_config_optional_missing_default() {
+        let dir = tempdir().unwrap();
+        let missing = dir.path().join(".farhand.yaml");
+        let res = load_config_optional(&missing, false).unwrap();
+        assert!(res.is_none());
+    }
+
+    #[test]
+    fn test_load_config_optional_missing_explicit() {
+        let dir = tempdir().unwrap();
+        let missing = dir.path().join("nonexistent.yaml");
+        let res = load_config_optional(&missing, true);
+        assert!(res.is_err());
+    }
+}
