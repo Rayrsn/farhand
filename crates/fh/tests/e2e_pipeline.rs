@@ -46,6 +46,27 @@ async fn client_roundtrip(
     project_dir: &Path,
     cmd_argv: &[String],
 ) -> (NeedPayload, String, i32) {
+    client_roundtrip_with_options(
+        server_addr,
+        token,
+        project_name,
+        project_dir,
+        cmd_argv,
+        None,
+        false,
+    )
+    .await
+}
+
+async fn client_roundtrip_with_options(
+    server_addr: &str,
+    token: &str,
+    project_name: &str,
+    project_dir: &Path,
+    cmd_argv: &[String],
+    template: Option<String>,
+    no_cache: bool,
+) -> (NeedPayload, String, i32) {
     let mut stream = TcpStream::connect(server_addr).await.unwrap();
 
     // 1. HELLO
@@ -107,8 +128,8 @@ async fn client_roundtrip(
         argv: cmd_argv.to_vec(),
         outputs: None,
         cwd: None,
-        template: None,
-        no_cache: false,
+        template,
+        no_cache,
     };
     write_json_frame(&mut stream, MsgType::Run, &run)
         .await
@@ -1164,4 +1185,163 @@ async fn test_e2e_multi_agent_pool_offline_failover() {
     // Candidate 1 fails, candidate 2 succeeds -> best is live agent
     let best = fh::select_best_agent(&agents, None, false).await.unwrap();
     assert_eq!(best.host, addr_live);
+}
+
+#[tokio::test]
+async fn test_e2e_dependency_hook_full_caching_lifecycle() {
+    let token = "hook-secret".to_string();
+    let remote_workdir = tempdir().unwrap();
+    let (server_addr, _handle) =
+        spawn_test_server(Some(token.clone()), remote_workdir.path().to_path_buf()).await;
+
+    let project_dir = tempdir().unwrap();
+    let tmpl_dir = project_dir.path().join(".farhand").join("templates");
+    fs::create_dir_all(&tmpl_dir).unwrap();
+
+    // Create a custom template with an installCommand and declared lockfiles
+    let tmpl_yaml = r#"
+name: test-hook-lang
+match:
+  anyFile:
+    - deps.lock
+ignoreExtra:
+  - hook.log
+hints:
+  installCommand: sh -c "echo hook-executed >> hook.log"
+  lockfiles:
+    - deps.lock
+"#;
+    fs::write(tmpl_dir.join("test-hook-lang.yaml"), tmpl_yaml).unwrap();
+    fs::write(project_dir.path().join("deps.lock"), "dep-version-1\n").unwrap();
+
+    let project_name = "hook-test-proj";
+
+    // Run 1: Fresh workspace -> hook must execute
+    let (_, out1, code1) = client_roundtrip(
+        &server_addr,
+        &token,
+        project_name,
+        project_dir.path(),
+        &["echo".into(), "user-cmd-done".into()],
+    )
+    .await;
+    assert_eq!(code1, 0);
+    assert!(out1.contains("=== [farhand] Running dependency hook:"));
+    assert!(out1.contains("=== [farhand] Dependencies up to date. Proceeding to user command ==="));
+    assert!(out1.contains("user-cmd-done"));
+
+    // Check remote workspace: hook.log should exist with 1 execution
+    let remote_proj_dir = workspace::resolve_workspace_dir(remote_workdir.path(), project_name);
+    let log_content = fs::read_to_string(remote_proj_dir.join("hook.log")).unwrap();
+    assert_eq!(log_content.matches("hook-executed").count(), 1);
+    assert!(remote_proj_dir.join(".farhand-state.json").exists());
+
+    // Run 2: Same lockfile -> hook must be skipped!
+    let (_, out2, code2) = client_roundtrip(
+        &server_addr,
+        &token,
+        project_name,
+        project_dir.path(),
+        &["echo".into(), "user-cmd-done".into()],
+    )
+    .await;
+    assert_eq!(code2, 0);
+    assert!(!out2.contains("=== [farhand] Running dependency hook:"));
+    assert!(out2.contains("user-cmd-done"));
+    let log_content = fs::read_to_string(remote_proj_dir.join("hook.log")).unwrap();
+    assert_eq!(
+        log_content.matches("hook-executed").count(),
+        1,
+        "hook must have been skipped on run 2"
+    );
+
+    // Run 3: Modify lockfile -> hook must re-execute!
+    fs::write(project_dir.path().join("deps.lock"), "dep-version-2\n").unwrap();
+    let (_, out3, code3) = client_roundtrip(
+        &server_addr,
+        &token,
+        project_name,
+        project_dir.path(),
+        &["echo".into(), "user-cmd-done".into()],
+    )
+    .await;
+    assert_eq!(code3, 0);
+    assert!(out3.contains("=== [farhand] Running dependency hook:"));
+    let log_content = fs::read_to_string(remote_proj_dir.join("hook.log")).unwrap();
+    assert_eq!(
+        log_content.matches("hook-executed").count(),
+        2,
+        "hook must have re-executed after lockfile change"
+    );
+
+    // Run 4: Unchanged lockfile but with no_cache = true -> hook must re-execute!
+    let (_, out4, code4) = client_roundtrip_with_options(
+        &server_addr,
+        &token,
+        project_name,
+        project_dir.path(),
+        &["echo".into(), "user-cmd-done".into()],
+        None,
+        true,
+    )
+    .await;
+    assert_eq!(code4, 0);
+    assert!(out4.contains("=== [farhand] Running dependency hook:"));
+    let log_content = fs::read_to_string(remote_proj_dir.join("hook.log")).unwrap();
+    assert_eq!(
+        log_content.matches("hook-executed").count(),
+        3,
+        "hook must have re-executed with no_cache=true"
+    );
+}
+
+#[tokio::test]
+async fn test_e2e_dependency_hook_failure_aborts_run() {
+    let token = "hook-secret".to_string();
+    let remote_workdir = tempdir().unwrap();
+    let (server_addr, _handle) =
+        spawn_test_server(Some(token.clone()), remote_workdir.path().to_path_buf()).await;
+
+    let project_dir = tempdir().unwrap();
+    let tmpl_dir = project_dir.path().join(".farhand").join("templates");
+    fs::create_dir_all(&tmpl_dir).unwrap();
+
+    let tmpl_yaml = r#"
+name: failing-hook-lang
+match:
+  anyFile:
+    - fail.lock
+hints:
+  installCommand: sh -c "echo 'failing installation step' && exit 42"
+  lockfiles:
+    - fail.lock
+"#;
+    fs::write(tmpl_dir.join("failing-hook-lang.yaml"), tmpl_yaml).unwrap();
+    fs::write(project_dir.path().join("fail.lock"), "fail-version-1\n").unwrap();
+
+    let project_name = "failing-hook-proj";
+
+    let (_, out, code) = client_roundtrip(
+        &server_addr,
+        &token,
+        project_name,
+        project_dir.path(),
+        &["echo".into(), "SHOULD_NOT_EXECUTE".into()],
+    )
+    .await;
+
+    assert_eq!(
+        code, 42,
+        "exit code must be mirrored from the failed install hook"
+    );
+    assert!(out.contains("=== [farhand] Running dependency hook:"));
+    assert!(out.contains("failing installation step"));
+    assert!(
+        !out.contains("SHOULD_NOT_EXECUTE"),
+        "user command must not be executed when install hook fails"
+    );
+
+    // Remote workspace should NOT have recorded successful state
+    let remote_proj_dir = workspace::resolve_workspace_dir(remote_workdir.path(), project_name);
+    assert!(!remote_proj_dir.join(".farhand-state.json").exists());
 }

@@ -287,6 +287,62 @@ rm -rf "${POOL_DIR}"
 
 echo ""
 echo "================================================================"
+echo "TEST 14: Dependency caching hooks & --no-cache bypass"
+echo "================================================================"
+HOOK_DIR=$(mktemp -d)
+mkdir -p "${HOOK_DIR}/.farhand/templates"
+cat <<EOF > "${HOOK_DIR}/.farhand/templates/caching-demo.yaml"
+name: caching-demo
+match:
+  anyFile:
+    - deps.lock
+ignoreExtra:
+  - hook.log
+hints:
+  installCommand: sh -c "echo 'installed-v1' >> hook.log"
+  lockfiles:
+    - deps.lock
+EOF
+echo "version: 1" > "${HOOK_DIR}/deps.lock"
+
+(
+  cd "${HOOK_DIR}"
+  echo "--- Subtest 14A: First run executes dependency install hook ---"
+  OUT1=$("${OLDPWD}/target/debug/fh" --host "127.0.0.1:${PORT}" --token "${TOKEN}" -- echo "user-cmd-1")
+  echo "${OUT1}"
+  if echo "${OUT1}" | grep -q "Running dependency hook:"; then
+    echo "[PASS] Hook executed on fresh workspace"
+  else
+    echo "[FAIL] Expected hook execution on first run"
+    exit 1
+  fi
+
+  echo "--- Subtest 14B: Second run with unchanged lockfile skips hook ---"
+  OUT2=$("${OLDPWD}/target/debug/fh" --host "127.0.0.1:${PORT}" --token "${TOKEN}" -- echo "user-cmd-2")
+  echo "${OUT2}"
+  if echo "${OUT2}" | grep -q "Running dependency hook:"; then
+    echo "[FAIL] Hook was not skipped on unchanged lockfile"
+    exit 1
+  else
+    echo "[PASS] Hook was successfully skipped on unchanged lockfile"
+  fi
+
+  echo "--- Subtest 14C: Third run with --no-cache forces hook execution ---"
+  OUT3=$("${OLDPWD}/target/debug/fh" --host "127.0.0.1:${PORT}" --token "${TOKEN}" --no-cache -- echo "user-cmd-3")
+  echo "${OUT3}"
+  if echo "${OUT3}" | grep -q "Running dependency hook:"; then
+    echo "[PASS] --no-cache successfully forced hook re-execution"
+  else
+    echo "[FAIL] Expected hook execution with --no-cache"
+    exit 1
+  fi
+)
+echo "[PASS] Test 14 dependency caching hooks & --no-cache bypass verified!"
+rm -rf "${HOOK_DIR}"
+
+echo ""
+echo "================================================================"
 echo "ALL MANUAL END-TO-END TESTS PASSED SUCCESSFULLY!"
 echo "================================================================"
+
 

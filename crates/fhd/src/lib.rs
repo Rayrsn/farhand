@@ -305,10 +305,106 @@ pub async fn handle_connection(
     let run: RunPayload = decode_json(&payload)?;
     info!("Executing command: {:?}", run.argv);
 
-    // 6. Execute command and stream output
+    // 6. Pre-build dependency caching hook
     let (mut read_half, write_half) = stream.into_split();
     let shared_writer = Arc::new(Mutex::new(write_half));
 
+    let matched_templates = templates::match_templates(&workspace_dir, run.template.as_deref());
+    let hook_template = matched_templates
+        .into_iter()
+        .find(|t| t.hints.install_command.is_some());
+
+    if let Some(template) = hook_template {
+        let install_cmd = template.hints.install_command.as_ref().unwrap();
+        let current_lock_hash =
+            workspace::state::compute_lockfiles_hash(&workspace_dir, &template.hints.lockfiles);
+        let prev_state = workspace::state::read_state(&workspace_dir);
+
+        let need_install = if let Some(ref current_hash) = current_lock_hash {
+            run.no_cache
+                || match &prev_state {
+                    Some(s) => s.last_success_lockfile_hash != *current_hash,
+                    None => true,
+                }
+        } else if template.hints.lockfiles.is_empty() {
+            run.no_cache || prev_state.is_none()
+        } else {
+            // Lockfiles were declared in the template, but none exist in the workspace
+            false
+        };
+
+        if need_install {
+            let start_banner = format!(
+                "=== [farhand] Running dependency hook: {} ===\n",
+                install_cmd
+            );
+            {
+                let mut writer = shared_writer.lock().await;
+                let log = protocol::LogPayload {
+                    stream: "stdout".into(),
+                    data: start_banner,
+                };
+                let _ = write_json_frame(&mut *writer, MsgType::Log, &log).await;
+            }
+
+            let hook_exit = execute_raw_command_and_stream(
+                shared_writer.clone(),
+                &mut read_half,
+                &workspace_dir,
+                install_cmd,
+                ctx.custom_shell.as_deref(),
+            )
+            .await?;
+
+            if hook_exit != 0 {
+                info!(
+                    "Dependency install hook failed with exit code {}",
+                    hook_exit
+                );
+                let result = ResultPayload {
+                    exit_code: hook_exit,
+                    error: Some(format!(
+                        "dependency hook '{}' failed with exit code {}",
+                        install_cmd, hook_exit
+                    )),
+                };
+                let mut writer = shared_writer.lock().await;
+                write_json_frame(&mut *writer, MsgType::Result, &result).await?;
+                drop(read_half);
+                return Ok(());
+            }
+
+            // Install succeeded: record state
+            let new_state = workspace::WorkspaceState {
+                version: 1,
+                last_success_lockfile_hash: current_lock_hash.unwrap_or_default(),
+                last_installed_at: std::time::SystemTime::now(),
+                template: template.name.clone(),
+            };
+            if let Err(e) = workspace::state::write_state(&workspace_dir, &new_state) {
+                warn!("Failed to write workspace state: {}", e);
+            }
+
+            let end_banner =
+                "=== [farhand] Dependencies up to date. Proceeding to user command ===\n"
+                    .to_string();
+            {
+                let mut writer = shared_writer.lock().await;
+                let log = protocol::LogPayload {
+                    stream: "stdout".into(),
+                    data: end_banner,
+                };
+                let _ = write_json_frame(&mut *writer, MsgType::Log, &log).await;
+            }
+        } else {
+            info!(
+                "Lockfiles unchanged or not present ({:?}). Skipping dependency install hook '{}'.",
+                current_lock_hash, install_cmd
+            );
+        }
+    }
+
+    // 7. Execute user command and stream output
     let exit_code = execute_and_stream(
         shared_writer.clone(),
         &mut read_half,
@@ -398,6 +494,35 @@ pub fn build_shell_command(cwd: &Path, argv: &[String], custom_shell: Option<&st
     cmd
 }
 
+pub fn build_raw_shell_command(cwd: &Path, raw_cmd: &str, custom_shell: Option<&str>) -> Command {
+    let mut cmd = if let Some(shell_override) = custom_shell {
+        let parts: Vec<&str> = shell_override.split_whitespace().collect();
+        let mut c = Command::new(parts[0]);
+        for part in &parts[1..] {
+            c.arg(part);
+        }
+        c.arg(raw_cmd);
+        c
+    } else if cfg!(windows) {
+        let mut c = Command::new("cmd.exe");
+        c.arg("/C").arg(raw_cmd);
+        c
+    } else {
+        let mut c = Command::new("/bin/sh");
+        c.arg("-c").arg(raw_cmd);
+        c
+    };
+
+    cmd.current_dir(cwd);
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+
+    #[cfg(unix)]
+    cmd.process_group(0);
+
+    cmd
+}
+
 pub async fn kill_process_group(child: &mut tokio::process::Child) {
     if let Some(pid) = child.id() {
         #[cfg(unix)]
@@ -421,21 +546,14 @@ pub async fn kill_process_group(child: &mut tokio::process::Child) {
     }
 }
 
-pub async fn execute_and_stream<
+pub async fn run_child_and_stream<
     W: AsyncWrite + Unpin + Send + 'static,
     R: tokio::io::AsyncRead + Unpin + Send,
 >(
     writer: Arc<Mutex<W>>,
     reader: &mut R,
-    cwd: &Path,
-    argv: &[String],
-    custom_shell: Option<&str>,
+    mut cmd: Command,
 ) -> Result<i32, Box<dyn std::error::Error>> {
-    if argv.is_empty() {
-        return Ok(0);
-    }
-
-    let mut cmd = build_shell_command(cwd, argv, custom_shell);
     let mut child = cmd.spawn()?;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
@@ -504,4 +622,35 @@ pub async fn execute_and_stream<
             Err("Client disconnected".into())
         }
     }
+}
+
+pub async fn execute_raw_command_and_stream<
+    W: AsyncWrite + Unpin + Send + 'static,
+    R: tokio::io::AsyncRead + Unpin + Send,
+>(
+    writer: Arc<Mutex<W>>,
+    reader: &mut R,
+    cwd: &Path,
+    raw_cmd: &str,
+    custom_shell: Option<&str>,
+) -> Result<i32, Box<dyn std::error::Error>> {
+    let cmd = build_raw_shell_command(cwd, raw_cmd, custom_shell);
+    run_child_and_stream(writer, reader, cmd).await
+}
+
+pub async fn execute_and_stream<
+    W: AsyncWrite + Unpin + Send + 'static,
+    R: tokio::io::AsyncRead + Unpin + Send,
+>(
+    writer: Arc<Mutex<W>>,
+    reader: &mut R,
+    cwd: &Path,
+    argv: &[String],
+    custom_shell: Option<&str>,
+) -> Result<i32, Box<dyn std::error::Error>> {
+    if argv.is_empty() {
+        return Ok(0);
+    }
+    let cmd = build_shell_command(cwd, argv, custom_shell);
+    run_child_and_stream(writer, reader, cmd).await
 }

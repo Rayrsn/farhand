@@ -11,6 +11,9 @@ pub use presets::{detect_preset_outputs, resolve_artifact_paths, Preset, DEFAULT
 pub mod lock;
 pub use lock::WorkspaceLockManager;
 
+pub mod state;
+pub use state::{compute_lockfiles_hash, read_state, write_state, WorkspaceState};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffResult {
     /// List of forward-slash relative paths the agent needs the client to upload
@@ -91,7 +94,11 @@ pub fn diff_manifests(
         if !client_map.contains_key(rel_path.as_str()) {
             // Section 5.1 Deletion Safety Rule:
             // Never delete files located in default ignored directories (node_modules, target, etc.)
-            if !fileset::is_default_ignored(rel_path) {
+            // and never delete agent-internal state or history files (.farhand-state.json, .farhand-runs).
+            if !fileset::is_default_ignored(rel_path)
+                && rel_path != state::STATE_FILENAME
+                && !rel_path.starts_with(".farhand-runs")
+            {
                 delete_extraneous.push(rel_path.clone());
             }
         }

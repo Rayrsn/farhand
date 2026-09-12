@@ -239,26 +239,35 @@ fn pattern_matches(workspace_root: &Path, pattern: &str) -> bool {
     false
 }
 
+/// Match all applicable templates for a workspace, respecting explicit template overrides.
+pub fn match_templates(workspace_root: &Path, explicit_template: Option<&str>) -> Vec<Template> {
+    let templates = load_templates(Some(workspace_root));
+    if let Some(target_name) = explicit_template {
+        templates
+            .get(target_name)
+            .map(|lt| vec![lt.template.clone()])
+            .unwrap_or_default()
+    } else {
+        let mut matched: Vec<_> = templates
+            .into_values()
+            .filter(|lt| matches_workspace(&lt.template, workspace_root))
+            .map(|lt| lt.template)
+            .collect();
+        matched.sort_by(|a, b| a.name.cmp(&b.name));
+        matched
+    }
+}
+
 /// Resolve candidate output paths using templates (union of all matching templates).
 pub fn resolve_template_outputs(
     workspace_root: &Path,
     explicit_template: Option<&str>,
 ) -> Vec<String> {
-    let templates = load_templates(Some(workspace_root));
+    let matched = match_templates(workspace_root, explicit_template);
     let mut outputs = Vec::new();
-
-    if let Some(target_name) = explicit_template {
-        if let Some(lt) = templates.get(target_name) {
-            outputs.extend(lt.template.outputs.clone());
-        }
-    } else {
-        for lt in templates.values() {
-            if matches_workspace(&lt.template, workspace_root) {
-                outputs.extend(lt.template.outputs.clone());
-            }
-        }
+    for t in matched {
+        outputs.extend(t.outputs);
     }
-
     outputs.sort();
     outputs.dedup();
     outputs
@@ -269,21 +278,11 @@ pub fn resolve_template_extra_ignores(
     workspace_root: &Path,
     explicit_template: Option<&str>,
 ) -> Vec<String> {
-    let templates = load_templates(Some(workspace_root));
+    let matched = match_templates(workspace_root, explicit_template);
     let mut extra_ignores = Vec::new();
-
-    if let Some(target_name) = explicit_template {
-        if let Some(lt) = templates.get(target_name) {
-            extra_ignores.extend(lt.template.ignore_extra.clone());
-        }
-    } else {
-        for lt in templates.values() {
-            if matches_workspace(&lt.template, workspace_root) {
-                extra_ignores.extend(lt.template.ignore_extra.clone());
-            }
-        }
+    for t in matched {
+        extra_ignores.extend(t.ignore_extra);
     }
-
     extra_ignores.sort();
     extra_ignores.dedup();
     extra_ignores
@@ -294,21 +293,11 @@ pub fn resolve_template_outputs_ignores(
     workspace_root: &Path,
     explicit_template: Option<&str>,
 ) -> Vec<String> {
-    let templates = load_templates(Some(workspace_root));
+    let matched = match_templates(workspace_root, explicit_template);
     let mut outputs_ignores = Vec::new();
-
-    if let Some(target_name) = explicit_template {
-        if let Some(lt) = templates.get(target_name) {
-            outputs_ignores.extend(lt.template.outputs_ignore.clone());
-        }
-    } else {
-        for lt in templates.values() {
-            if matches_workspace(&lt.template, workspace_root) {
-                outputs_ignores.extend(lt.template.outputs_ignore.clone());
-            }
-        }
+    for t in matched {
+        outputs_ignores.extend(t.outputs_ignore);
     }
-
     outputs_ignores.sort();
     outputs_ignores.dedup();
     outputs_ignores
