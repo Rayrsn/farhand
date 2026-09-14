@@ -10,12 +10,12 @@
 
 <p align="center">
   <i>
-    Farhand or fh (pronounced FAAAAAAAH)
+    Farhand or fh (pronounced <strong>FAAAAAAAH</strong>)
   </i>
-    <br/>
-    <audio controls>
-      <source src="https://www.myinstants.com/media/sounds/fahhh_KcgAXfs.mp3" type="audio/mpeg" />
-    </audio>
+  <br/><br/>
+  <video src="https://github.com/Rayrsn/farhand/raw/main/assets/pronunciation.mp4" controls width="280">
+    <a href="https://github.com/Rayrsn/farhand/raw/main/assets/pronunciation.mp4">▶️ Play Pronunciation Video (FAAAAAAAH)</a>
+  </video>
 </p>
 
 <p align="center">
