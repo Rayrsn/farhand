@@ -1501,3 +1501,135 @@ async fn test_e2e_history_unauthorized() {
         "Unauthorized request must exit with 125"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_e2e_branch_workspace_cow_cloning() {
+    let token = "cow-tok".to_string();
+    let remote_workdir = tempdir().unwrap();
+    let (server_addr, _handle) =
+        spawn_test_server(Some(token.clone()), remote_workdir.path().to_path_buf()).await;
+
+    let project_dir = tempdir().unwrap();
+    fs::write(
+        project_dir.path().join("common.txt"),
+        "base repository content\n",
+    )
+    .unwrap();
+
+    let base_proj = "cow-repo";
+
+    // 1. Run build for base project (creates seed workspace)
+    let (_, _, code1) = client_roundtrip(
+        &server_addr,
+        &token,
+        base_proj,
+        project_dir.path(),
+        &["echo".into(), "base-build".into()],
+    )
+    .await;
+    assert_eq!(code1, 0);
+
+    let seed_dir = workspace::resolve_workspace_dir(remote_workdir.path(), base_proj);
+    assert!(seed_dir.is_dir());
+    assert!(seed_dir.join("common.txt").is_file());
+
+    // 2. Run build on a feature branch: cow-repo__feat-alpha
+    let branch_proj = "cow-repo__feat-alpha";
+    fs::write(
+        project_dir.path().join("feature.txt"),
+        "new feature content\n",
+    )
+    .unwrap();
+
+    let (need, _, code2) = client_roundtrip(
+        &server_addr,
+        &token,
+        branch_proj,
+        project_dir.path(),
+        &["echo".into(), "branch-build".into()],
+    )
+    .await;
+    assert_eq!(code2, 0);
+
+    // Because branch was cloned via CoW from base, common.txt was already present on remote!
+    // So the client manifest diff only wanted the new feature.txt file!
+    assert!(!need.want.contains(&"common.txt".to_string()));
+    assert!(need.want.contains(&"feature.txt".to_string()));
+
+    let branch_dir = workspace::resolve_workspace_dir(remote_workdir.path(), branch_proj);
+    assert!(branch_dir.is_dir());
+    assert!(branch_dir.join("common.txt").is_file());
+    assert!(branch_dir.join("feature.txt").is_file());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_e2e_workspace_clean_subcommand() {
+    let token = "clean-tok".to_string();
+    let remote_workdir = tempdir().unwrap();
+    let (server_addr, _handle) =
+        spawn_test_server(Some(token.clone()), remote_workdir.path().to_path_buf()).await;
+
+    let project_dir = tempdir().unwrap();
+    fs::write(project_dir.path().join("code.txt"), "some code\n").unwrap();
+
+    let proj1 = "clean-repo__branch-1";
+    let proj2 = "clean-repo__branch-2";
+
+    // Run builds on both branches
+    client_roundtrip(
+        &server_addr,
+        &token,
+        proj1,
+        project_dir.path(),
+        &["echo".into(), "1".into()],
+    )
+    .await;
+    client_roundtrip(
+        &server_addr,
+        &token,
+        proj2,
+        project_dir.path(),
+        &["echo".into(), "2".into()],
+    )
+    .await;
+
+    let dir1 = workspace::resolve_workspace_dir(remote_workdir.path(), proj1);
+    let dir2 = workspace::resolve_workspace_dir(remote_workdir.path(), proj2);
+    assert!(dir1.is_dir());
+    assert!(dir2.is_dir());
+
+    // 1. Clean branch 1 specifically
+    let resp1 = fh::clean_workspace(&server_addr, &token, proj1, false, false)
+        .await
+        .expect("clean should succeed");
+    assert!(resp1.ok);
+    assert!(!dir1.exists());
+    assert!(dir2.exists());
+
+    // 2. Clean all branches for clean-repo
+    let resp2 = fh::clean_workspace(&server_addr, &token, "clean-repo", true, false)
+        .await
+        .expect("clean all should succeed");
+    assert!(resp2.ok);
+    assert!(!dir2.exists());
+
+    // 3. Test clean via CLI binary
+    let cli_out = tokio::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+        .args([
+            "--host",
+            &server_addr,
+            "--token",
+            &token,
+            "clean",
+            "--name",
+            "clean-repo",
+            "--all-branches",
+        ])
+        .output()
+        .await
+        .unwrap();
+
+    assert_eq!(cli_out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&cli_out.stdout);
+    assert!(stdout.contains("[clean]"));
+}

@@ -76,6 +76,15 @@ struct Cli {
     no_cache: bool,
 
     #[arg(
+        long,
+        help = "Explicit branch name for workspace isolation (defaults to current git branch)"
+    )]
+    branch: Option<String>,
+
+    #[arg(long, help = "Disable automatic git branch workspace scoping")]
+    no_branch_scope: bool,
+
+    #[arg(
         long = "log-level",
         default_value = "info",
         help = "Log level (trace, debug, info, warn, error)"
@@ -109,6 +118,20 @@ enum Subcommands {
         /// Maximum number of runs to display (default: 10)
         #[arg(long, default_value_t = 10)]
         limit: usize,
+    },
+    /// Clean remote project workspaces or caches
+    Clean {
+        /// Specific project/branch name to clean (default: current project/branch)
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Clean all non-canonical branch workspaces for this project
+        #[arg(long)]
+        all_branches: bool,
+
+        /// Only clean intermediate compiler/build caches (incremental caches, .cache)
+        #[arg(long)]
+        caches_only: bool,
     },
 }
 
@@ -188,6 +211,43 @@ fn setup_tracing(level_str: &str, format_str: &str) {
             .with(fmt_layer)
             .init();
     }
+}
+
+fn detect_git_branch(dir: &std::path::Path) -> Option<String> {
+    let head_path = dir.join(".git").join("HEAD");
+    if let Ok(content) = std::fs::read_to_string(&head_path) {
+        let trimmed = content.trim();
+        if let Some(branch_ref) = trimmed.strip_prefix("ref: refs/heads/") {
+            return Some(branch_ref.to_string());
+        }
+    }
+
+    if let Ok(output) = std::process::Command::new("git")
+        .current_dir(dir)
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .output()
+    {
+        if output.status.success() {
+            let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !branch.is_empty() && branch != "HEAD" {
+                return Some(branch);
+            }
+        }
+    }
+
+    None
+}
+
+fn sanitize_branch_name(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 #[tokio::main]
@@ -307,12 +367,60 @@ async fn main() {
         }
     });
 
-    let project_name = cli.name.or(cfg.name).unwrap_or_else(|| {
+    let base_project_name = cli.name.or(cfg.name).unwrap_or_else(|| {
         project_dir
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "unnamed_project".into())
     });
+
+    let branch = if cli.no_branch_scope {
+        None
+    } else if let Some(b) = cli.branch {
+        Some(b)
+    } else {
+        detect_git_branch(&project_dir)
+    };
+
+    let project_name = match branch {
+        Some(ref b) if b != "main" && b != "master" => {
+            format!("{}__{}", base_project_name, sanitize_branch_name(b))
+        }
+        _ => base_project_name.clone(),
+    };
+
+    // Handle Clean subcommand
+    if let Some(Subcommands::Clean {
+        name,
+        all_branches,
+        caches_only,
+    }) = cli.subcommand
+    {
+        let proj = name.unwrap_or(project_name);
+
+        match fh::clean_workspace(&host, &token, &proj, all_branches, caches_only).await {
+            Ok(resp) => {
+                if cli.log_format == "json" {
+                    if let Ok(json) = serde_json::to_string_pretty(&resp) {
+                        println!("{}", json);
+                    }
+                } else {
+                    println!("[clean] {}", resp.message);
+                    if resp.bytes_freed > 0 {
+                        println!(
+                            "[clean] Space freed: {}",
+                            fh::format_bytes(resp.bytes_freed)
+                        );
+                    }
+                }
+                exit(0);
+            }
+            Err(e) => {
+                eprintln!("Error cleaning workspace: {}", e);
+                exit(EXIT_INFRA_ERROR);
+            }
+        }
+    }
 
     // Handle History subcommand
     if let Some(Subcommands::History { name, limit }) = cli.subcommand {

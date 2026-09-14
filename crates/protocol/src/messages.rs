@@ -20,6 +20,8 @@ pub enum MsgType {
     StatusResp = 0x0D,
     History = 0x0E,
     HistoryResp = 0x0F,
+    Clean = 0x10,
+    CleanResp = 0x11,
 }
 
 impl MsgType {
@@ -40,6 +42,8 @@ impl MsgType {
             0x0D => Some(Self::StatusResp),
             0x0E => Some(Self::History),
             0x0F => Some(Self::HistoryResp),
+            0x10 => Some(Self::Clean),
+            0x11 => Some(Self::CleanResp),
             _ => None,
         }
     }
@@ -197,4 +201,24 @@ fn default_history_limit() -> usize {
 pub struct HistoryResponsePayload {
     pub project: String,
     pub runs: Vec<RunRecord>,
+}
+
+/// Client -> Agent: Request remote workspace cleaning / garbage collection
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CleanRequestPayload {
+    pub token: String,
+    pub project: String,
+    #[serde(rename = "allBranches", default)]
+    pub all_branches: bool,
+    #[serde(rename = "cachesOnly", default)]
+    pub caches_only: bool,
+}
+
+/// Agent -> Client: Result of workspace cleaning
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CleanResponsePayload {
+    pub ok: bool,
+    pub message: String,
+    #[serde(rename = "bytesFreed")]
+    pub bytes_freed: u64,
 }

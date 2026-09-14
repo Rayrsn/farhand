@@ -45,6 +45,25 @@ struct Cli {
         help = "Log format ('text' or 'json')"
     )]
     log_format: String,
+
+    #[arg(
+        long = "max-disk-gb",
+        help = "Maximum total disk capacity allocated for workspaces in GB (e.g. 100)"
+    )]
+    max_disk_gb: Option<f64>,
+
+    #[arg(
+        long = "workspace-ttl-days",
+        help = "Maximum days of inactivity before an ephemeral branch workspace is pruned (e.g. 7)"
+    )]
+    workspace_ttl_days: Option<u64>,
+
+    #[arg(
+        long = "gc-interval-secs",
+        default_value = "3600",
+        help = "Background garbage collection interval in seconds (default: 3600, 0 to disable)"
+    )]
+    gc_interval_secs: u64,
 }
 
 fn setup_tracing(level_str: &str, format_str: &str) {
@@ -77,6 +96,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Farhand daemon listening on {}", cli.listen);
     info!("Persistent workspaces root: {}", workdir.display());
+
+    // Spawn background garbage collection task if enabled
+    if cli.gc_interval_secs > 0 {
+        let gc_workdir = workdir.clone();
+        let max_bytes = cli
+            .max_disk_gb
+            .map(|gb| (gb * 1024.0 * 1024.0 * 1024.0) as u64);
+        let ttl = cli
+            .workspace_ttl_days
+            .map(|d| std::time::Duration::from_secs(d * 86400));
+        let interval_dur = std::time::Duration::from_secs(cli.gc_interval_secs);
+
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval_dur);
+            loop {
+                ticker.tick().await;
+                let report = workspace::run_garbage_collection(&gc_workdir, max_bytes, ttl);
+                if report.workspaces_deleted > 0 || report.caches_trimmed_bytes > 0 {
+                    info!(
+                        "GC: Pruned {} workspaces ({} bytes), trimmed {} cache bytes. Total disk remaining: {} bytes",
+                        report.workspaces_deleted,
+                        report.workspaces_deleted_bytes,
+                        report.caches_trimmed_bytes,
+                        report.remaining_disk_bytes
+                    );
+                }
+            }
+        });
+    }
 
     fhd::run_server(
         listener,

@@ -8,7 +8,14 @@ Type=simple
 User=builduser
 Group=builduser
 EnvironmentFile=-/etc/farhand/fhd.env
-ExecStart=/usr/local/bin/fhd --listen ${FARHAND_LISTEN:-0.0.0.0:9876} --token ${FARHAND_TOKEN} --workdir ${FARHAND_WORKDIR:-/var/farhand/workspaces}
+# Shared Toolchain Caches across workspaces
+Environment="RUSTC_WRAPPER=/usr/local/bin/sccache"
+Environment="SCCACHE_DIR=/var/farhand/cache/sccache"
+Environment="SCCACHE_CACHE_SIZE=25G"
+Environment="NPM_CONFIG_CACHE=/var/farhand/cache/npm"
+Environment="GOCACHE=/var/farhand/cache/go-build"
+Environment="GOPATH=/var/farhand/cache/go"
+ExecStart=/usr/local/bin/fhd --listen ${FARHAND_LISTEN:-0.0.0.0:9876} --token ${FARHAND_TOKEN} --workdir ${FARHAND_WORKDIR:-/var/farhand/workspaces} --max-disk-gb ${FARHAND_MAX_DISK_GB:-100} --workspace-ttl-days ${FARHAND_WORKSPACE_TTL_DAYS:-7}
 Restart=always
 RestartSec=5s
 LimitNOFILE=65536

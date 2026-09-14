@@ -9,11 +9,28 @@
         <string>/usr/local/bin/fhd</string>
         <string>--listen</string>
         <string>0.0.0.0:9876</string>
+        <string>--max-disk-gb</string>
+        <string>100</string>
+        <string>--workspace-ttl-days</string>
+        <string>7</string>
     </array>
     <key>EnvironmentVariables</key>
     <dict>
         <key>FARHAND_TOKEN</key>
         <string>replace-with-your-secret-token</string>
+        <!-- Shared Toolchain Caches across workspaces -->
+        <key>RUSTC_WRAPPER</key>
+        <string>/usr/local/bin/sccache</string>
+        <key>SCCACHE_DIR</key>
+        <string>/var/farhand/cache/sccache</string>
+        <key>SCCACHE_CACHE_SIZE</key>
+        <string>25G</string>
+        <key>NPM_CONFIG_CACHE</key>
+        <string>/var/farhand/cache/npm</string>
+        <key>GOCACHE</key>
+        <string>/var/farhand/cache/go-build</string>
+        <key>GOPATH</key>
+        <string>/var/farhand/cache/go</string>
     </dict>
     <key>RunAtLoad</key>
     <true/>

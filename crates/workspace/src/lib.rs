@@ -17,6 +17,15 @@ pub use state::{compute_lockfiles_hash, read_state, write_state, WorkspaceState}
 pub mod history;
 pub use history::{format_rfc3339, get_recent_runs, save_run, MAX_RUNS_RETAINED, RUNS_DIR};
 
+pub mod cow;
+pub use cow::{cow_clone_dir, find_seed_workspace, parse_base_project_name};
+
+pub mod gc;
+pub use gc::{
+    calculate_dir_size, get_workspace_last_used, run_garbage_collection, scan_workspaces,
+    touch_workspace, trim_workspace_caches, GcReport, WorkspaceMetadata,
+};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffResult {
     /// List of forward-slash relative paths the agent needs the client to upload
@@ -45,6 +54,34 @@ pub fn resolve_workspace_dir(base_dir: &Path, project_name: &str) -> PathBuf {
         .collect();
 
     base_dir.join(format!("{}-{}", clean_name, short_hash))
+}
+
+/// Ensure a persistent workspace exists for `project_name`.
+/// If the directory does not exist, but an existing base/seed workspace exists
+/// (e.g. for `repo:main` when creating `repo:feat`), clones it via APFS CoW.
+pub fn ensure_workspace_dir(base_dir: &Path, project_name: &str) -> std::io::Result<PathBuf> {
+    let ws_dir = resolve_workspace_dir(base_dir, project_name);
+    if ws_dir.is_dir() {
+        touch_workspace(&ws_dir, project_name);
+        return Ok(ws_dir);
+    }
+
+    if let Some(seed_dir) = find_seed_workspace(base_dir, project_name) {
+        tracing::info!(
+            "Forking new branch workspace for '{}' from seed '{}' via APFS CoW...",
+            project_name,
+            seed_dir.display()
+        );
+        if let Err(e) = cow_clone_dir(&seed_dir, &ws_dir) {
+            tracing::warn!("CoW clone failed ({}); creating clean directory", e);
+            fs::create_dir_all(&ws_dir)?;
+        }
+    } else {
+        fs::create_dir_all(&ws_dir)?;
+    }
+
+    touch_workspace(&ws_dir, project_name);
+    Ok(ws_dir)
 }
 
 /// Returns the default workspaces root directory (`~/.farhand/workspaces`).
@@ -100,7 +137,7 @@ pub fn diff_manifests(
             // and never delete agent-internal state or history files (.farhand-state.json, .farhand-runs).
             if !fileset::is_default_ignored(rel_path)
                 && rel_path != state::STATE_FILENAME
-                && !rel_path.starts_with(".farhand-runs")
+                && !rel_path.starts_with(".farhand-")
             {
                 delete_extraneous.push(rel_path.clone());
             }

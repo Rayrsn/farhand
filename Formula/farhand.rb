@@ -1,7 +1,7 @@
 class Farhand < Formula
   desc "Zero-dependency remote build and test offloader for weak machines"
   homepage "https://github.com/Rayrsn/farhand"
-  version "0.7.0"
+  version "0.8.0"
   license "MIT"
 
   on_macos do

@@ -3,7 +3,6 @@ use protocol::{
     LogPayload, ManifestPayload, MsgType, NeedPayload, ResultPayload, RunPayload,
     CURRENT_PROTOCOL_VERSION,
 };
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -154,13 +153,73 @@ pub async fn handle_connection(
         return Ok(());
     }
 
+    if msg_type == MsgType::Clean {
+        let clean_req: protocol::CleanRequestPayload = decode_json(&payload)?;
+        if let Some(expected) = ctx.expected_token.as_deref() {
+            if !expected.is_empty() && clean_req.token != expected {
+                let ack = HelloAckPayload {
+                    ok: false,
+                    error: Some("Unauthorized CLEAN request".into()),
+                };
+                write_json_frame(&mut stream, MsgType::HelloAck, &ack).await?;
+                return Err("Unauthorized CLEAN request".into());
+            }
+        }
+
+        let mut bytes_freed = 0u64;
+        let msg;
+
+        if clean_req.all_branches {
+            let base_name = workspace::parse_base_project_name(&clean_req.project)
+                .unwrap_or(&clean_req.project);
+            let workspaces = workspace::scan_workspaces(&ctx.workdir_root);
+            let mut count = 0;
+            for ws in workspaces {
+                if !ws.is_canonical && ws.name.starts_with(base_name) {
+                    bytes_freed += ws.size_bytes;
+                    let _ = std::fs::remove_dir_all(&ws.path);
+                    count += 1;
+                }
+            }
+            msg = format!(
+                "Purged {} branch workspaces for project '{}'",
+                count, base_name
+            );
+        } else {
+            let ws_dir = workspace::resolve_workspace_dir(&ctx.workdir_root, &clean_req.project);
+            if ws_dir.is_dir() {
+                if clean_req.caches_only {
+                    bytes_freed = workspace::trim_workspace_caches(&ws_dir);
+                    msg = format!(
+                        "Trimmed volatile caches for workspace '{}'",
+                        clean_req.project
+                    );
+                } else {
+                    bytes_freed = workspace::calculate_dir_size(&ws_dir);
+                    let _ = std::fs::remove_dir_all(&ws_dir);
+                    msg = format!("Removed workspace '{}'", clean_req.project);
+                }
+            } else {
+                msg = format!("Workspace '{}' does not exist remotely", clean_req.project);
+            }
+        }
+
+        let resp = protocol::CleanResponsePayload {
+            ok: true,
+            message: msg,
+            bytes_freed,
+        };
+        write_json_frame(&mut stream, MsgType::CleanResp, &resp).await?;
+        return Ok(());
+    }
+
     if msg_type != MsgType::Hello {
         let ack = HelloAckPayload {
             ok: false,
-            error: Some("Expected HELLO, STATUS, or HISTORY frame".into()),
+            error: Some("Expected HELLO, STATUS, HISTORY, or CLEAN frame".into()),
         };
         write_json_frame(&mut stream, MsgType::HelloAck, &ack).await?;
-        return Err("Protocol error: expected HELLO, STATUS, or HISTORY".into());
+        return Err("Protocol error: expected HELLO, STATUS, HISTORY, or CLEAN".into());
     }
 
     let hello: HelloPayload = decode_json(&payload)?;
@@ -195,9 +254,8 @@ pub async fn handle_connection(
     write_json_frame(&mut stream, MsgType::HelloAck, &ack).await?;
     info!("Handshake successful for project '{}'", hello.project);
 
-    // Resolve persistent workspace directory
-    let workspace_dir = workspace::resolve_workspace_dir(&ctx.workdir_root, &hello.project);
-    fs::create_dir_all(&workspace_dir)?;
+    // Resolve persistent workspace directory (forks from seed via APFS CoW if branch)
+    let workspace_dir = workspace::ensure_workspace_dir(&ctx.workdir_root, &hello.project)?;
     info!("Using persistent workspace: {}", workspace_dir.display());
 
     // 2. Receive next frame: PUT_TEMPLATE or MANIFEST
