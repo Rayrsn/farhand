@@ -1051,6 +1051,7 @@ dependencies = [
  "fileset",
  "glob",
  "hex",
+ "libc",
  "protocol",
  "serde",
  "serde_json",
