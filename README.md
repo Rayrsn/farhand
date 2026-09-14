@@ -1,11 +1,21 @@
 <p align="center">
-  <img src="assets/logo.jpg" alt="Farhand Logo" width="220" style="border-radius: 24px;" />
+  <img src="assets/logo.png" alt="Farhand Logo" width="220" style="border-radius: 24px;" />
 </p>
 
-<h1 align="center">Farhand</h1>
+<h1 align="center">Farhand (fh)</h1>
 
 <p align="center">
-  <strong>Zero-dependency remote build and test offloader for weak or battery-constrained machines.</strong>
+  <strong>Zero-dependency remote build and test offloader.</strong>
+</p>
+
+<p align="center">
+  <i>
+    Farhand or fh (pronounced FAAAAAAAH)
+  </i>
+    <br/>
+    <audio controls>
+      <source src="https://www.myinstants.com/media/sounds/fahhh_KcgAXfs.mp3" type="audio/mpeg" />
+    </audio>
 </p>
 
 <p align="center">
