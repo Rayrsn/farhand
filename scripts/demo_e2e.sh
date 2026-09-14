@@ -342,6 +342,39 @@ rm -rf "${HOOK_DIR}"
 
 echo ""
 echo "================================================================"
+echo "TEST 15: Run history persistence & query (fh history)"
+echo "================================================================"
+HIST_DIR=$(mktemp -d)
+(
+  cd "${HIST_DIR}"
+  echo "--- Subtest 15A: Execute build command to record run in history ---"
+  "${OLDPWD}/target/debug/fh" --host "127.0.0.1:${PORT}" --token "${TOKEN}" --name "history-demo" -- echo "executing tracked run"
+
+  echo "--- Subtest 15B: Query history in formatted table view ---"
+  HIST_TABLE=$("${OLDPWD}/target/debug/fh" --host "127.0.0.1:${PORT}" --token "${TOKEN}" history --name "history-demo" --limit 5)
+  echo "${HIST_TABLE}"
+  if echo "${HIST_TABLE}" | grep -q "DATE / TIME (UTC)"; then
+    echo "[PASS] Table view output rendered with correct headers"
+  else
+    echo "[FAIL] Table view missing expected headers"
+    exit 1
+  fi
+
+  echo "--- Subtest 15C: Query history in structured JSON view ---"
+  HIST_JSON=$("${OLDPWD}/target/debug/fh" --host "127.0.0.1:${PORT}" --token "${TOKEN}" --log-format json history --name "history-demo")
+  echo "${HIST_JSON}"
+  if echo "${HIST_JSON}" | grep -q '"project": "history-demo"'; then
+    echo "[PASS] JSON view returned valid history records"
+  else
+    echo "[FAIL] JSON view missing expected project records"
+    exit 1
+  fi
+)
+echo "[PASS] Test 15 run history queries verified!"
+rm -rf "${HIST_DIR}"
+
+echo ""
+echo "================================================================"
 echo "ALL MANUAL END-TO-END TESTS PASSED SUCCESSFULLY!"
 echo "================================================================"
 

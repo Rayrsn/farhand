@@ -31,18 +31,45 @@ struct Cli {
         help = "Agent capability tags (repeatable, e.g. '--tag lan --tag gpu')"
     )]
     tags: Vec<String>,
+
+    #[arg(
+        long = "log-level",
+        default_value = "info",
+        help = "Log level (trace, debug, info, warn, error)"
+    )]
+    log_level: String,
+
+    #[arg(
+        long = "log-format",
+        default_value = "text",
+        help = "Log format ('text' or 'json')"
+    )]
+    log_format: String,
+}
+
+fn setup_tracing(level_str: &str, format_str: &str) {
+    use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level_str));
+    let fmt_layer = tracing_subscriber::fmt::layer().with_target(false);
+
+    if format_str == "json" {
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(fmt_layer.json())
+            .init();
+    } else {
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(fmt_layer)
+            .init();
+    }
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
-
     let cli = Cli::parse();
+    setup_tracing(&cli.log_level, &cli.log_format);
     let listener = TcpListener::bind(&cli.listen).await?;
     let workdir = cli
         .workdir

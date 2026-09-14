@@ -95,7 +95,12 @@ pub async fn handle_connection(
     mut stream: TcpStream,
     ctx: Arc<ServerContext>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // 1. First frame: can be STATUS probe or HELLO handshake
+    let client_addr = stream
+        .peer_addr()
+        .map(|a| a.to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
+
+    // 1. First frame: can be STATUS probe, HISTORY query, or HELLO handshake
     let (msg_type, payload) = read_frame(&mut stream).await?;
 
     if msg_type == MsgType::Status {
@@ -125,13 +130,37 @@ pub async fn handle_connection(
         return Ok(());
     }
 
+    if msg_type == MsgType::History {
+        let history_req: protocol::HistoryRequestPayload = decode_json(&payload)?;
+        if let Some(expected) = ctx.expected_token.as_deref() {
+            if !expected.is_empty() && history_req.token != expected {
+                let ack = HelloAckPayload {
+                    ok: false,
+                    error: Some("Unauthorized HISTORY request".into()),
+                };
+                write_json_frame(&mut stream, MsgType::HelloAck, &ack).await?;
+                return Err("Unauthorized HISTORY request".into());
+            }
+        }
+        let workspace_dir =
+            workspace::resolve_workspace_dir(&ctx.workdir_root, &history_req.project);
+        let runs = workspace::history::get_recent_runs(&workspace_dir, history_req.limit)
+            .unwrap_or_default();
+        let resp = protocol::HistoryResponsePayload {
+            project: history_req.project,
+            runs,
+        };
+        write_json_frame(&mut stream, MsgType::HistoryResp, &resp).await?;
+        return Ok(());
+    }
+
     if msg_type != MsgType::Hello {
         let ack = HelloAckPayload {
             ok: false,
-            error: Some("Expected HELLO or STATUS frame".into()),
+            error: Some("Expected HELLO, STATUS, or HISTORY frame".into()),
         };
         write_json_frame(&mut stream, MsgType::HelloAck, &ack).await?;
-        return Err("Protocol error: expected HELLO or STATUS".into());
+        return Err("Protocol error: expected HELLO, STATUS, or HISTORY".into());
     }
 
     let hello: HelloPayload = decode_json(&payload)?;
@@ -284,6 +313,7 @@ pub async fn handle_connection(
         return Err(format!("Expected FILES frame, got {:?}", msg_type).into());
     }
 
+    let bytes_synced = payload.len() as u64;
     if !payload.is_empty() {
         info!("Unpacking {} delta bytes into workspace", payload.len());
         fileset::unpack_tar(&workspace_dir, &payload)?;
@@ -304,6 +334,16 @@ pub async fn handle_connection(
     }
     let run: RunPayload = decode_json(&payload)?;
     info!("Executing command: {:?}", run.argv);
+
+    let run_start = std::time::Instant::now();
+    let now_millis = std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let run_id = format!(
+        "{:08x}",
+        (now_millis ^ (std::process::id() as u128)) & 0xffffffff
+    );
 
     // 6. Pre-build dependency caching hook
     let (mut read_half, write_half) = stream.into_split();
@@ -371,6 +411,22 @@ pub async fn handle_connection(
                 let mut writer = shared_writer.lock().await;
                 write_json_frame(&mut *writer, MsgType::Result, &result).await?;
                 drop(read_half);
+
+                let record = protocol::RunRecord {
+                    id: run_id,
+                    timestamp_rfc3339: workspace::format_rfc3339(std::time::SystemTime::now()),
+                    project: hello.project.clone(),
+                    argv: run.argv.clone(),
+                    exit_code: hook_exit,
+                    duration_ms: run_start.elapsed().as_millis() as u64,
+                    bytes_synced,
+                    artifact_size: 0,
+                    client_addr: client_addr.clone(),
+                    error: result.error,
+                };
+                if let Err(e) = workspace::history::save_run(&workspace_dir, &record) {
+                    warn!("Failed to save run record: {}", e);
+                }
                 return Ok(());
             }
 
@@ -427,6 +483,7 @@ pub async fn handle_connection(
     }
 
     // 8. If command succeeded, resolve and send artifacts
+    let mut artifact_size = 0u64;
     if exit_code == 0 {
         let artifact_paths = workspace::resolve_artifact_paths(
             &workspace_dir,
@@ -436,10 +493,31 @@ pub async fn handle_connection(
         if !artifact_paths.is_empty() {
             info!("Packing {} artifact paths", artifact_paths.len());
             let tar_gz = fileset::pack_tar(&workspace_dir, &artifact_paths)?;
+            artifact_size = tar_gz.len() as u64;
             let mut writer = shared_writer.lock().await;
             write_frame(&mut *writer, MsgType::Artifacts, &tar_gz).await?;
             info!("Sent ARTIFACTS frame ({} bytes)", tar_gz.len());
         }
+    }
+
+    let record = protocol::RunRecord {
+        id: run_id,
+        timestamp_rfc3339: workspace::format_rfc3339(std::time::SystemTime::now()),
+        project: hello.project.clone(),
+        argv: run.argv.clone(),
+        exit_code,
+        duration_ms: run_start.elapsed().as_millis() as u64,
+        bytes_synced,
+        artifact_size,
+        client_addr,
+        error: if exit_code != 0 {
+            Some(format!("command exited with status code {}", exit_code))
+        } else {
+            None
+        },
+    };
+    if let Err(e) = workspace::history::save_run(&workspace_dir, &record) {
+        warn!("Failed to save run record: {}", e);
     }
 
     drop(read_half);

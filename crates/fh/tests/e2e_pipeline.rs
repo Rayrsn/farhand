@@ -1345,3 +1345,159 @@ hints:
     let remote_proj_dir = workspace::resolve_workspace_dir(remote_workdir.path(), project_name);
     assert!(!remote_proj_dir.join(".farhand-state.json").exists());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_e2e_history_query_and_persistence() {
+    let token = "history-tok-1".to_string();
+    let remote_workdir = tempdir().unwrap();
+    let (server_addr, _handle) =
+        spawn_test_server(Some(token.clone()), remote_workdir.path().to_path_buf()).await;
+
+    let project_dir = tempdir().unwrap();
+    fs::write(
+        project_dir.path().join("main.c"),
+        "int main() { return 0; }\n",
+    )
+    .unwrap();
+
+    let project_name = "history-demo-proj";
+
+    // 1. Run a build via client roundtrip
+    let (_, _, exit_code) = client_roundtrip(
+        &server_addr,
+        &token,
+        project_name,
+        project_dir.path(),
+        &["echo".into(), "hello from run 1".into()],
+    )
+    .await;
+    assert_eq!(exit_code, 0);
+
+    // 2. Query history using fh::query_history function directly
+    let resp = fh::query_history(&server_addr, &token, project_name, 10)
+        .await
+        .expect("query_history should succeed");
+
+    assert_eq!(resp.project, project_name);
+    assert_eq!(resp.runs.len(), 1);
+    let run = &resp.runs[0];
+    assert_eq!(run.project, project_name);
+    assert_eq!(run.exit_code, 0);
+    assert_eq!(run.argv, vec!["echo", "hello from run 1"]);
+    assert!(run.bytes_synced > 0);
+    assert!(!run.timestamp_rfc3339.is_empty());
+    assert!(!run.id.is_empty());
+
+    // 3. Query history via CLI binary (text table format)
+    let cli_out = tokio::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+        .args([
+            "--host",
+            &server_addr,
+            "--token",
+            &token,
+            "history",
+            "--name",
+            project_name,
+        ])
+        .output()
+        .await
+        .unwrap();
+
+    assert_eq!(cli_out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&cli_out.stdout);
+    assert!(stdout.contains("DATE / TIME (UTC)"));
+    assert!(stdout.contains("echo hello from run 1"));
+
+    // 4. Query history via CLI binary (--log-format json)
+    let json_cli_out = tokio::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+        .args([
+            "--host",
+            &server_addr,
+            "--token",
+            &token,
+            "--log-format",
+            "json",
+            "history",
+            "--name",
+            project_name,
+        ])
+        .output()
+        .await
+        .unwrap();
+
+    assert_eq!(json_cli_out.status.code(), Some(0));
+    let json_stdout = String::from_utf8_lossy(&json_cli_out.stdout);
+    let parsed: protocol::HistoryResponsePayload =
+        serde_json::from_str(&json_stdout).expect("CLI JSON output must be valid JSON");
+    assert_eq!(parsed.runs.len(), 1);
+    assert_eq!(parsed.runs[0].id, run.id);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_e2e_history_limit_and_ordering() {
+    let token = "history-tok-2".to_string();
+    let remote_workdir = tempdir().unwrap();
+    let (server_addr, _handle) =
+        spawn_test_server(Some(token.clone()), remote_workdir.path().to_path_buf()).await;
+
+    let project_dir = tempdir().unwrap();
+    fs::write(project_dir.path().join("file.txt"), "content\n").unwrap();
+    let project_name = "history-ordering-proj";
+
+    // Run 3 commands sequentially
+    for i in 1..=3 {
+        let cmd = format!("iteration-{}", i);
+        let (_, _, code) = client_roundtrip(
+            &server_addr,
+            &token,
+            project_name,
+            project_dir.path(),
+            &["echo".into(), cmd],
+        )
+        .await;
+        assert_eq!(code, 0);
+        tokio::time::sleep(tokio::time::Duration::from_millis(15)).await;
+    }
+
+    // Query with limit 2
+    let resp = fh::query_history(&server_addr, &token, project_name, 2)
+        .await
+        .expect("query_history should succeed");
+
+    assert_eq!(resp.runs.len(), 2);
+    // Newest first: iteration-3 then iteration-2
+    assert_eq!(resp.runs[0].argv[1], "iteration-3");
+    assert_eq!(resp.runs[1].argv[1], "iteration-2");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_e2e_history_unauthorized() {
+    let token = "valid-secret".to_string();
+    let remote_workdir = tempdir().unwrap();
+    let (server_addr, _handle) =
+        spawn_test_server(Some(token), remote_workdir.path().to_path_buf()).await;
+
+    let res = fh::query_history(&server_addr, "wrong-token", "some-proj", 10).await;
+    assert!(res.is_err(), "Unauthorized history request must fail");
+
+    // Also via CLI binary: must exit with code 125
+    let cli_out = tokio::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+        .args([
+            "--host",
+            &server_addr,
+            "--token",
+            "wrong-token",
+            "history",
+            "--name",
+            "some-proj",
+        ])
+        .output()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        cli_out.status.code(),
+        Some(125),
+        "Unauthorized request must exit with 125"
+    );
+}

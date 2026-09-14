@@ -75,6 +75,20 @@ struct Cli {
     #[arg(long, help = "Bypass lockfile dependency caching hooks")]
     no_cache: bool,
 
+    #[arg(
+        long = "log-level",
+        default_value = "info",
+        help = "Log level (trace, debug, info, warn, error)"
+    )]
+    log_level: String,
+
+    #[arg(
+        long = "log-format",
+        default_value = "text",
+        help = "Log format ('text' or 'json')"
+    )]
+    log_format: String,
+
     #[arg(trailing_var_arg = true, help = "Command to run remotely")]
     command: Vec<String>,
 }
@@ -85,6 +99,16 @@ enum Subcommands {
     Templates {
         #[command(subcommand)]
         action: TemplateAction,
+    },
+    /// Query build and execution history from remote agent
+    History {
+        /// Project name to query (default: current project name)
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Maximum number of runs to display (default: 10)
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
     },
 }
 
@@ -147,9 +171,29 @@ impl Telemetry {
     }
 }
 
+fn setup_tracing(level_str: &str, format_str: &str) {
+    use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level_str));
+    let fmt_layer = tracing_subscriber::fmt::layer().with_target(false);
+
+    if format_str == "json" {
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(fmt_layer.json())
+            .init();
+    } else {
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(fmt_layer)
+            .init();
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
+    setup_tracing(&cli.log_level, &cli.log_format);
     let mut telemetry = Telemetry::default();
 
     let project_dir = match cli.dir.canonicalize() {
@@ -269,6 +313,28 @@ async fn main() {
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "unnamed_project".into())
     });
+
+    // Handle History subcommand
+    if let Some(Subcommands::History { name, limit }) = cli.subcommand {
+        let proj = name.unwrap_or(project_name);
+
+        match fh::query_history(&host, &token, &proj, limit).await {
+            Ok(resp) => {
+                if cli.log_format == "json" {
+                    if let Ok(json) = serde_json::to_string_pretty(&resp) {
+                        println!("{}", json);
+                    }
+                } else {
+                    fh::render_history_table(&resp);
+                }
+                exit(0);
+            }
+            Err(e) => {
+                eprintln!("Error querying history: {}", e);
+                exit(EXIT_INFRA_ERROR);
+            }
+        }
+    }
 
     // Handle remote template subcommands (Push)
     if let Some(Subcommands::Templates {

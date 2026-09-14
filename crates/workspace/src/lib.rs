@@ -14,6 +14,9 @@ pub use lock::WorkspaceLockManager;
 pub mod state;
 pub use state::{compute_lockfiles_hash, read_state, write_state, WorkspaceState};
 
+pub mod history;
+pub use history::{format_rfc3339, get_recent_runs, save_run, MAX_RUNS_RETAINED, RUNS_DIR};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffResult {
     /// List of forward-slash relative paths the agent needs the client to upload
