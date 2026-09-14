@@ -11,10 +11,12 @@ members = [
 ]
 
 [workspace.package]
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 authors = ["Farhand Authors"]
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/Rayrsn/farhand"
+homepage = "https://github.com/Rayrsn/farhand"
 
 [workspace.dependencies]
 tokio = { version = "1.38", features = ["full"] }

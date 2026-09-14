@@ -1,0 +1,22 @@
+[Unit]
+Description=Farhand Remote Build Daemon (fhd)
+Documentation=https://github.com/Rayrsn/farhand
+After=network.target
+
+[Service]
+Type=simple
+User=builduser
+Group=builduser
+EnvironmentFile=-/etc/farhand/fhd.env
+ExecStart=/usr/local/bin/fhd --listen ${FARHAND_LISTEN:-0.0.0.0:9876} --token ${FARHAND_TOKEN} --workdir ${FARHAND_WORKDIR:-/var/farhand/workspaces}
+Restart=always
+RestartSec=5s
+LimitNOFILE=65536
+
+# Security Hardening & Sandboxing
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/var/farhand
+
+[Install]
+WantedBy=multi-user.target
