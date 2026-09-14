@@ -466,10 +466,6 @@ pub async fn handle_connection(
                         install_cmd, hook_exit
                     )),
                 };
-                let mut writer = shared_writer.lock().await;
-                write_json_frame(&mut *writer, MsgType::Result, &result).await?;
-                drop(read_half);
-
                 let record = protocol::RunRecord {
                     id: run_id,
                     timestamp_rfc3339: workspace::format_rfc3339(std::time::SystemTime::now()),
@@ -480,11 +476,15 @@ pub async fn handle_connection(
                     bytes_synced,
                     artifact_size: 0,
                     client_addr: client_addr.clone(),
-                    error: result.error,
+                    error: result.error.clone(),
                 };
                 if let Err(e) = workspace::history::save_run(&workspace_dir, &record) {
                     warn!("Failed to save run record: {}", e);
                 }
+
+                let mut writer = shared_writer.lock().await;
+                write_json_frame(&mut *writer, MsgType::Result, &result).await?;
+                drop(read_half);
                 return Ok(());
             }
 
@@ -530,18 +530,9 @@ pub async fn handle_connection(
 
     info!("Command exited with status code {}", exit_code);
 
-    // 7. Send RESULT frame
-    let result = ResultPayload {
-        exit_code,
-        error: None,
-    };
-    {
-        let mut writer = shared_writer.lock().await;
-        write_json_frame(&mut *writer, MsgType::Result, &result).await?;
-    }
-
-    // 8. If command succeeded, resolve and send artifacts
+    // 8. If command succeeded, resolve artifacts before reporting result & saving history
     let mut artifact_size = 0u64;
+    let mut artifact_payload = None;
     if exit_code == 0 {
         let artifact_paths = workspace::resolve_artifact_paths(
             &workspace_dir,
@@ -552,9 +543,7 @@ pub async fn handle_connection(
             info!("Packing {} artifact paths", artifact_paths.len());
             let tar_gz = fileset::pack_tar(&workspace_dir, &artifact_paths)?;
             artifact_size = tar_gz.len() as u64;
-            let mut writer = shared_writer.lock().await;
-            write_frame(&mut *writer, MsgType::Artifacts, &tar_gz).await?;
-            info!("Sent ARTIFACTS frame ({} bytes)", tar_gz.len());
+            artifact_payload = Some(tar_gz);
         }
     }
 
@@ -576,6 +565,20 @@ pub async fn handle_connection(
     };
     if let Err(e) = workspace::history::save_run(&workspace_dir, &record) {
         warn!("Failed to save run record: {}", e);
+    }
+
+    // 9. Send RESULT and ARTIFACTS frames
+    let result = ResultPayload {
+        exit_code,
+        error: None,
+    };
+    {
+        let mut writer = shared_writer.lock().await;
+        write_json_frame(&mut *writer, MsgType::Result, &result).await?;
+        if let Some(tar_gz) = artifact_payload {
+            write_frame(&mut *writer, MsgType::Artifacts, &tar_gz).await?;
+            info!("Sent ARTIFACTS frame ({} bytes)", tar_gz.len());
+        }
     }
 
     drop(read_half);

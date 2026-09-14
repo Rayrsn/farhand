@@ -1374,9 +1374,18 @@ async fn test_e2e_history_query_and_persistence() {
     assert_eq!(exit_code, 0);
 
     // 2. Query history using fh::query_history function directly
-    let resp = fh::query_history(&server_addr, &token, project_name, 10)
+    let mut resp = fh::query_history(&server_addr, &token, project_name, 10)
         .await
         .expect("query_history should succeed");
+    for _ in 0..10 {
+        if !resp.runs.is_empty() {
+            break;
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(15)).await;
+        resp = fh::query_history(&server_addr, &token, project_name, 10)
+            .await
+            .expect("query_history should succeed");
+    }
 
     assert_eq!(resp.project, project_name);
     assert_eq!(resp.runs.len(), 1);
