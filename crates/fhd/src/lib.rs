@@ -663,25 +663,23 @@ pub fn build_raw_shell_command(cwd: &Path, raw_cmd: &str, custom_shell: Option<&
 }
 
 pub async fn kill_process_group(child: &mut tokio::process::Child) {
+    #[cfg(unix)]
     if let Some(pid) = child.id() {
-        #[cfg(unix)]
-        {
-            unsafe {
-                libc::kill(-(pid as i32), libc::SIGTERM);
-            }
-            tokio::select! {
-                _ = child.wait() => {}
-                _ = tokio::time::sleep(std::time::Duration::from_secs(3)) => {
-                    unsafe {
-                        libc::kill(-(pid as i32), libc::SIGKILL);
-                    }
+        unsafe {
+            libc::kill(-(pid as i32), libc::SIGTERM);
+        }
+        tokio::select! {
+            _ = child.wait() => {}
+            _ = tokio::time::sleep(std::time::Duration::from_secs(3)) => {
+                unsafe {
+                    libc::kill(-(pid as i32), libc::SIGKILL);
                 }
             }
         }
-        #[cfg(not(unix))]
-        {
-            let _ = child.kill().await;
-        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = child.kill().await;
     }
 }
 
