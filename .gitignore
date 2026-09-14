@@ -4,3 +4,8 @@
 *~
 .DS_Store
 dist/releases/
+
+# Local plans and agent files
+plan/
+AGENTS.md
+agent.md
