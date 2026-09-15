@@ -210,7 +210,7 @@ mod tests {
         assert!(dir1
             .file_name()
             .and_then(|n| n.to_str())
-            .map_or(false, |s| s.starts_with("my-app-")));
+            .is_some_and(|s| s.starts_with("my-app-")));
 
         let dir3 = resolve_workspace_dir(base, "other-project");
         assert_ne!(dir1, dir3);
