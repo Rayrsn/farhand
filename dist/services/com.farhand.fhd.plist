@@ -18,6 +18,8 @@
     <dict>
         <key>FARHAND_TOKEN</key>
         <string>replace-with-your-secret-token</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
         <!-- Shared Toolchain Caches across workspaces -->
         <key>RUSTC_WRAPPER</key>
         <string>/usr/local/bin/sccache</string>

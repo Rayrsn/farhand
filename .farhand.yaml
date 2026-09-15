@@ -1,0 +1,32 @@
+# ==============================================================================
+# Farhand Project Configuration (.farhand.yaml)
+# ==============================================================================
+# Remote build and test offloader configuration for the Farhand codebase.
+#
+# Usage:
+#   export FARHAND_TOKEN="your-secret-token"
+#   fh -- cargo build --release
+#   fh -- cargo test --workspace
+# ==============================================================================
+
+host: "${FARHAND_HOST}"
+
+# Shared authentication token (read from environment variable)
+token: "${FARHAND_TOKEN}"
+
+# Project identifier and persistent workspace folder key on the remote agent
+name: farhand
+
+# Specific build artifacts to retrieve upon exit code 0
+outputs:
+  - target/release/fh
+  - target/release/fhd
+
+# Local directory where retrieved artifacts will be extracted
+outDir: "."
+
+# Build environment preset
+template: rust
+
+# Print detailed file scan, delta sync, and execution telemetry
+verbose: false
