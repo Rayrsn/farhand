@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 pub const CURRENT_PROTOCOL_VERSION: u32 = 1;
 
@@ -109,6 +110,8 @@ pub struct RunPayload {
     pub template: Option<String>,
     #[serde(rename = "noCache", default)]
     pub no_cache: bool,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub env: Option<HashMap<String, String>>,
 }
 
 /// Agent -> Client: Streamed stdout or stderr line/chunk
@@ -221,4 +224,35 @@ pub struct CleanResponsePayload {
     pub message: String,
     #[serde(rename = "bytesFreed")]
     pub bytes_freed: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_run_payload_serde_with_and_without_env() {
+        let mut env = HashMap::new();
+        env.insert("DATABASE_URL".to_string(), "postgres://...".to_string());
+        env.insert("NODE_ENV".to_string(), "production".to_string());
+
+        let payload_with_env = RunPayload {
+            argv: vec!["npm".into(), "run".into(), "build".into()],
+            outputs: Some(vec!["dist".into()]),
+            cwd: None,
+            template: Some("npm".into()),
+            no_cache: false,
+            env: Some(env.clone()),
+        };
+
+        let json = serde_json::to_string(&payload_with_env).unwrap();
+        let decoded: RunPayload = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.env, Some(env));
+
+        // Test without env (omitted in json, defaults to None)
+        let json_without_env = r#"{"argv":["cargo","build"]}"#;
+        let decoded2: RunPayload = serde_json::from_str(json_without_env).unwrap();
+        assert_eq!(decoded2.env, None);
+        assert!(!decoded2.no_cache);
+    }
 }

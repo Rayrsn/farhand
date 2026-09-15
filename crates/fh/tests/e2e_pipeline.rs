@@ -130,6 +130,7 @@ async fn client_roundtrip_with_options(
         cwd: None,
         template,
         no_cache,
+        env: None,
     };
     write_json_frame(&mut stream, MsgType::Run, &run)
         .await
@@ -364,6 +365,7 @@ async fn client_roundtrip_with_artifacts(
         cwd: None,
         template: None,
         no_cache: false,
+        env: None,
     };
     write_json_frame(&mut stream, MsgType::Run, &run)
         .await
@@ -928,6 +930,7 @@ async fn test_e2e_concurrency_project_workspace_locking_and_queued() {
         cwd: None,
         template: None,
         no_cache: false,
+        env: None,
     };
     write_json_frame(&mut stream2, MsgType::Run, &run2)
         .await
@@ -1028,6 +1031,7 @@ async fn test_e2e_concurrency_global_semaphore_limit() {
         cwd: None,
         template: None,
         no_cache: false,
+        env: None,
     };
     write_json_frame(&mut stream2, MsgType::Run, &run2)
         .await
@@ -1088,6 +1092,7 @@ async fn test_e2e_client_disconnect_terminates_remote_process_group() {
         cwd: None,
         template: None,
         no_cache: false,
+        env: None,
     };
     write_json_frame(&mut stream, MsgType::Run, &run)
         .await
@@ -1143,6 +1148,7 @@ async fn test_e2e_multi_agent_pool_least_busy_dispatch() {
         cwd: None,
         template: None,
         no_cache: false,
+        env: None,
     };
     write_json_frame(&mut stream_a, MsgType::Run, &run)
         .await
@@ -1717,4 +1723,171 @@ async fn test_e2e_workspace_clean_subcommand() {
     assert_eq!(cli_out.status.code(), Some(0));
     let stdout = String::from_utf8_lossy(&cli_out.stdout);
     assert!(stdout.contains("[clean]"));
+}
+
+#[tokio::test]
+async fn test_e2e_env_vars_forwarding_default() {
+    let token = "env-secret".to_string();
+    let workdir = tempdir().unwrap();
+    let (server_addr, _handle) =
+        spawn_test_server(Some(token.clone()), workdir.path().to_path_buf()).await;
+
+    let project_dir = tempdir().unwrap();
+    fs::write(project_dir.path().join("file.txt"), "hello").unwrap();
+
+    let (shell_cmd, shell_arg, echo_cmd) = if cfg!(windows) {
+        ("cmd.exe", "/C", "echo VAR=%INFISICAL_DATABASE_URL%")
+    } else {
+        ("sh", "-c", "echo VAR=$INFISICAL_DATABASE_URL")
+    };
+
+    // Execute fh with ambient INFISICAL_DATABASE_URL environment variable set
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+        .current_dir(project_dir.path())
+        .env(
+            "INFISICAL_DATABASE_URL",
+            "postgres://user:pass@remote:5432/app",
+        )
+        .args([
+            "--host",
+            &server_addr,
+            "--token",
+            &token,
+            "--verbose",
+            "--",
+            shell_cmd,
+            shell_arg,
+            echo_cmd,
+        ])
+        .output()
+        .await
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("VAR=postgres://user:pass@remote:5432/app"),
+        "Stdout should contain forwarded ambient environment variable: {}",
+        stdout
+    );
+}
+
+#[tokio::test]
+async fn test_e2e_env_vars_disabled_via_no_env() {
+    let token = "env-secret".to_string();
+    let workdir = tempdir().unwrap();
+    let (server_addr, _handle) =
+        spawn_test_server(Some(token.clone()), workdir.path().to_path_buf()).await;
+
+    let project_dir = tempdir().unwrap();
+    fs::write(project_dir.path().join("file.txt"), "hello").unwrap();
+
+    let (shell_cmd, shell_arg, echo_cmd) = if cfg!(windows) {
+        (
+            "cmd.exe",
+            "/C",
+            "if defined INFISICAL_SECRET (echo FOUND) else (echo MISSING)",
+        )
+    } else {
+        (
+            "sh",
+            "-c",
+            "if [ -n \"$INFISICAL_SECRET\" ]; then echo FOUND; else echo MISSING; fi",
+        )
+    };
+
+    // Execute fh with --no-env flag
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+        .current_dir(project_dir.path())
+        .env("INFISICAL_SECRET", "super_secret_val")
+        .args([
+            "--host",
+            &server_addr,
+            "--token",
+            &token,
+            "--no-env",
+            "--",
+            shell_cmd,
+            shell_arg,
+            echo_cmd,
+        ])
+        .output()
+        .await
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("MISSING"),
+        "Stdout should indicate env variable was not forwarded when --no-env is used: {}",
+        stdout
+    );
+}
+
+#[tokio::test]
+async fn test_e2e_env_vars_explicit_flag_and_config() {
+    let token = "env-secret".to_string();
+    let workdir = tempdir().unwrap();
+    let (server_addr, _handle) =
+        spawn_test_server(Some(token.clone()), workdir.path().to_path_buf()).await;
+
+    let project_dir = tempdir().unwrap();
+    fs::write(project_dir.path().join("file.txt"), "hello").unwrap();
+
+    // Test with .farhand.yaml specifying forwardEnv: false and env: { CONFIG_KEY: config_val_123 }
+    let yaml = format!(
+        r#"
+host: "{}"
+token: "{}"
+forwardEnv: false
+env:
+  CONFIG_KEY: config_val_123
+"#,
+        server_addr, token
+    );
+    fs::write(project_dir.path().join(".farhand.yaml"), yaml).unwrap();
+
+    let (shell_cmd, shell_arg, echo_cmd) = if cfg!(windows) {
+        (
+            "cmd.exe",
+            "/C",
+            "echo C=%CONFIG_KEY% E=%CLI_KEY% A=%AMBIENT_KEY%",
+        )
+    } else {
+        ("sh", "-c", "echo C=$CONFIG_KEY E=$CLI_KEY A=$AMBIENT_KEY")
+    };
+
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+        .current_dir(project_dir.path())
+        .env("AMBIENT_KEY", "ambient_should_be_skipped")
+        .args([
+            "-e",
+            "CLI_KEY=cli_val_456",
+            "--",
+            shell_cmd,
+            shell_arg,
+            echo_cmd,
+        ])
+        .output()
+        .await
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("C=config_val_123"),
+        "Config env should be present: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("E=cli_val_456"),
+        "CLI -e flag env should be present: {}",
+        stdout
+    );
+    if cfg!(windows) {
+        assert!(stdout.contains("A=%AMBIENT_KEY%"));
+    } else {
+        assert!(stdout.contains("A="));
+        assert!(!stdout.contains("ambient_should_be_skipped"));
+    }
 }

@@ -170,6 +170,12 @@ fh npm test
 # Compile Rust binaries
 fh cargo build --release
 
+# Run with secrets from Infisical (env vars forwarded automatically)
+infisical run -- fh npm run build
+
+# Or disable ambient env forwarding / pass explicit variables
+fh --no-env -e DATABASE_URL=postgres://remote/app -- npm run build
+
 # Inspect execution history
 fh history
 

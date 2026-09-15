@@ -39,6 +39,8 @@ Both **`camelCase`** and **`snake_case`** keys are supported.
 | `template` | `string` | *(None)* | Explicit template name to enforce build environment presets (e.g. `rust`, `npm`, `python`). |
 | `agentTag` / `agent_tag` | `string` | *(None)* | Agent selection tag for multi-agent pools (e.g. `gpu`, `linux-x64`, `apple-silicon`). |
 | `noCache` / `no_cache` | `boolean` | `false` | If `true`, instructs agent to bypass dependency caching hooks. |
+| `forwardEnv` / `forward_env` | `boolean` | `true` | If `true`, forwards ambient local environment variables (secrets, build flags) to the remote process. Set to `false` or pass `--no-env` to disable. |
+| `env` | `map of string: string` | `{}` | Key-value map of explicit environment variables to pass to the remote command. |
 
 ---
 
@@ -61,7 +63,53 @@ name: my-app-${USER:-dev}
 
 ---
 
-## 4. Parameter Precedence Hierarchy
+## 4. Environment Variable Forwarding & Secret Managers (Infisical, dotenv)
+
+Farhand **automatically forwards local environment variables** to the remote execution environment by default.
+
+This enables seamless workflows with secret managers like **[Infisical](https://infisical.com)**, **Vault**, or `dotenv-cli`:
+
+```bash
+# Inject secrets from Infisical directly into the remote build process
+infisical run -- fh -- npm run build
+
+# Or using dotenv
+dotenv -- fh -- cargo test
+```
+
+### Safety & Filtering
+To prevent local client environment conflicts, host-specific and session-specific environment variables are **automatically filtered out**:
+- `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `PWD`, `TMPDIR`, `TEMP`, `TMP`
+- `SSH_*` (`SSH_AUTH_SOCK`, `SSH_AGENT_PID`, `SSH_CONNECTION`, etc.)
+- `DISPLAY`, `WAYLAND_DISPLAY`, `XDG_*`
+- `FARHAND_*` (`FARHAND_HOST`, `FARHAND_TOKEN`, etc.)
+
+All your build variables, application secrets, API keys, and compiler flags are preserved and passed to the remote compiler/test process.
+
+### Disabling or Customizing Forwarding
+
+```bash
+# Disable ambient env variable forwarding via CLI flag
+fh --no-env -- cargo build
+
+# Pass explicit individual environment variables (overrides or additions)
+fh -e DATABASE_URL=postgres://remote:5432/app -e NODE_ENV=production -- npm start
+```
+
+Or configure in `.farhand.yaml`:
+```yaml
+# Disable ambient env forwarding
+forwardEnv: false
+
+# Declare static or interpolated build variables
+env:
+  NODE_ENV: production
+  API_URL: ${API_URL:-https://api.example.com}
+```
+
+---
+
+## 5. Parameter Precedence Hierarchy
 
 When the same configuration option is defined in multiple places, Farhand evaluates them according to this strict hierarchy:
 
@@ -88,7 +136,7 @@ When the same configuration option is defined in multiple places, Farhand evalua
 
 ---
 
-## 5. Practical Configuration Examples
+## 6. Practical Configuration Examples
 
 ### 5.1 Minimal Setup (Local Network / Direct Connection)
 Ideal for a secondary desktop or home lab build server.

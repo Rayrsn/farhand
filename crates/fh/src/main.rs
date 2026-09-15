@@ -12,6 +12,93 @@ use tokio::net::TcpStream;
 
 const EXIT_INFRA_ERROR: i32 = 125;
 
+const FILTERED_ENV_VARS: &[&str] = &[
+    // Core OS / User session
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "PWD",
+    "OLDPWD",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    "TERM",
+    "TERMCAP",
+    "SHLVL",
+    "_",
+    // Farhand internals
+    "FARHAND_HOST",
+    "FARHAND_TOKEN",
+    "FARHAND_WORKDIR",
+    "FARHAND_LISTEN",
+    "FARHAND_MAX_DISK_GB",
+    "FARHAND_WORKSPACE_TTL_DAYS",
+    // SSH & Terminal session
+    "SSH_AUTH_SOCK",
+    "SSH_AGENT_PID",
+    "SSH_CONNECTION",
+    "SSH_CLIENT",
+    "SSH_TTY",
+    // GUI / Desktop environments
+    "DISPLAY",
+    "WAYLAND_DISPLAY",
+    "XAUTHORITY",
+    "XDG_RUNTIME_DIR",
+    "XDG_SESSION_ID",
+    "XDG_DATA_DIRS",
+    "XDG_CONFIG_DIRS",
+    "XDG_STATE_HOME",
+    "XDG_CACHE_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    // Editor / IDE specifics
+    "VSCODE_INJECTION",
+    "TERM_PROGRAM",
+    "TERM_PROGRAM_VERSION",
+    "COLORTERM",
+    "ANTIGRAVITY_SOURCE_METADATA",
+];
+
+fn collect_forward_env(
+    no_env_flag: bool,
+    config_forward_env: bool,
+    config_env: &std::collections::HashMap<String, String>,
+    cli_env: &[String],
+) -> Option<std::collections::HashMap<String, String>> {
+    let mut map = std::collections::HashMap::new();
+
+    // 1. If ambient forwarding is enabled (default), collect non-filtered local env vars
+    if !no_env_flag && config_forward_env {
+        for (k, v) in std::env::vars() {
+            if !FILTERED_ENV_VARS.contains(&k.as_str()) && !k.starts_with("FARHAND_") {
+                map.insert(k, v);
+            }
+        }
+    }
+
+    // 2. Overlay environment variables defined in .farhand.yaml
+    for (k, v) in config_env {
+        map.insert(k.clone(), v.clone());
+    }
+
+    // 3. Overlay explicit CLI flags: -e KEY=VAL or -e KEY (takes value from current local env)
+    for entry in cli_env {
+        if let Some((k, v)) = entry.split_once('=') {
+            map.insert(k.to_string(), v.to_string());
+        } else if let Ok(v) = std::env::var(entry) {
+            map.insert(entry.clone(), v);
+        }
+    }
+
+    if map.is_empty() {
+        None
+    } else {
+        Some(map)
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(
     name = "fh",
@@ -97,6 +184,21 @@ struct Cli {
         help = "Log format ('text' or 'json')"
     )]
     log_format: String,
+
+    #[arg(
+        long = "no-env",
+        action = clap::ArgAction::SetTrue,
+        help = "Disable forwarding local environment variables to the remote agent (forwarding is ON by default)"
+    )]
+    no_env: bool,
+
+    #[arg(
+        short = 'e',
+        long = "env",
+        action = clap::ArgAction::Append,
+        help = "Explicit environment variable to pass to remote command, in KEY=VALUE or KEY format (repeatable)"
+    )]
+    env: Vec<String>,
 
     #[arg(trailing_var_arg = true, help = "Command to run remotely")]
     command: Vec<String>,
@@ -770,12 +872,25 @@ async fn main() {
     }
 
     // 7. Send RUN frame
+    let run_env = collect_forward_env(cli.no_env, cfg.forward_env, &cfg.env, &cli.env);
+    if verbose {
+        if let Some(ref e) = run_env {
+            println!(
+                "[Environment] Forwarding {} environment variable(s) to remote agent",
+                e.len()
+            );
+        } else {
+            println!("[Environment] Environment variable forwarding is disabled");
+        }
+    }
+
     let run = RunPayload {
         argv: cli.command,
         outputs,
         cwd: None,
         template,
         no_cache,
+        env: run_env,
     };
 
     let remote_start = Instant::now();

@@ -4,6 +4,7 @@
 //! and configuration parsing.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use thiserror::Error;
@@ -17,6 +18,10 @@ pub enum ConfigError {
     Yaml(String, #[source] serde_yaml::Error),
 }
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct AgentConfig {
     pub host: String,
@@ -26,7 +31,7 @@ pub struct AgentConfig {
 }
 
 /// Project-local configuration parsed from `.farhand.yaml`.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Config {
     pub host: Option<String>,
@@ -47,6 +52,30 @@ pub struct Config {
     pub no_cache: bool,
     #[serde(default)]
     pub agents: Vec<AgentConfig>,
+    #[serde(alias = "forward_env", default = "default_true")]
+    pub forward_env: bool,
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            host: None,
+            token: None,
+            name: None,
+            outputs: Vec::new(),
+            out_dir: None,
+            insecure_skip_token: false,
+            verbose: false,
+            template: None,
+            agent_tag: None,
+            no_cache: false,
+            agents: Vec::new(),
+            forward_env: true,
+            env: HashMap::new(),
+        }
+    }
 }
 
 /// Expands environment variable expressions in a string.
@@ -269,5 +298,36 @@ agents:
         assert_eq!(cfg.agents[1].host, "10.0.0.2:9876");
         assert_eq!(cfg.agents[1].token.as_deref(), Some("secret-two"));
         assert_eq!(cfg.agents[1].tags, vec!["cloud", "gpu"]);
+    }
+
+    #[test]
+    fn test_parse_env_forwarding_options() {
+        // Default: forward_env is true, env is empty
+        let cfg_default: Config = serde_yaml::from_str("name: test-app\n").unwrap();
+        assert!(cfg_default.forward_env);
+        assert!(cfg_default.env.is_empty());
+
+        // Explicitly disabled
+        let yaml_disabled = r#"
+forwardEnv: false
+env:
+  DATABASE_URL: postgres://localhost/db
+  API_KEY: secret-123
+"#;
+        let cfg_disabled: Config = serde_yaml::from_str(yaml_disabled).unwrap();
+        assert!(!cfg_disabled.forward_env);
+        assert_eq!(
+            cfg_disabled.env.get("DATABASE_URL").map(|s| s.as_str()),
+            Some("postgres://localhost/db")
+        );
+        assert_eq!(
+            cfg_disabled.env.get("API_KEY").map(|s| s.as_str()),
+            Some("secret-123")
+        );
+
+        // Snake case alias
+        let yaml_snake = "forward_env: false\n";
+        let cfg_snake: Config = serde_yaml::from_str(yaml_snake).unwrap();
+        assert!(!cfg_snake.forward_env);
     }
 }

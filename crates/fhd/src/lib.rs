@@ -451,6 +451,7 @@ pub async fn handle_connection(
                 &workspace_dir,
                 install_cmd,
                 ctx.custom_shell.as_deref(),
+                run.env.as_ref(),
             )
             .await?;
 
@@ -525,6 +526,7 @@ pub async fn handle_connection(
         &workspace_dir,
         &run.argv,
         ctx.custom_shell.as_deref(),
+        run.env.as_ref(),
     )
     .await?;
 
@@ -790,8 +792,12 @@ pub async fn execute_raw_command_and_stream<
     cwd: &Path,
     raw_cmd: &str,
     custom_shell: Option<&str>,
+    env: Option<&std::collections::HashMap<String, String>>,
 ) -> Result<i32, Box<dyn std::error::Error>> {
-    let cmd = build_raw_shell_command(cwd, raw_cmd, custom_shell);
+    let mut cmd = build_raw_shell_command(cwd, raw_cmd, custom_shell);
+    if let Some(envs) = env {
+        cmd.envs(envs);
+    }
     run_child_and_stream(writer, reader, cmd).await
 }
 
@@ -804,10 +810,14 @@ pub async fn execute_and_stream<
     cwd: &Path,
     argv: &[String],
     custom_shell: Option<&str>,
+    env: Option<&std::collections::HashMap<String, String>>,
 ) -> Result<i32, Box<dyn std::error::Error>> {
     if argv.is_empty() {
         return Ok(0);
     }
-    let cmd = build_shell_command(cwd, argv, custom_shell);
+    let mut cmd = build_shell_command(cwd, argv, custom_shell);
+    if let Some(envs) = env {
+        cmd.envs(envs);
+    }
     run_child_and_stream(writer, reader, cmd).await
 }
