@@ -176,6 +176,7 @@ Deep-dive guides covering architecture, server setup, and configuration:
 - 💾 **[Storage Optimization & Caching Guide](docs/storage-and-caching.md)** — Deep dive into APFS Copy-on-Write cloning, LRU garbage collection, and shared toolchain caches (`sccache`).
 - ⚙️ **[Configuration Guide (`.farhand.yaml`)](docs/configuration.md)** — Complete reference for config discovery, field definitions, and environment variable interpolation.
 - 🌐 **[Multi-Agent Pool & Dynamic Load Balancing](docs/multi-agent-pool.md)** — Setup guide for multi-agent clusters, health probing, and hardware tag routing (`--agent-tag`).
+- ☁️ **[Remote Access via Cloudflare Tunnel](docs/cloudflared-tunnel.md)** — Connect securely over the internet with `cloudflared access tcp` without opening inbound router ports.
 
 ---
 
