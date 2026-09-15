@@ -4,7 +4,11 @@ use tokio::net::TcpListener;
 use tracing::info;
 
 #[derive(Parser, Debug)]
-#[command(name = "fhd", about = "Farhand daemon: persistent remote build agent")]
+#[command(
+    name = "fhd",
+    version,
+    about = "Farhand daemon: persistent remote build agent"
+)]
 struct Cli {
     #[arg(long, default_value = "0.0.0.0:9876", help = "Address to listen on")]
     listen: String,

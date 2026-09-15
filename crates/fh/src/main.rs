@@ -102,6 +102,7 @@ fn collect_forward_env(
 #[derive(Parser, Debug)]
 #[command(
     name = "fh",
+    version,
     about = "Farhand client: offload build/test execution to remote agent"
 )]
 struct Cli {

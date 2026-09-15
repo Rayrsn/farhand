@@ -1,8 +1,17 @@
 [package]
 name = "fhd"
+description = "Farhand agent daemon: persistent workspace caching, process isolation, and build runner"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 protocol = { path = "../protocol" }

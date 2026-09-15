@@ -20,7 +20,7 @@
 
 <p align="center">
   <a href="https://github.com/Rayrsn/farhand/actions"><img src="https://img.shields.io/badge/build-passing-brightgreen?style=flat-square" alt="Build Status" /></a>
-  <a href="https://github.com/Rayrsn/farhand/releases/tag/v1.0.0"><img src="https://img.shields.io/badge/version-1.0.0-orange?style=flat-square" alt="Version" /></a>
+  <a href="https://github.com/Rayrsn/farhand/releases/tag/v1.1.0"><img src="https://img.shields.io/badge/version-1.1.0-orange?style=flat-square" alt="Version" /></a>
   <a href="https://raw.githubusercontent.com/Rayrsn/farhand/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT%2FApache--2.0-blue?style=flat-square" alt="License" /></a>
   <img src="https://img.shields.io/badge/dependencies-zero-success?style=flat-square" alt="Zero Dependencies" />
   <img src="https://img.shields.io/badge/platform-linux%20%7C%20macos%20%7C%20windows-lightgrey?style=flat-square" alt="Platforms" />
@@ -98,17 +98,17 @@ powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.c
 
 ---
 
-#### 📦 Pre-Built Release Packages (v1.0.0)
+#### 📦 Pre-Built Release Packages (v1.1.0)
 
-Pre-compiled static release packages and checksums are available on the [**Farhand v1.0.0 Release**](https://github.com/Rayrsn/farhand/releases/tag/v1.0.0):
+Pre-compiled static release packages and checksums are available on the [**Farhand v1.1.0 Release**](https://github.com/Rayrsn/farhand/releases/tag/v1.1.0):
 
 | Platform | Architecture | Package Archive |
 | :--- | :--- | :--- |
-| **Linux** | x86_64 (64-bit) | [`farhand-v1.0.0-x86_64-unknown-linux-musl.tar.gz`](https://github.com/Rayrsn/farhand/releases/download/v1.0.0/farhand-v1.0.0-x86_64-unknown-linux-musl.tar.gz) |
-| **Linux** | aarch64 (ARM64) | [`farhand-v1.0.0-aarch64-unknown-linux-musl.tar.gz`](https://github.com/Rayrsn/farhand/releases/download/v1.0.0/farhand-v1.0.0-aarch64-unknown-linux-musl.tar.gz) |
-| **macOS** | Apple Silicon (M1/M2/M3/M4) | [`farhand-v1.0.0-aarch64-apple-darwin.tar.gz`](https://github.com/Rayrsn/farhand/releases/download/v1.0.0/farhand-v1.0.0-aarch64-apple-darwin.tar.gz) |
-| **macOS** | Intel x86_64 | [`farhand-v1.0.0-x86_64-apple-darwin.tar.gz`](https://github.com/Rayrsn/farhand/releases/download/v1.0.0/farhand-v1.0.0-x86_64-apple-darwin.tar.gz) |
-| **Windows** | x86_64 (Standalone Static) | [`farhand-v1.0.0-x86_64-pc-windows-msvc.zip`](https://github.com/Rayrsn/farhand/releases/download/v1.0.0/farhand-v1.0.0-x86_64-pc-windows-msvc.zip) |
+| **Linux** | x86_64 (64-bit) | [`farhand-v1.1.0-x86_64-unknown-linux-musl.tar.gz`](https://github.com/Rayrsn/farhand/releases/download/v1.1.0/farhand-v1.1.0-x86_64-unknown-linux-musl.tar.gz) |
+| **Linux** | aarch64 (ARM64) | [`farhand-v1.1.0-aarch64-unknown-linux-musl.tar.gz`](https://github.com/Rayrsn/farhand/releases/download/v1.1.0/farhand-v1.1.0-aarch64-unknown-linux-musl.tar.gz) |
+| **macOS** | Apple Silicon (M1/M2/M3/M4) | [`farhand-v1.1.0-aarch64-apple-darwin.tar.gz`](https://github.com/Rayrsn/farhand/releases/download/v1.1.0/farhand-v1.1.0-aarch64-apple-darwin.tar.gz) |
+| **macOS** | Intel x86_64 | [`farhand-v1.1.0-x86_64-apple-darwin.tar.gz`](https://github.com/Rayrsn/farhand/releases/download/v1.1.0/farhand-v1.1.0-x86_64-apple-darwin.tar.gz) |
+| **Windows** | x86_64 (Standalone Static) | [`farhand-v1.1.0-x86_64-pc-windows-msvc.zip`](https://github.com/Rayrsn/farhand/releases/download/v1.1.0/farhand-v1.1.0-x86_64-pc-windows-msvc.zip) |
 
 ---
 

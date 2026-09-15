@@ -11,12 +11,18 @@ members = [
 ]
 
 [workspace.package]
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
+rust-version = "1.75"
 authors = ["Farhand Authors"]
+description = "Zero-dependency remote build and test offloader for weak or battery-constrained machines"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Rayrsn/farhand"
 homepage = "https://github.com/Rayrsn/farhand"
+documentation = "https://github.com/Rayrsn/farhand#readme"
+readme = "README.md"
+keywords = ["build", "offload", "remote", "compiler", "cache"]
+categories = ["development-tools", "command-line-utilities"]
 
 [workspace.dependencies]
 tokio = { version = "1.38", features = ["full"] }
