@@ -95,14 +95,15 @@ pub fn unpack_tar(dest_dir: &Path, data: &[u8]) -> Result<(), FilesetError> {
         .map_err(|e| FilesetError::Tar(e.to_string()))?
     {
         let mut entry = entry_res.map_err(|e| FilesetError::Tar(e.to_string()))?;
-        let entry_path = entry.path().map_err(|e| FilesetError::Tar(e.to_string()))?;
-        let path_str = entry_path.to_string_lossy();
+        let raw_bytes = entry.path_bytes();
+        let path_str = std::str::from_utf8(&raw_bytes)
+            .map_err(|_| FilesetError::InsecurePath("invalid utf-8 in tar path".to_string()))?;
 
         // Prevent Zip-Slip: reject absolute paths, backslashes, or directory traversal sequences
         let path_clean = path_str.trim_end_matches('/');
         let safe_rel = match protocol::from_wire_path(path_clean) {
             Ok(p) => p,
-            Err(_) => return Err(FilesetError::InsecurePath(path_str.into_owned())),
+            Err(_) => return Err(FilesetError::InsecurePath(path_str.to_string())),
         };
 
         let target_path = canonical_dest.join(&safe_rel);
@@ -113,7 +114,7 @@ pub fn unpack_tar(dest_dir: &Path, data: &[u8]) -> Result<(), FilesetError> {
 
         let canonical_parent = parent.canonicalize()?;
         if !canonical_parent.starts_with(&canonical_dest) {
-            return Err(FilesetError::EscapesTargetRoot(path_str.into_owned()));
+            return Err(FilesetError::EscapesTargetRoot(path_str.to_owned()));
         }
 
         entry

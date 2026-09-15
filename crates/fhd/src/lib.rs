@@ -585,6 +585,21 @@ pub async fn handle_connection(
     Ok(())
 }
 
+#[cfg(windows)]
+fn shell_escape(arg: &str) -> String {
+    if arg.is_empty() {
+        return "\"\"".to_string();
+    }
+    if arg
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | '\\' | ':' | '=' | '@'))
+    {
+        return arg.to_string();
+    }
+    format!("\"{}\"", arg.replace('"', "\\\""))
+}
+
+#[cfg(not(windows))]
 fn shell_escape(arg: &str) -> String {
     if arg.is_empty() {
         return "''".to_string();
@@ -615,6 +630,9 @@ pub fn build_shell_command(cwd: &Path, argv: &[String], custom_shell: Option<&st
         c
     } else if cfg!(windows) {
         let mut c = Command::new("cmd.exe");
+        #[cfg(windows)]
+        c.raw_arg(format!("/C \"{}\"", joined_cmd));
+        #[cfg(not(windows))]
         c.arg("/C").arg(&joined_cmd);
         c
     } else {
@@ -644,6 +662,9 @@ pub fn build_raw_shell_command(cwd: &Path, raw_cmd: &str, custom_shell: Option<&
         c
     } else if cfg!(windows) {
         let mut c = Command::new("cmd.exe");
+        #[cfg(windows)]
+        c.raw_arg(format!("/C \"{}\"", raw_cmd));
+        #[cfg(not(windows))]
         c.arg("/C").arg(raw_cmd);
         c
     } else {

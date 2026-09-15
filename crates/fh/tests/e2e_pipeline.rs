@@ -407,11 +407,19 @@ async fn test_e2e_artifact_retrieval_explicit() {
     let project_dir = tempdir().unwrap();
     let out_dir = tempdir().unwrap();
 
-    let build_cmd = vec![
-        "sh".to_string(),
-        "-c".to_string(),
-        "mkdir -p dist/assets && echo 'export const v = 1;' > dist/bundle.js && echo 'body {}' > dist/assets/app.css".to_string(),
-    ];
+    let build_cmd = if cfg!(windows) {
+        vec![
+            "cmd.exe".to_string(),
+            "/C".to_string(),
+            "mkdir dist\\assets 2>nul & echo export const v = 1; > dist\\bundle.js & echo body {} > dist\\assets\\app.css".to_string(),
+        ]
+    } else {
+        vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            "mkdir -p dist/assets && echo 'export const v = 1;' > dist/bundle.js && echo 'body {}' > dist/assets/app.css".to_string(),
+        ]
+    };
 
     let (exit_code, got_artifacts) = client_roundtrip_with_artifacts(
         &server_addr,
@@ -447,11 +455,19 @@ async fn test_e2e_artifact_retrieval_preset_fallback() {
     )
     .unwrap();
 
-    let build_cmd = vec![
-        "sh".to_string(),
-        "-c".to_string(),
-        "mkdir -p target/release && echo 'binary_payload' > target/release/my-bin".to_string(),
-    ];
+    let build_cmd = if cfg!(windows) {
+        vec![
+            "cmd.exe".to_string(),
+            "/C".to_string(),
+            "mkdir target\\release 2>nul & echo binary_payload > target\\release\\my-bin".to_string(),
+        ]
+    } else {
+        vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            "mkdir -p target/release && echo 'binary_payload' > target/release/my-bin".to_string(),
+        ]
+    };
 
     // None outputs -> should auto-detect target/release via rust preset
     let (exit_code, got_artifacts) = client_roundtrip_with_artifacts(
@@ -480,11 +496,19 @@ async fn test_e2e_no_artifacts_on_command_failure() {
     let project_dir = tempdir().unwrap();
     let out_dir = tempdir().unwrap();
 
-    let failing_cmd = vec![
-        "sh".to_string(),
-        "-c".to_string(),
-        "mkdir -p dist && echo 'partial' > dist/partial.txt && exit 7".to_string(),
-    ];
+    let failing_cmd = if cfg!(windows) {
+        vec![
+            "cmd.exe".to_string(),
+            "/C".to_string(),
+            "mkdir dist 2>nul & echo partial > dist\\partial.txt & exit 7".to_string(),
+        ]
+    } else {
+        vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            "mkdir -p dist && echo 'partial' > dist/partial.txt && exit 7".to_string(),
+        ]
+    };
 
     let (exit_code, got_artifacts) = client_roundtrip_with_artifacts(
         &server_addr,
@@ -544,15 +568,21 @@ async fn test_cli_config_file_resolution_and_telemetry() {
     );
     fs::write(project_dir.path().join(".farhand.yaml"), yaml_content).unwrap();
 
+    let (shell_cmd, shell_arg, build_str) = if cfg!(windows) {
+        ("cmd.exe", "/C", "mkdir out 2>nul & echo config-built > out\\artifact.txt")
+    } else {
+        ("sh", "-c", "mkdir -p out && echo 'config-built' > out/artifact.txt")
+    };
+
     // Execute fh pointing to project_dir without passing --host or --token flags
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_fh"))
         .current_dir(project_dir.path())
         .args([
             "--verbose",
             "--",
-            "sh",
-            "-c",
-            "mkdir -p out && echo 'config-built' > out/artifact.txt",
+            shell_cmd,
+            shell_arg,
+            build_str,
         ])
         .output()
         .await
@@ -660,7 +690,20 @@ async fn test_e2e_template_monorepo_union_and_explicit_template() {
     .unwrap();
 
     // 1. Run build without --template -> monorepo union (both target/release and dist fetched)
-    let build_cmd = "mkdir -p target/release dist && echo 'rust-bin' > target/release/mono-bin && echo 'web-bundle' > dist/bundle.js";
+    let (shell_cmd, shell_arg, build_cmd) = if cfg!(windows) {
+        (
+            "cmd.exe",
+            "/C",
+            "mkdir target\\release 2>nul & mkdir dist 2>nul & echo rust-bin > target\\release\\mono-bin & echo web-bundle > dist\\bundle.js",
+        )
+    } else {
+        (
+            "sh",
+            "-c",
+            "mkdir -p target/release dist && echo 'rust-bin' > target/release/mono-bin && echo 'web-bundle' > dist/bundle.js",
+        )
+    };
+
     let output1 = tokio::process::Command::new(env!("CARGO_BIN_EXE_fh"))
         .current_dir(project_dir.path())
         .args([
@@ -671,8 +714,8 @@ async fn test_e2e_template_monorepo_union_and_explicit_template() {
             "--out-dir",
             &out_dir1.path().display().to_string(),
             "--",
-            "sh",
-            "-c",
+            shell_cmd,
+            shell_arg,
             build_cmd,
         ])
         .output()
@@ -696,8 +739,8 @@ async fn test_e2e_template_monorepo_union_and_explicit_template() {
             "--out-dir",
             &out_dir2.path().display().to_string(),
             "--",
-            "sh",
-            "-c",
+            shell_cmd,
+            shell_arg,
             build_cmd,
         ])
         .output()
@@ -762,6 +805,12 @@ outputs:
 
     // Add build.zig to project and run remote build
     fs::write(project_dir.path().join("build.zig"), "// zig build").unwrap();
+    let (shell_cmd, shell_arg, build_cmd) = if cfg!(windows) {
+        ("cmd.exe", "/C", "mkdir zig-out 2>nul & echo zig-binary > zig-out\\app")
+    } else {
+        ("sh", "-c", "mkdir -p zig-out && echo 'zig-binary' > zig-out/app")
+    };
+
     let run_out = tokio::process::Command::new(env!("CARGO_BIN_EXE_fh"))
         .current_dir(project_dir.path())
         .args([
@@ -772,9 +821,9 @@ outputs:
             "--out-dir",
             &out_dir.path().display().to_string(),
             "--",
-            "sh",
-            "-c",
-            "mkdir -p zig-out && echo 'zig-binary' > zig-out/app",
+            shell_cmd,
+            shell_arg,
+            build_cmd,
         ])
         .output()
         .await
@@ -1199,7 +1248,13 @@ async fn test_e2e_dependency_hook_full_caching_lifecycle() {
     fs::create_dir_all(&tmpl_dir).unwrap();
 
     // Create a custom template with an installCommand and declared lockfiles
-    let tmpl_yaml = r#"
+    let hook_cmd = if cfg!(windows) {
+        "echo hook-executed >> hook.log"
+    } else {
+        "sh -c \"echo hook-executed >> hook.log\""
+    };
+    let tmpl_yaml = format!(
+        r#"
 name: test-hook-lang
 match:
   anyFile:
@@ -1207,10 +1262,12 @@ match:
 ignoreExtra:
   - hook.log
 hints:
-  installCommand: sh -c "echo hook-executed >> hook.log"
+  installCommand: {}
   lockfiles:
     - deps.lock
-"#;
+"#,
+        hook_cmd
+    );
     fs::write(tmpl_dir.join("test-hook-lang.yaml"), tmpl_yaml).unwrap();
     fs::write(project_dir.path().join("deps.lock"), "dep-version-1\n").unwrap();
 
@@ -1306,16 +1363,24 @@ async fn test_e2e_dependency_hook_failure_aborts_run() {
     let tmpl_dir = project_dir.path().join(".farhand").join("templates");
     fs::create_dir_all(&tmpl_dir).unwrap();
 
-    let tmpl_yaml = r#"
+    let hook_cmd = if cfg!(windows) {
+        "echo failing installation step & exit 42"
+    } else {
+        "sh -c \"echo 'failing installation step' && exit 42\""
+    };
+    let tmpl_yaml = format!(
+        r#"
 name: failing-hook-lang
 match:
   anyFile:
     - fail.lock
 hints:
-  installCommand: sh -c "echo 'failing installation step' && exit 42"
+  installCommand: {}
   lockfiles:
     - fail.lock
-"#;
+"#,
+        hook_cmd
+    );
     fs::write(tmpl_dir.join("failing-hook-lang.yaml"), tmpl_yaml).unwrap();
     fs::write(project_dir.path().join("fail.lock"), "fail-version-1\n").unwrap();
 

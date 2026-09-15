@@ -215,7 +215,7 @@ fn add_path_or_dir(
                 out.push(rel_str);
             }
         }
-    } else if let Ok(rel) = target.strip_prefix(canonical_root) {
+    } else if let Ok(rel) = canonical_target.strip_prefix(canonical_root) {
         let rel_str = rel.to_string_lossy().replace('\\', "/");
         if !rel_str.is_empty() && !is_artifact_ignored(&rel_str, output_ignores) {
             out.push(rel_str);
