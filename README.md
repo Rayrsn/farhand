@@ -20,7 +20,7 @@
 
 <p align="center">
   <a href="https://github.com/Rayrsn/farhand/actions"><img src="https://img.shields.io/badge/build-passing-brightgreen?style=flat-square" alt="Build Status" /></a>
-  <a href="https://github.com/Rayrsn/farhand/releases"><img src="https://img.shields.io/badge/version-0.8.0-orange?style=flat-square" alt="Version" /></a>
+  <a href="https://github.com/Rayrsn/farhand/releases/tag/v1.0.0"><img src="https://img.shields.io/badge/version-1.0.0-orange?style=flat-square" alt="Version" /></a>
   <a href="https://raw.githubusercontent.com/Rayrsn/farhand/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT%2FApache--2.0-blue?style=flat-square" alt="License" /></a>
   <img src="https://img.shields.io/badge/dependencies-zero-success?style=flat-square" alt="Zero Dependencies" />
   <img src="https://img.shields.io/badge/platform-linux%20%7C%20macos%20%7C%20windows-lightgrey?style=flat-square" alt="Platforms" />
@@ -77,15 +77,50 @@ Logs stream directly into your terminal in real time, and build artifacts (like 
 
 ### 1. Installation
 
-#### Via Cargo (From Source)
+#### ⚡ One-Liner Install
+
+**Linux & macOS** (Terminal):
 ```bash
-cargo install --git https://github.com/Rayrsn/farhand.git fh fhd
+curl -fsSL https://raw.githubusercontent.com/Rayrsn/farhand/main/scripts/install.sh | bash
 ```
 
-#### Via Homebrew (macOS)
+**Windows** (PowerShell — *works whether MSVC / Visual Studio is installed or not*):
+```powershell
+irm https://raw.githubusercontent.com/Rayrsn/farhand/main/scripts/install.ps1 | iex
+```
+
+**Windows** (Command Prompt / `cmd.exe`):
+```cmd
+powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/Rayrsn/farhand/main/scripts/install.ps1 | iex"
+```
+
+> **Note for Windows Users**: Windows binaries are compiled with static C-runtime linking (`+crt-static`). They are 100% self-contained and run on any clean Windows machine out of the box without requiring Visual Studio, MSVC build tools, or the Microsoft Visual C++ Redistributable.
+
+---
+
+#### 📦 Pre-Built Release Packages (v1.0.0)
+
+Pre-compiled static release packages and checksums are available on the [**Farhand v1.0.0 Release**](https://github.com/Rayrsn/farhand/releases/tag/v1.0.0):
+
+| Platform | Architecture | Package Archive |
+| :--- | :--- | :--- |
+| **Linux** | x86_64 (64-bit) | [`farhand-v1.0.0-x86_64-unknown-linux-musl.tar.gz`](https://github.com/Rayrsn/farhand/releases/download/v1.0.0/farhand-v1.0.0-x86_64-unknown-linux-musl.tar.gz) |
+| **Linux** | aarch64 (ARM64) | [`farhand-v1.0.0-aarch64-unknown-linux-musl.tar.gz`](https://github.com/Rayrsn/farhand/releases/download/v1.0.0/farhand-v1.0.0-aarch64-unknown-linux-musl.tar.gz) |
+| **macOS** | Apple Silicon (M1/M2/M3/M4) | [`farhand-v1.0.0-aarch64-apple-darwin.tar.gz`](https://github.com/Rayrsn/farhand/releases/download/v1.0.0/farhand-v1.0.0-aarch64-apple-darwin.tar.gz) |
+| **macOS** | Intel x86_64 | [`farhand-v1.0.0-x86_64-apple-darwin.tar.gz`](https://github.com/Rayrsn/farhand/releases/download/v1.0.0/farhand-v1.0.0-x86_64-apple-darwin.tar.gz) |
+| **Windows** | x86_64 (Standalone Static) | [`farhand-v1.0.0-x86_64-pc-windows-msvc.zip`](https://github.com/Rayrsn/farhand/releases/download/v1.0.0/farhand-v1.0.0-x86_64-pc-windows-msvc.zip) |
+
+---
+
+#### 🍺 Via Homebrew (macOS)
 ```bash
 brew tap Rayrsn/farhand https://github.com/Rayrsn/farhand.git
 brew install farhand
+```
+
+#### 🦀 Via Cargo (From Source)
+```bash
+cargo install --git https://github.com/Rayrsn/farhand.git fh fhd
 ```
 
 ---

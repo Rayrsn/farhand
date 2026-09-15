@@ -67,25 +67,43 @@ mkdir -p "${INSTALL_DIR}"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
+CANDIDATE_URLS=()
 if [ "$VERSION" = "latest" ]; then
-  RELEASE_URL="https://github.com/${REPO}/releases/latest/download/farhand-${TARGET}.tar.gz"
+  CANDIDATE_URLS+=(
+    "https://github.com/${REPO}/releases/latest/download/farhand-${TARGET}.tar.gz"
+    "https://github.com/${REPO}/releases/latest/download/farhand-v1.0.0-${TARGET}.tar.gz"
+  )
 else
-  # Ensure v prefix
   case "$VERSION" in
     v*) TAG="$VERSION" ;;
     *) TAG="v$VERSION" ;;
   esac
-  RELEASE_URL="https://github.com/${REPO}/releases/download/${TAG}/farhand-${TAG}-${TARGET}.tar.gz"
+  CANDIDATE_URLS+=(
+    "https://github.com/${REPO}/releases/download/${TAG}/farhand-${TAG}-${TARGET}.tar.gz"
+    "https://github.com/${REPO}/releases/download/${TAG}/farhand-${TARGET}.tar.gz"
+  )
 fi
 
-echo "Attempting download from: ${RELEASE_URL}"
+DOWNLOADED=false
+for URL in "${CANDIDATE_URLS[@]}"; do
+  echo "Attempting download from: ${URL}"
+  if curl -fsSL "$URL" -o "${TMP_DIR}/farhand.tar.gz" 2>/dev/null; then
+    DOWNLOADED=true
+    break
+  fi
+done
 
-# If curl succeeds, install pre-built binaries; otherwise fallback to cargo build if local source is present
-if curl -fsSL "$RELEASE_URL" -o "${TMP_DIR}/farhand.tar.gz" 2>/dev/null; then
+if [ "$DOWNLOADED" = "true" ]; then
   echo "Extracting binary package..."
   tar -xzf "${TMP_DIR}/farhand.tar.gz" -C "${TMP_DIR}"
-  cp -f "${TMP_DIR}/fh" "${INSTALL_DIR}/fh"
-  cp -f "${TMP_DIR}/fhd" "${INSTALL_DIR}/fhd"
+  FH_BIN="$(find "${TMP_DIR}" -type f -name "fh" | head -n 1)"
+  FHD_BIN="$(find "${TMP_DIR}" -type f -name "fhd" | head -n 1)"
+  if [ -z "$FH_BIN" ] || [ -z "$FHD_BIN" ]; then
+    echo "Error: archive did not contain fh and fhd binaries." >&2
+    exit 1
+  fi
+  cp -f "$FH_BIN" "${INSTALL_DIR}/fh"
+  cp -f "$FHD_BIN" "${INSTALL_DIR}/fhd"
 else
   # Fallback: check if local cargo workspace is present
   if [ -f "Cargo.toml" ] && grep -q 'name = "fh"' crates/fh/Cargo.toml 2>/dev/null; then
