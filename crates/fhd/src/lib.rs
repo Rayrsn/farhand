@@ -590,10 +590,9 @@ fn shell_escape(arg: &str) -> String {
     if arg.is_empty() {
         return "\"\"".to_string();
     }
-    if arg
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | '\\' | ':' | '=' | '@'))
-    {
+    if arg.chars().all(|c| {
+        c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | '\\' | ':' | '=' | '@')
+    }) {
         return arg.to_string();
     }
     format!("\"{}\"", arg.replace('"', "\\\""))

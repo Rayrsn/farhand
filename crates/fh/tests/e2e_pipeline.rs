@@ -459,7 +459,8 @@ async fn test_e2e_artifact_retrieval_preset_fallback() {
         vec![
             "cmd.exe".to_string(),
             "/C".to_string(),
-            "mkdir target\\release 2>nul & echo binary_payload > target\\release\\my-bin".to_string(),
+            "mkdir target\\release 2>nul & echo binary_payload > target\\release\\my-bin"
+                .to_string(),
         ]
     } else {
         vec![
@@ -569,21 +570,23 @@ async fn test_cli_config_file_resolution_and_telemetry() {
     fs::write(project_dir.path().join(".farhand.yaml"), yaml_content).unwrap();
 
     let (shell_cmd, shell_arg, build_str) = if cfg!(windows) {
-        ("cmd.exe", "/C", "mkdir out 2>nul & echo config-built > out\\artifact.txt")
+        (
+            "cmd.exe",
+            "/C",
+            "mkdir out 2>nul & echo config-built > out\\artifact.txt",
+        )
     } else {
-        ("sh", "-c", "mkdir -p out && echo 'config-built' > out/artifact.txt")
+        (
+            "sh",
+            "-c",
+            "mkdir -p out && echo 'config-built' > out/artifact.txt",
+        )
     };
 
     // Execute fh pointing to project_dir without passing --host or --token flags
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_fh"))
         .current_dir(project_dir.path())
-        .args([
-            "--verbose",
-            "--",
-            shell_cmd,
-            shell_arg,
-            build_str,
-        ])
+        .args(["--verbose", "--", shell_cmd, shell_arg, build_str])
         .output()
         .await
         .unwrap();
@@ -806,9 +809,17 @@ outputs:
     // Add build.zig to project and run remote build
     fs::write(project_dir.path().join("build.zig"), "// zig build").unwrap();
     let (shell_cmd, shell_arg, build_cmd) = if cfg!(windows) {
-        ("cmd.exe", "/C", "mkdir zig-out 2>nul & echo zig-binary > zig-out\\app")
+        (
+            "cmd.exe",
+            "/C",
+            "mkdir zig-out 2>nul & echo zig-binary > zig-out\\app",
+        )
     } else {
-        ("sh", "-c", "mkdir -p zig-out && echo 'zig-binary' > zig-out/app")
+        (
+            "sh",
+            "-c",
+            "mkdir -p zig-out && echo 'zig-binary' > zig-out/app",
+        )
     };
 
     let run_out = tokio::process::Command::new(env!("CARGO_BIN_EXE_fh"))
