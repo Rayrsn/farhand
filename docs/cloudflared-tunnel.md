@@ -139,14 +139,71 @@ fh -- cargo build --release
 
 ---
 
-## 4. Alternative: SSH Port Forwarding (Quickest Option)
+## 4. Setting Up SSH Over Cloudflare Tunnel (The Easiest Workflow)
 
-If you already have SSH access to your Mac Mini (or if both machines are on **Tailscale / WireGuard**):
+By routing SSH through Cloudflare Tunnel, you get:
+1. **Remote Terminal Access**: `ssh mac-mini` works from anywhere in the world without exposing port 22 to the public internet.
+2. **Automatic Farhand Forwarding**: Your SSH config can automatically forward port `9876` (`LocalForward 9876 localhost:9876`) whenever you connect, so `fh` works out of the box with zero extra daemons.
 
-You don't even need Cloudflare Tunnel! Simply forward port `9876` over SSH:
+### Step 4.1: Ensure SSH is Enabled on the Mac Mini
+SSH (Remote Login) is already enabled and listening on port 22. Your local key has also been added to `/Users/builder/.ssh/authorized_keys`.
 
-```bash
-ssh -N -L 9876:localhost:9876 builder@<mac-mini-ip-or-tailscale-name> &
+### Step 4.2: Add SSH Ingress to `~/.cloudflared/config.yml` on the Mac Mini
+In your Cloudflare Tunnel config on the Mac Mini, add `service: ssh://localhost:22`:
+
+```yaml
+tunnel: <TUNNEL_ID>
+credentials-file: /Users/builder/.cloudflared/<TUNNEL_ID>.json
+
+ingress:
+  # SSH access over Cloudflare
+  - hostname: mac.yourdomain.com
+    service: ssh://localhost:22
+
+  # Direct Farhand TCP daemon access
+  - hostname: build.yourdomain.com
+    service: tcp://localhost:9876
+
+  - service: http_status:404
 ```
 
-Once forwarded, point `.farhand.yaml` to `127.0.0.1:9876` and run `fh`.
+Route the hostname in DNS:
+```bash
+cloudflared tunnel route dns farhand-build mac.yourdomain.com
+```
+
+### Step 4.3: Configure `~/.ssh/config` on Your Local Machine
+Add the following block to your local `~/.ssh/config`:
+
+```ssh-config
+Host mac-mini
+    HostName mac.yourdomain.com
+    User builder
+    IdentityFile ~/.ssh/main
+    ProxyCommand cloudflared access ssh --hostname %h
+    # Automatically forward Farhand daemon port 9876
+    LocalForward 9876 localhost:9876
+    ServerAliveInterval 60
+    ServerAliveCountMax 3
+```
+
+### Step 4.4: Connect & Offload Builds
+
+Now simply connect with:
+```bash
+ssh mac-mini
+```
+Or start a silent background forwarder when you start working:
+```bash
+ssh -N mac-mini &
+```
+
+While connected, your local `127.0.0.1:9876` tunnels securely through Cloudflare to the Mac Mini! In your `.farhand.yaml`:
+```yaml
+host: "127.0.0.1:9876"
+token: "${FARHAND_TOKEN}"
+```
+Run builds as usual:
+```bash
+fh -- cargo build --release
+```
