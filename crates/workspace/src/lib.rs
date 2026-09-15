@@ -206,9 +206,11 @@ mod tests {
         let dir1 = resolve_workspace_dir(base, "my-app");
         let dir2 = resolve_workspace_dir(base, "my-app");
         assert_eq!(dir1, dir2);
+        assert_eq!(dir1.parent(), Some(base));
         assert!(dir1
-            .to_string_lossy()
-            .starts_with("/var/farhand/workspaces/my-app-"));
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map_or(false, |s| s.starts_with("my-app-")));
 
         let dir3 = resolve_workspace_dir(base, "other-project");
         assert_ne!(dir1, dir3);
