@@ -56,7 +56,7 @@ pub async fn select_best_agent(
 ) -> Result<AgentConfig, Box<dyn std::error::Error + Send + Sync>> {
     let filtered: Vec<&AgentConfig> = agents
         .iter()
-        .filter(|a| required_tag.is_none_or(|t| a.tags.iter().any(|tag| tag == t)))
+        .filter(|a| required_tag.map_or(true, |t| a.tags.iter().any(|tag| tag == t)))
         .collect();
 
     if filtered.is_empty() {
