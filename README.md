@@ -13,9 +13,13 @@
     Farhand or fh (pronounced <strong>FAAAAAAAH</strong>)
   </i>
   <br/><br/>
-  <video src="https://github.com/Rayrsn/farhand/raw/main/assets/pronunciation.mp4" controls width="280">
-    <a href="https://github.com/Rayrsn/farhand/raw/main/assets/pronunciation.mp4">▶️ Play Pronunciation Video (FAAAAAAAH)</a>
-  </video>
+  <a href="https://github.com/Rayrsn/farhand/raw/main/assets/pronunciation.mp3" title="Click to listen to pronunciation audio">
+    <img src="assets/pronunciation_player.png" alt="Listen to Pronunciation (FAAAAAAAH)" width="380" />
+  </a>
+  <br/>
+  <small>
+    <a href="https://github.com/Rayrsn/farhand/raw/main/assets/pronunciation.mp3">🔊 Click to play pronunciation (.mp3)</a>
+  </small>
 </p>
 
 <p align="center">
