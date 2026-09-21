@@ -7,8 +7,11 @@ use std::path::Path;
 pub fn should_ignore_path(path: &Path, base_dir: &Path) -> bool {
     let rel = match path.strip_prefix(base_dir) {
         Ok(r) => r,
-        Err(_) => return false,
+        Err(_) => path,
     };
+    if rel.as_os_str().is_empty() {
+        return true;
+    }
     for comp in rel.components() {
         if let std::path::Component::Normal(name) = comp {
             let s = name.to_string_lossy();
@@ -19,6 +22,10 @@ pub fn should_ignore_path(path: &Path, base_dir: &Path) -> bool {
                 || s == "farhand-out"
                 || s == "dist"
                 || s.starts_with(".farhand")
+                || s.ends_with(".tmp")
+                || s.ends_with('~')
+                || s.starts_with(".#")
+                || s == ".DS_Store"
             {
                 return true;
             }
@@ -56,5 +63,13 @@ mod tests {
 
         // Outside base dir
         assert!(!should_ignore_path(&PathBuf::from("/tmp/other.txt"), &base));
+
+        // Base dir itself should be ignored
+        assert!(should_ignore_path(&base, &base));
+
+        // Temporary editor files should be ignored
+        assert!(should_ignore_path(&base.join("src/main.rs.tmp"), &base));
+        assert!(should_ignore_path(&base.join("src/main.rs~"), &base));
+        assert!(should_ignore_path(&base.join(".DS_Store"), &base));
     }
 }

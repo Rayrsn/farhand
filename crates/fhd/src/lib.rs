@@ -912,10 +912,28 @@ pub async fn run_pty_child_and_stream<
         cb.arg(&joined_cmd);
         cb
     } else {
-        let mut cb = portable_pty::CommandBuilder::new("/bin/sh");
-        cb.arg("-c");
-        cb.arg(&joined_cmd);
-        cb
+        let has_shell_metachars = argv.iter().any(|arg| {
+            arg.contains('&')
+                || arg.contains('|')
+                || arg.contains(';')
+                || arg.contains('>')
+                || arg.contains('<')
+                || arg.contains('$')
+                || arg.contains('`')
+        });
+
+        if !has_shell_metachars && !argv.is_empty() {
+            let mut cb = portable_pty::CommandBuilder::new(&argv[0]);
+            for arg in &argv[1..] {
+                cb.arg(arg);
+            }
+            cb
+        } else {
+            let mut cb = portable_pty::CommandBuilder::new("/bin/sh");
+            cb.arg("-c");
+            cb.arg(&joined_cmd);
+            cb
+        }
     };
 
     cmd_builder.cwd(cwd);
@@ -923,6 +941,9 @@ pub async fn run_pty_child_and_stream<
         for (k, v) in envs {
             cmd_builder.env(k, v);
         }
+    }
+    if env.map(|e| !e.contains_key("TERM")).unwrap_or(true) {
+        cmd_builder.env("TERM", "xterm-256color");
     }
 
     let mut child = pair.slave.spawn_command(cmd_builder)?;
