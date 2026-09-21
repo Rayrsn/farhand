@@ -928,7 +928,7 @@ pub async fn run_pty_child_and_stream<
     let mut child = pair.slave.spawn_command(cmd_builder)?;
     drop(pair.slave);
 
-    let child_pid = child.process_id();
+    let _child_pid = child.process_id();
     let mut pty_reader = pair.master.try_clone_reader()?;
     let pty_writer = Arc::new(Mutex::new(pair.master.take_writer()?));
     let master = Arc::new(Mutex::new(pair.master));
@@ -1026,7 +1026,7 @@ pub async fn run_pty_child_and_stream<
                     Err(_) => {
                         warn!("Client disconnected during PTY session. Terminating child.");
                         #[cfg(unix)]
-                        if let Some(pid) = child_pid {
+                        if let Some(pid) = _child_pid {
                             unsafe {
                                 libc::kill(-(pid as i32), libc::SIGTERM);
                             }

@@ -832,23 +832,18 @@ async fn run_build(
     } else {
         None
     };
-    #[cfg(unix)]
-    let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).ok();
 
     loop {
         let (msg_type, payload) = tokio::select! {
-            Some(_) = async {
+            _ = async {
                 #[cfg(unix)]
                 {
-                    match sigwinch.as_mut() {
-                        Some(s) => s.recv().await,
-                        None => std::future::pending().await,
+                    if let Some(ref mut s) = sigwinch {
+                        s.recv().await;
+                        return;
                     }
                 }
-                #[cfg(not(unix))]
-                {
-                    std::future::pending::<()>().await
-                }
+                std::future::pending::<()>().await
             } => {
                 if let Ok((cols, rows)) = size() {
                     let resize = ResizePayload { cols, rows };
@@ -857,19 +852,7 @@ async fn run_build(
                 }
                 continue;
             }
-            Some(_) = async {
-                #[cfg(unix)]
-                {
-                    match sigint.as_mut() {
-                        Some(s) => s.recv().await,
-                        None => std::future::pending().await,
-                    }
-                }
-                #[cfg(not(unix))]
-                {
-                    tokio::signal::ctrl_c().await.ok()
-                }
-            } => {
+            _ = tokio::signal::ctrl_c() => {
                 if verbose {
                     eprintln!("\n[Signal] Process interrupted locally. Aborting remote execution...");
                 }
