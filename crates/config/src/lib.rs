@@ -56,6 +56,10 @@ pub struct Config {
     pub forward_env: bool,
     #[serde(default)]
     pub env: HashMap<String, String>,
+    #[serde(default)]
+    pub tty: bool,
+    #[serde(default)]
+    pub forward: Vec<String>,
 }
 
 impl Default for Config {
@@ -74,6 +78,8 @@ impl Default for Config {
             agents: Vec::new(),
             forward_env: true,
             env: HashMap::new(),
+            tty: false,
+            forward: Vec::new(),
         }
     }
 }

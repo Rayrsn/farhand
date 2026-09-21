@@ -131,6 +131,9 @@ async fn client_roundtrip_with_options(
         template,
         no_cache,
         env: None,
+        tty: false,
+        cols: None,
+        rows: None,
     };
     write_json_frame(&mut stream, MsgType::Run, &run)
         .await
@@ -366,6 +369,9 @@ async fn client_roundtrip_with_artifacts(
         template: None,
         no_cache: false,
         env: None,
+        tty: false,
+        cols: None,
+        rows: None,
     };
     write_json_frame(&mut stream, MsgType::Run, &run)
         .await
@@ -931,6 +937,9 @@ async fn test_e2e_concurrency_project_workspace_locking_and_queued() {
         template: None,
         no_cache: false,
         env: None,
+        tty: false,
+        cols: None,
+        rows: None,
     };
     write_json_frame(&mut stream2, MsgType::Run, &run2)
         .await
@@ -1032,6 +1041,9 @@ async fn test_e2e_concurrency_global_semaphore_limit() {
         template: None,
         no_cache: false,
         env: None,
+        tty: false,
+        cols: None,
+        rows: None,
     };
     write_json_frame(&mut stream2, MsgType::Run, &run2)
         .await
@@ -1093,6 +1105,9 @@ async fn test_e2e_client_disconnect_terminates_remote_process_group() {
         template: None,
         no_cache: false,
         env: None,
+        tty: false,
+        cols: None,
+        rows: None,
     };
     write_json_frame(&mut stream, MsgType::Run, &run)
         .await
@@ -1149,6 +1164,9 @@ async fn test_e2e_multi_agent_pool_least_busy_dispatch() {
         template: None,
         no_cache: false,
         env: None,
+        tty: false,
+        cols: None,
+        rows: None,
     };
     write_json_frame(&mut stream_a, MsgType::Run, &run)
         .await
@@ -1890,4 +1908,308 @@ env:
         assert!(stdout.contains("A="));
         assert!(!stdout.contains("ambient_should_be_skipped"));
     }
+}
+
+#[tokio::test]
+async fn test_cli_tier1_help_flags() {
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+        .arg("--help")
+        .output()
+        .await
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("--tty"),
+        "Should mention --tty in help: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("--forward"),
+        "Should mention --forward in help: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("--watch"),
+        "Should mention --watch in help: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("watch"),
+        "Should mention watch subcommand: {}",
+        stdout
+    );
+
+    let watch_output = tokio::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+        .args(["watch", "--help"])
+        .output()
+        .await
+        .unwrap();
+    assert_eq!(watch_output.status.code(), Some(0));
+}
+
+#[tokio::test]
+async fn test_e2e_pty_interactive_execution() {
+    let token = "pty-secret".to_string();
+    let workdir = tempdir().unwrap();
+    let (server_addr, _handle) =
+        spawn_test_server(Some(token.clone()), workdir.path().to_path_buf()).await;
+
+    let mut stream = TcpStream::connect(&server_addr).await.unwrap();
+
+    let hello = HelloPayload {
+        token: token.clone(),
+        project: "pty-test-proj".to_string(),
+        protocol_version: CURRENT_PROTOCOL_VERSION,
+    };
+    write_json_frame(&mut stream, MsgType::Hello, &hello)
+        .await
+        .unwrap();
+    let (msg_type, payload) = read_frame(&mut stream).await.unwrap();
+    assert_eq!(msg_type, MsgType::HelloAck);
+    let ack: HelloAckPayload = decode_json(&payload).unwrap();
+    assert!(ack.ok);
+
+    let manifest = ManifestPayload { files: Vec::new() };
+    write_json_frame(&mut stream, MsgType::Manifest, &manifest)
+        .await
+        .unwrap();
+    let (msg_type, _) = read_frame(&mut stream).await.unwrap();
+    assert_eq!(msg_type, MsgType::Need);
+    write_frame(&mut stream, MsgType::Files, &[]).await.unwrap();
+
+    let run = RunPayload {
+        argv: vec!["echo".into(), "interactive_pty_output_12345".into()],
+        outputs: None,
+        cwd: None,
+        template: None,
+        no_cache: false,
+        env: None,
+        tty: true,
+        cols: Some(80),
+        rows: Some(24),
+    };
+    write_json_frame(&mut stream, MsgType::Run, &run)
+        .await
+        .unwrap();
+
+    let mut collected = String::new();
+    let exit_code;
+    loop {
+        let (msg_type, payload) = read_frame(&mut stream).await.unwrap();
+        match msg_type {
+            MsgType::Log => {
+                let log: LogPayload = decode_json(&payload).unwrap();
+                collected.push_str(&log.data);
+            }
+            MsgType::Result => {
+                let res: ResultPayload = decode_json(&payload).unwrap();
+                exit_code = res.exit_code;
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    assert_eq!(exit_code, 0);
+    assert!(
+        collected.contains("interactive_pty_output_12345"),
+        "PTY output did not contain expected text: {}",
+        collected
+    );
+}
+
+#[tokio::test]
+async fn test_e2e_pty_terminal_resize_and_stdin() {
+    let token = "pty-resize-secret".to_string();
+    let workdir = tempdir().unwrap();
+    let (server_addr, _handle) =
+        spawn_test_server(Some(token.clone()), workdir.path().to_path_buf()).await;
+
+    let mut stream = TcpStream::connect(&server_addr).await.unwrap();
+
+    let hello = HelloPayload {
+        token: token.clone(),
+        project: "pty-resize-proj".to_string(),
+        protocol_version: CURRENT_PROTOCOL_VERSION,
+    };
+    write_json_frame(&mut stream, MsgType::Hello, &hello)
+        .await
+        .unwrap();
+    let _ = read_frame(&mut stream).await.unwrap();
+
+    let manifest = ManifestPayload { files: Vec::new() };
+    write_json_frame(&mut stream, MsgType::Manifest, &manifest)
+        .await
+        .unwrap();
+    let _ = read_frame(&mut stream).await.unwrap();
+    write_frame(&mut stream, MsgType::Files, &[]).await.unwrap();
+
+    let run = RunPayload {
+        argv: if cfg!(windows) {
+            vec!["cmd.exe".into(), "/C".into(), "echo pty-ok".into()]
+        } else {
+            vec!["sh".into(), "-c".into(), "echo pty-ok".into()]
+        },
+        outputs: None,
+        cwd: None,
+        template: None,
+        no_cache: false,
+        env: None,
+        tty: true,
+        cols: Some(80),
+        rows: Some(24),
+    };
+    write_json_frame(&mut stream, MsgType::Run, &run)
+        .await
+        .unwrap();
+
+    // Send Resize frame while running
+    let resize = protocol::ResizePayload {
+        cols: 120,
+        rows: 40,
+    };
+    let _ = write_json_frame(&mut stream, MsgType::Resize, &resize).await;
+
+    // Send Stdin frame
+    let _ = write_frame(&mut stream, MsgType::Stdin, b"hello\n").await;
+
+    let exit_code;
+    let mut collected = String::new();
+    loop {
+        let (msg_type, payload) = read_frame(&mut stream).await.unwrap();
+        match msg_type {
+            MsgType::Log => {
+                let log: LogPayload = decode_json(&payload).unwrap();
+                collected.push_str(&log.data);
+            }
+            MsgType::Result => {
+                let res: ResultPayload = decode_json(&payload).unwrap();
+                exit_code = res.exit_code;
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    assert_eq!(exit_code, 0);
+    assert!(collected.contains("pty-ok"));
+}
+
+#[tokio::test]
+async fn test_e2e_reverse_port_forwarding_tunnel() {
+    // 1. Start a local mock server simulating a service listening on agent host
+    let mock_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mock_port = mock_listener.local_addr().unwrap().port();
+
+    tokio::spawn(async move {
+        if let Ok((mut socket, _)) = mock_listener.accept().await {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let mut buf = [0u8; 128];
+            if let Ok(n) = socket.read(&mut buf).await {
+                if n > 0 {
+                    let mut response = b"echo-back: ".to_vec();
+                    response.extend_from_slice(&buf[..n]);
+                    let _ = socket.write_all(&response).await;
+                }
+            }
+        }
+    });
+
+    let token = "port-fwd-secret".to_string();
+    let workdir = tempdir().unwrap();
+    let (server_addr, _handle) =
+        spawn_test_server(Some(token.clone()), workdir.path().to_path_buf()).await;
+
+    let mut stream = TcpStream::connect(&server_addr).await.unwrap();
+
+    let hello = HelloPayload {
+        token: token.clone(),
+        project: "port-fwd-proj".to_string(),
+        protocol_version: CURRENT_PROTOCOL_VERSION,
+    };
+    write_json_frame(&mut stream, MsgType::Hello, &hello)
+        .await
+        .unwrap();
+    let _ = read_frame(&mut stream).await.unwrap();
+
+    let manifest = ManifestPayload { files: Vec::new() };
+    write_json_frame(&mut stream, MsgType::Manifest, &manifest)
+        .await
+        .unwrap();
+    let _ = read_frame(&mut stream).await.unwrap();
+    write_frame(&mut stream, MsgType::Files, &[]).await.unwrap();
+
+    // Start a command that stays alive long enough to forward packets
+    let run = RunPayload {
+        argv: if cfg!(windows) {
+            vec![
+                "cmd.exe".into(),
+                "/C".into(),
+                "ping 127.0.0.1 -n 3 > nul".into(),
+            ]
+        } else {
+            vec!["sleep".into(), "2".into()]
+        },
+        outputs: None,
+        cwd: None,
+        template: None,
+        no_cache: false,
+        env: None,
+        tty: false,
+        cols: None,
+        rows: None,
+    };
+    write_json_frame(&mut stream, MsgType::Run, &run)
+        .await
+        .unwrap();
+
+    // 2. Open tunnel channel on mock_port
+    let open_payload = protocol::PortOpenPayload {
+        channel_id: 101,
+        target_port: mock_port,
+    };
+    write_json_frame(&mut stream, MsgType::PortOpen, &open_payload)
+        .await
+        .unwrap();
+
+    // 3. Send PortData over tunnel
+    let data_payload = protocol::PortDataPayload {
+        channel_id: 101,
+        data: b"hello-farhand-port".to_vec(),
+    };
+    write_json_frame(&mut stream, MsgType::PortData, &data_payload)
+        .await
+        .unwrap();
+
+    // 4. Expect PortData back from daemon containing mock response
+    let mut received_echo = false;
+    loop {
+        let (msg_type, payload) = read_frame(&mut stream).await.unwrap();
+        match msg_type {
+            MsgType::PortData => {
+                let pd: protocol::PortDataPayload = decode_json(&payload).unwrap();
+                if pd.channel_id == 101 {
+                    let s = String::from_utf8_lossy(&pd.data);
+                    if s.contains("echo-back: hello-farhand-port") {
+                        received_echo = true;
+                        break;
+                    }
+                }
+            }
+            MsgType::Result => {
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    assert!(
+        received_echo,
+        "Tunnel did not receive echo response from mock service"
+    );
+
+    // 5. Close channel
+    let close = protocol::PortClosePayload { channel_id: 101 };
+    let _ = write_json_frame(&mut stream, MsgType::PortClose, &close).await;
 }

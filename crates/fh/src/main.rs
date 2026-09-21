@@ -1,14 +1,22 @@
 use clap::{Parser, Subcommand};
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode, size};
+use notify::{Config as NotifyConfig, RecommendedWatcher, RecursiveMode, Watcher};
 use protocol::{
     decode_json, read_frame, write_frame, write_json_frame, FileEntry, HelloAckPayload,
-    HelloPayload, LogPayload, ManifestPayload, MsgType, NeedPayload, PutTemplatePayload,
-    ResultPayload, RunPayload, CURRENT_PROTOCOL_VERSION,
+    HelloPayload, LogPayload, ManifestPayload, MsgType, NeedPayload, PortClosePayload,
+    PortDataPayload, PortOpenPayload, PutTemplatePayload, ResizePayload, ResultPayload, RunPayload,
+    CURRENT_PROTOCOL_VERSION,
 };
-use std::io::Write;
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::io::{IsTerminal, Write};
+use std::path::{Path, PathBuf};
 use std::process::exit;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
-use tokio::net::TcpStream;
+use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Mutex;
 
 const EXIT_INFRA_ERROR: i32 = 125;
 
@@ -201,12 +209,38 @@ struct Cli {
     )]
     env: Vec<String>,
 
+    #[arg(
+        short = 't',
+        long = "tty",
+        help = "Allocate a pseudo-terminal (PTY) on the remote agent for interactive commands"
+    )]
+    tty: bool,
+
+    #[arg(
+        short = 'L',
+        long = "forward",
+        action = clap::ArgAction::Append,
+        help = "Forward local port to remote agent port, formatted LOCAL:REMOTE (e.g. 3000:3000, repeatable)"
+    )]
+    forward: Vec<String>,
+
+    #[arg(
+        long = "watch",
+        help = "Watch local files and re-trigger remote build continuously on file change"
+    )]
+    watch: bool,
+
     #[arg(trailing_var_arg = true, help = "Command to run remotely")]
     command: Vec<String>,
 }
 
 #[derive(Subcommand, Debug)]
 enum Subcommands {
+    /// Watch local files and continuously offload builds on change
+    Watch {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<String>,
+    },
     /// Manage build and detection templates
     Templates {
         #[command(subcommand)]
@@ -351,6 +385,593 @@ fn sanitize_branch_name(name: &str) -> String {
             }
         })
         .collect()
+}
+
+struct TerminalGuard {
+    active: bool,
+}
+
+impl TerminalGuard {
+    fn enter() -> Self {
+        let active = if std::io::stdin().is_terminal() {
+            enable_raw_mode().is_ok()
+        } else {
+            false
+        };
+        Self { active }
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        if self.active {
+            let _ = disable_raw_mode();
+        }
+    }
+}
+
+use fh::should_ignore_path;
+
+async fn start_port_forward<W: AsyncWrite + Unpin + Send + 'static>(
+    writer: Arc<Mutex<W>>,
+    port_channels: Arc<Mutex<HashMap<u32, tokio::sync::mpsc::Sender<Vec<u8>>>>>,
+    local_port: u16,
+    remote_port: u16,
+    next_channel_id: Arc<AtomicU32>,
+) -> Result<tokio::task::JoinHandle<()>, std::io::Error> {
+    let listener = TcpListener::bind(("127.0.0.1", local_port)).await?;
+    println!(
+        "[Port Forward] Listening on 127.0.0.1:{} -> remote:{}",
+        local_port, remote_port
+    );
+
+    let handle = tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let channel_id = next_channel_id.fetch_add(1, Ordering::SeqCst);
+            let (mut tcp_read, mut tcp_write) = stream.into_split();
+            let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(128);
+            port_channels.lock().await.insert(channel_id, tx);
+
+            let writer_clone = writer.clone();
+            let channels_clone = port_channels.clone();
+
+            let open = PortOpenPayload {
+                channel_id,
+                target_port: remote_port,
+            };
+            {
+                let mut w = writer_clone.lock().await;
+                if write_json_frame(&mut *w, MsgType::PortOpen, &open)
+                    .await
+                    .is_err()
+                {
+                    continue;
+                }
+            }
+
+            tokio::spawn(async move {
+                let w_in = writer_clone.clone();
+                let read_task = tokio::spawn(async move {
+                    let mut buf = [0u8; 8192];
+                    while let Ok(n) = tcp_read.read(&mut buf).await {
+                        if n == 0 {
+                            break;
+                        }
+                        let payload = PortDataPayload {
+                            channel_id,
+                            data: buf[..n].to_vec(),
+                        };
+                        let mut w = w_in.lock().await;
+                        if write_json_frame(&mut *w, MsgType::PortData, &payload)
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    let close = PortClosePayload { channel_id };
+                    let mut w = w_in.lock().await;
+                    let _ = write_json_frame(&mut *w, MsgType::PortClose, &close).await;
+                });
+
+                let write_task = tokio::spawn(async move {
+                    while let Some(chunk) = rx.recv().await {
+                        if tcp_write.write_all(&chunk).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+
+                let _ = tokio::join!(read_task, write_task);
+                channels_clone.lock().await.remove(&channel_id);
+            });
+        }
+    });
+
+    Ok(handle)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_build(
+    host: &str,
+    token: &str,
+    project_name: &str,
+    project_dir: &Path,
+    command: &[String],
+    outputs: Option<Vec<String>>,
+    out_dir: &Path,
+    template: Option<String>,
+    no_cache: bool,
+    run_env: Option<HashMap<String, String>>,
+    tty: bool,
+    forwards: &[String],
+    verbose: bool,
+    telemetry: &mut Telemetry,
+) -> Result<i32, Box<dyn std::error::Error + Send + Sync>> {
+    if verbose {
+        println!("=== Farhand Remote Runner ===");
+        println!("Connecting to agent at: {}", host);
+        println!("Project: {} ({})", project_name, project_dir.display());
+        println!("Remote command: {:?}", command);
+        if tty {
+            println!("Terminal mode: PTY allocated");
+        }
+        if !forwards.is_empty() {
+            println!("Port forwards: {:?}", forwards);
+        }
+    }
+
+    // 1. Connect TCP to agent
+    let mut stream = match TcpStream::connect(host).await {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!(
+                "Error: unable to reach agent at {} ({}).\nHint: ensure fhd is running and reachable.",
+                host, e
+            );
+            exit(EXIT_INFRA_ERROR);
+        }
+    };
+
+    // 2. Handshake: Send HELLO
+    let hello = HelloPayload {
+        token: token.to_string(),
+        project: project_name.to_string(),
+        protocol_version: CURRENT_PROTOCOL_VERSION,
+    };
+
+    if let Err(e) = write_json_frame(&mut stream, MsgType::Hello, &hello).await {
+        eprintln!("Error: failed to send HELLO handshake: {}", e);
+        exit(EXIT_INFRA_ERROR);
+    }
+
+    // Read HELLO_ACK or QUEUED
+    let ack: HelloAckPayload = loop {
+        let (msg_type, payload) = match read_frame(&mut stream).await {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("Error: failed to read HELLO_ACK: {}", e);
+                exit(EXIT_INFRA_ERROR);
+            }
+        };
+
+        match msg_type {
+            MsgType::Queued => {
+                if let Ok(q) = decode_json::<protocol::QueuedPayload>(&payload) {
+                    println!(
+                        "[queued] Agent busy ({}), position in queue: {}. Waiting for lock...",
+                        q.reason, q.position
+                    );
+                }
+            }
+            MsgType::HelloAck => {
+                let parsed: HelloAckPayload = match decode_json(&payload) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        eprintln!("Error: invalid HELLO_ACK payload: {}", e);
+                        exit(EXIT_INFRA_ERROR);
+                    }
+                };
+                break parsed;
+            }
+            other => {
+                eprintln!("Protocol error: expected HELLO_ACK, received {:?}", other);
+                exit(EXIT_INFRA_ERROR);
+            }
+        }
+    };
+
+    if !ack.ok {
+        eprintln!(
+            "Authentication failed: {}",
+            ack.error.as_deref().unwrap_or("rejected by agent")
+        );
+        exit(EXIT_INFRA_ERROR);
+    }
+
+    // 3. Scan local files & Build MANIFEST
+    let scan_start = Instant::now();
+    let scanned_files = match fileset::scan(project_dir, &[]) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("Error: failed to scan project files: {}", e);
+            exit(EXIT_INFRA_ERROR);
+        }
+    };
+
+    let manifest_files: Vec<FileEntry> = scanned_files
+        .values()
+        .map(|meta| FileEntry {
+            path: meta.path.clone(),
+            hash: meta.hash.clone(),
+            size: meta.size,
+            mode: meta.mode,
+        })
+        .collect();
+
+    let manifest = ManifestPayload {
+        files: manifest_files,
+    };
+
+    telemetry.scan_duration = scan_start.elapsed();
+    telemetry.files_scanned = manifest.files.len();
+
+    if let Err(e) = write_json_frame(&mut stream, MsgType::Manifest, &manifest).await {
+        eprintln!("Error: failed to send MANIFEST frame: {}", e);
+        exit(EXIT_INFRA_ERROR);
+    }
+
+    // 4. Receive NEED frame (handling optional QUEUED frames first)
+    let need: NeedPayload = loop {
+        let (msg_type, payload) = match read_frame(&mut stream).await {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("Error: failed to read NEED frame: {}", e);
+                exit(EXIT_INFRA_ERROR);
+            }
+        };
+
+        match msg_type {
+            MsgType::Queued => {
+                let queued: protocol::QueuedPayload = match decode_json(&payload) {
+                    Ok(q) => q,
+                    Err(e) => {
+                        eprintln!("Error: invalid QUEUED payload: {}", e);
+                        exit(EXIT_INFRA_ERROR);
+                    }
+                };
+                println!(
+                    "[farhand] Build queued on agent (reason: {}, position: {}). Waiting for remote workspace...",
+                    queued.reason, queued.position
+                );
+            }
+            MsgType::Need => {
+                let n: NeedPayload = match decode_json(&payload) {
+                    Ok(n) => n,
+                    Err(e) => {
+                        eprintln!("Error: invalid NEED payload: {}", e);
+                        exit(EXIT_INFRA_ERROR);
+                    }
+                };
+                break n;
+            }
+            other => {
+                eprintln!(
+                    "Protocol error: expected NEED or QUEUED frame, received {:?}",
+                    other
+                );
+                exit(EXIT_INFRA_ERROR);
+            }
+        }
+    };
+
+    // 5. Pack & Upload delta files
+    let sync_start = Instant::now();
+    if need.want.is_empty() {
+        if verbose {
+            println!(
+                "[Delta Sync] Remote workspace is completely up to date. 0 files to transfer!"
+            );
+        }
+        if let Err(e) = write_frame(&mut stream, MsgType::Files, &[]).await {
+            eprintln!("Error: failed to send empty FILES frame: {}", e);
+            exit(EXIT_INFRA_ERROR);
+        }
+        telemetry.upload_duration = sync_start.elapsed();
+        telemetry.files_uploaded = 0;
+        telemetry.bytes_uploaded = 0;
+    } else {
+        if verbose {
+            println!(
+                "[Delta Sync] Agent requested {} changed/missing files. Packing delta archive...",
+                need.want.len()
+            );
+        }
+        let tar_gz = match fileset::pack_tar(project_dir, &need.want) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("Error: failed to pack delta files into archive: {}", e);
+                exit(EXIT_INFRA_ERROR);
+            }
+        };
+
+        let upload_len = tar_gz.len() as u64;
+        let want_len = need.want.len();
+
+        if verbose {
+            println!(
+                "[Delta Sync] Uploading {} bytes (compressed) across {} files in {:?}",
+                upload_len,
+                want_len,
+                sync_start.elapsed()
+            );
+        }
+
+        if let Err(e) = write_frame(&mut stream, MsgType::Files, &tar_gz).await {
+            eprintln!("Error: failed to send FILES frame: {}", e);
+            exit(EXIT_INFRA_ERROR);
+        }
+
+        telemetry.upload_duration = sync_start.elapsed();
+        telemetry.files_uploaded = want_len;
+        telemetry.bytes_uploaded = upload_len;
+    }
+
+    // 6. Split stream for concurrent communication
+    let (mut read_half, write_half) = stream.into_split();
+    let shared_writer = Arc::new(Mutex::new(write_half));
+
+    // 7. Setup Reverse Port Forwarding
+    let port_channels = Arc::new(Mutex::new(
+        HashMap::<u32, tokio::sync::mpsc::Sender<Vec<u8>>>::new(),
+    ));
+    let next_channel_id = Arc::new(AtomicU32::new(1));
+    let mut forward_handles = Vec::new();
+
+    for fwd in forwards {
+        if let Some((local_str, remote_str)) = fwd.split_once(':') {
+            if let (Ok(local_port), Ok(remote_port)) =
+                (local_str.parse::<u16>(), remote_str.parse::<u16>())
+            {
+                match start_port_forward(
+                    shared_writer.clone(),
+                    port_channels.clone(),
+                    local_port,
+                    remote_port,
+                    next_channel_id.clone(),
+                )
+                .await
+                {
+                    Ok(handle) => forward_handles.push(handle),
+                    Err(e) => eprintln!(
+                        "Warning: failed to forward port {}:{}: {}",
+                        local_port, remote_port, e
+                    ),
+                }
+            }
+        }
+    }
+
+    // 8. Send RUN frame
+    let (cols, rows) = if tty {
+        match size() {
+            Ok((c, r)) => (Some(c), Some(r)),
+            Err(_) => (None, None),
+        }
+    } else {
+        (None, None)
+    };
+
+    let run = RunPayload {
+        argv: command.to_vec(),
+        outputs,
+        cwd: None,
+        template,
+        no_cache,
+        env: run_env,
+        tty,
+        cols,
+        rows,
+    };
+
+    let remote_start = Instant::now();
+    {
+        let mut w = shared_writer.lock().await;
+        if let Err(e) = write_json_frame(&mut *w, MsgType::Run, &run).await {
+            eprintln!("Error: failed to send RUN frame: {}", e);
+            exit(EXIT_INFRA_ERROR);
+        }
+    }
+
+    // 9. Interactive PTY setup if tty is active
+    let _term_guard = if tty {
+        Some(TerminalGuard::enter())
+    } else {
+        None
+    };
+
+    let (stdin_tx, mut stdin_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
+    let mut stdin_task = None;
+    let mut stdin_forwarder = None;
+
+    if tty {
+        let writer_for_stdin = shared_writer.clone();
+        stdin_task = Some(tokio::task::spawn_blocking(move || {
+            use std::io::Read;
+            let mut stdin = std::io::stdin();
+            let mut buf = [0u8; 1024];
+            while let Ok(n) = stdin.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                if stdin_tx.blocking_send(buf[..n].to_vec()).is_err() {
+                    break;
+                }
+            }
+        }));
+
+        stdin_forwarder = Some(tokio::spawn(async move {
+            while let Some(chunk) = stdin_rx.recv().await {
+                let mut w = writer_for_stdin.lock().await;
+                if write_frame(&mut *w, MsgType::Stdin, &chunk).await.is_err() {
+                    break;
+                }
+            }
+        }));
+    }
+
+    // 10. Receive streamed LOG, RESULT, and optional ARTIFACTS frames
+    let mut exit_code = 1;
+    let mut stdout = std::io::stdout();
+    let mut stderr = std::io::stderr();
+    let mut received_result = false;
+
+    #[cfg(unix)]
+    let mut sigwinch = if tty {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::window_change()).ok()
+    } else {
+        None
+    };
+    #[cfg(unix)]
+    let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).ok();
+
+    loop {
+        let (msg_type, payload) = tokio::select! {
+            Some(_) = async {
+                #[cfg(unix)]
+                {
+                    match sigwinch.as_mut() {
+                        Some(s) => s.recv().await,
+                        None => std::future::pending().await,
+                    }
+                }
+                #[cfg(not(unix))]
+                {
+                    std::future::pending::<()>().await
+                }
+            } => {
+                if let Ok((cols, rows)) = size() {
+                    let resize = ResizePayload { cols, rows };
+                    let mut w = shared_writer.lock().await;
+                    let _ = write_json_frame(&mut *w, MsgType::Resize, &resize).await;
+                }
+                continue;
+            }
+            Some(_) = async {
+                #[cfg(unix)]
+                {
+                    match sigint.as_mut() {
+                        Some(s) => s.recv().await,
+                        None => std::future::pending().await,
+                    }
+                }
+                #[cfg(not(unix))]
+                {
+                    tokio::signal::ctrl_c().await.ok()
+                }
+            } => {
+                if verbose {
+                    eprintln!("\n[Signal] Process interrupted locally. Aborting remote execution...");
+                }
+                exit_code = 130;
+                break;
+            }
+            res = read_frame(&mut read_half) => {
+                match res {
+                    Ok(f) => f,
+                    Err(protocol::FrameError::UnexpectedEof) => {
+                        if received_result {
+                            break;
+                        }
+                        eprintln!("Error: connection dropped by agent before completion");
+                        exit(EXIT_INFRA_ERROR);
+                    }
+                    Err(e) => {
+                        if received_result {
+                            break;
+                        }
+                        eprintln!("Error: connection dropped by agent: {}", e);
+                        exit(EXIT_INFRA_ERROR);
+                    }
+                }
+            }
+        };
+
+        match msg_type {
+            MsgType::Log => {
+                if let Ok(log) = decode_json::<LogPayload>(&payload) {
+                    if log.stream == "stderr" {
+                        let _ = stderr.write_all(log.data.as_bytes());
+                        let _ = stderr.flush();
+                    } else {
+                        let _ = stdout.write_all(log.data.as_bytes());
+                        let _ = stdout.flush();
+                    }
+                }
+            }
+            MsgType::PortData => {
+                if let Ok(pd) = decode_json::<PortDataPayload>(&payload) {
+                    let map = port_channels.lock().await;
+                    if let Some(tx) = map.get(&pd.channel_id) {
+                        let _ = tx.send(pd.data).await;
+                    }
+                }
+            }
+            MsgType::PortClose => {
+                if let Ok(pc) = decode_json::<PortClosePayload>(&payload) {
+                    port_channels.lock().await.remove(&pc.channel_id);
+                }
+            }
+            MsgType::Result => {
+                telemetry.remote_duration = remote_start.elapsed();
+                if let Ok(res) = decode_json::<ResultPayload>(&payload) {
+                    exit_code = res.exit_code;
+                    received_result = true;
+                    if let Some(err_msg) = res.error {
+                        eprintln!("Remote error: {}", err_msg);
+                    }
+                    if exit_code != 0 {
+                        break;
+                    }
+                } else {
+                    eprintln!("Protocol error: failed to decode RESULT payload");
+                    exit(EXIT_INFRA_ERROR);
+                }
+            }
+            MsgType::Artifacts => {
+                let extract_start = Instant::now();
+                if let Err(e) = fileset::unpack_tar(out_dir, &payload) {
+                    eprintln!("Error: failed to extract build artifacts: {}", e);
+                    exit(EXIT_INFRA_ERROR);
+                }
+                telemetry.download_duration = extract_start.elapsed();
+                telemetry.bytes_downloaded = payload.len() as u64;
+
+                if verbose {
+                    println!(
+                        "[Artifacts] Extracted {} bytes into {} in {:?}",
+                        payload.len(),
+                        out_dir.display(),
+                        telemetry.download_duration
+                    );
+                }
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    for h in forward_handles {
+        h.abort();
+    }
+    if let Some(h) = stdin_task {
+        h.abort();
+    }
+    if let Some(h) = stdin_forwarder {
+        h.abort();
+    }
+
+    Ok(exit_code)
 }
 
 #[tokio::main]
@@ -650,8 +1271,15 @@ async fn main() {
         }
     }
 
-    if cli.command.is_empty() {
-        eprintln!("Error: no remote command specified. Usage: fh [OPTIONS] <COMMAND>...");
+    let is_watch = cli.watch || matches!(cli.subcommand, Some(Subcommands::Watch { .. }));
+
+    let effective_command = match &cli.subcommand {
+        Some(Subcommands::Watch { command }) if !command.is_empty() => command.clone(),
+        _ => cli.command.clone(),
+    };
+
+    if effective_command.is_empty() {
+        eprintln!("Error: no remote command specified. Usage: fh [OPTIONS] <COMMAND>... or fh watch <COMMAND>...");
         exit(EXIT_INFRA_ERROR);
     }
 
@@ -670,316 +1298,143 @@ async fn main() {
 
     let template = cli.template.or(cfg.template);
     let no_cache = cli.no_cache || cfg.no_cache;
-
-    if verbose {
-        println!("=== Farhand Remote Runner ===");
-        println!("Connecting to agent at: {}", host);
-        println!("Project: {} ({})", project_name, project_dir.display());
-        println!("Remote command: {:?}", cli.command);
-    }
-
-    // 1. Connect TCP to agent
-    let mut stream = match TcpStream::connect(&host).await {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!(
-                "Error: unable to reach agent at {} ({}).\nHint: ensure fhd is running and reachable.",
-                host, e
-            );
-            exit(EXIT_INFRA_ERROR);
-        }
-    };
-
-    // 2. Handshake: Send HELLO
-    let hello = HelloPayload {
-        token,
-        project: project_name.clone(),
-        protocol_version: CURRENT_PROTOCOL_VERSION,
-    };
-
-    if let Err(e) = write_json_frame(&mut stream, MsgType::Hello, &hello).await {
-        eprintln!("Error: failed to send HELLO handshake: {}", e);
-        exit(EXIT_INFRA_ERROR);
-    }
-
-    // Read HELLO_ACK
-    let (msg_type, payload) = match read_frame(&mut stream).await {
-        Ok(f) => f,
-        Err(e) => {
-            eprintln!("Error: failed to read HELLO_ACK: {}", e);
-            exit(EXIT_INFRA_ERROR);
-        }
-    };
-
-    if msg_type != MsgType::HelloAck {
-        eprintln!(
-            "Protocol error: expected HELLO_ACK, received {:?}",
-            msg_type
-        );
-        exit(EXIT_INFRA_ERROR);
-    }
-
-    let ack: HelloAckPayload = match decode_json(&payload) {
-        Ok(a) => a,
-        Err(e) => {
-            eprintln!("Error: invalid HELLO_ACK payload: {}", e);
-            exit(EXIT_INFRA_ERROR);
-        }
-    };
-
-    if !ack.ok {
-        eprintln!(
-            "Authentication failed: {}",
-            ack.error.as_deref().unwrap_or("rejected by agent")
-        );
-        exit(EXIT_INFRA_ERROR);
-    }
-
-    // 3. Scan local files & Build MANIFEST
-    let scan_start = Instant::now();
-    let scanned_files = match fileset::scan(&project_dir, &[]) {
-        Ok(f) => f,
-        Err(e) => {
-            eprintln!("Error: failed to scan project files: {}", e);
-            exit(EXIT_INFRA_ERROR);
-        }
-    };
-
-    let manifest_files: Vec<FileEntry> = scanned_files
-        .values()
-        .map(|meta| FileEntry {
-            path: meta.path.clone(),
-            hash: meta.hash.clone(),
-            size: meta.size,
-            mode: meta.mode,
-        })
-        .collect();
-
-    let manifest = ManifestPayload {
-        files: manifest_files,
-    };
-
-    telemetry.scan_duration = scan_start.elapsed();
-    telemetry.files_scanned = manifest.files.len();
-
-    if verbose {
-        println!(
-            "Scanned {} local files in {:?}",
-            manifest.files.len(),
-            telemetry.scan_duration
-        );
-    }
-
-    // 4. Send MANIFEST frame
-    if let Err(e) = write_json_frame(&mut stream, MsgType::Manifest, &manifest).await {
-        eprintln!("Error: failed to send MANIFEST frame: {}", e);
-        exit(EXIT_INFRA_ERROR);
-    }
-
-    // 5. Receive NEED frame (handling optional QUEUED frames first)
-    let need: NeedPayload = loop {
-        let (msg_type, payload) = match read_frame(&mut stream).await {
-            Ok(f) => f,
-            Err(e) => {
-                eprintln!("Error: failed to read NEED frame: {}", e);
-                exit(EXIT_INFRA_ERROR);
-            }
-        };
-
-        match msg_type {
-            MsgType::Queued => {
-                let queued: protocol::QueuedPayload = match decode_json(&payload) {
-                    Ok(q) => q,
-                    Err(e) => {
-                        eprintln!("Error: invalid QUEUED payload: {}", e);
-                        exit(EXIT_INFRA_ERROR);
-                    }
-                };
-                println!(
-                    "[farhand] Build queued on agent (reason: {}, position: {}). Waiting for remote workspace...",
-                    queued.reason, queued.position
-                );
-            }
-            MsgType::Need => {
-                let n: NeedPayload = match decode_json(&payload) {
-                    Ok(n) => n,
-                    Err(e) => {
-                        eprintln!("Error: invalid NEED payload: {}", e);
-                        exit(EXIT_INFRA_ERROR);
-                    }
-                };
-                break n;
-            }
-            other => {
-                eprintln!(
-                    "Protocol error: expected NEED or QUEUED frame, received {:?}",
-                    other
-                );
-                exit(EXIT_INFRA_ERROR);
-            }
-        }
-    };
-
-    // 6. Selective Delta Pack & Upload (FILES frame)
-    let sync_start = Instant::now();
-    if need.want.is_empty() {
-        if verbose {
-            println!(
-                "[Delta Sync] Remote workspace is completely up to date. 0 files to transfer!"
-            );
-        }
-        if let Err(e) = write_frame(&mut stream, MsgType::Files, &[]).await {
-            eprintln!("Error: failed to send empty FILES frame: {}", e);
-            exit(EXIT_INFRA_ERROR);
-        }
-        telemetry.upload_duration = sync_start.elapsed();
-        telemetry.files_uploaded = 0;
-        telemetry.bytes_uploaded = 0;
+    let effective_tty = cli.tty || cfg.tty;
+    let effective_forwards = if !cli.forward.is_empty() {
+        cli.forward
     } else {
-        if verbose {
-            println!(
-                "[Delta Sync] Agent requested {} changed/missing files. Packing delta archive...",
-                need.want.len()
-            );
-        }
-        let tar_gz = match fileset::pack_tar(&project_dir, &need.want) {
-            Ok(t) => t,
+        cfg.forward
+    };
+    let run_env = collect_forward_env(cli.no_env, cfg.forward_env, &cfg.env, &cli.env);
+
+    if is_watch {
+        println!(
+            "👁️  farhand watch mode active for: {}",
+            project_dir.display()
+        );
+        println!("   Command: {:?}", effective_command);
+        println!("   Press Ctrl+C to exit.\n");
+
+        let _ = run_build(
+            &host,
+            &token,
+            &project_name,
+            &project_dir,
+            &effective_command,
+            outputs.clone(),
+            &out_dir,
+            template.clone(),
+            no_cache,
+            run_env.clone(),
+            effective_tty,
+            &effective_forwards,
+            verbose,
+            &mut telemetry,
+        )
+        .await;
+
+        println!("\n👁️  Watching for changes... (debounce: 150ms)");
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut watcher = match RecommendedWatcher::new(
+            move |res: notify::Result<notify::Event>| {
+                if let Ok(event) = res {
+                    let _ = tx.send(event);
+                }
+            },
+            NotifyConfig::default(),
+        ) {
+            Ok(w) => w,
             Err(e) => {
-                eprintln!("Error: failed to pack delta files into archive: {}", e);
+                eprintln!("Error initializing file watcher: {}", e);
                 exit(EXIT_INFRA_ERROR);
             }
         };
 
-        let upload_len = tar_gz.len() as u64;
-        let want_len = need.want.len();
-
-        if verbose {
-            println!(
-                "[Delta Sync] Uploading {} bytes (compressed) across {} files in {:?}",
-                upload_len,
-                want_len,
-                sync_start.elapsed()
-            );
-        }
-
-        if let Err(e) = write_frame(&mut stream, MsgType::Files, &tar_gz).await {
-            eprintln!("Error: failed to send FILES frame: {}", e);
+        if let Err(e) = watcher.watch(&project_dir, RecursiveMode::Recursive) {
+            eprintln!("Error watching directory {}: {}", project_dir.display(), e);
             exit(EXIT_INFRA_ERROR);
         }
 
-        telemetry.upload_duration = sync_start.elapsed();
-        telemetry.files_uploaded = want_len;
-        telemetry.bytes_uploaded = upload_len;
-    }
+        loop {
+            let first_event = match rx.recv().await {
+                Some(e) => e,
+                None => break,
+            };
 
-    // 7. Send RUN frame
-    let run_env = collect_forward_env(cli.no_env, cfg.forward_env, &cfg.env, &cli.env);
-    if verbose {
-        if let Some(ref e) = run_env {
-            println!(
-                "[Environment] Forwarding {} environment variable(s) to remote agent",
-                e.len()
-            );
-        } else {
-            println!("[Environment] Environment variable forwarding is disabled");
-        }
-    }
+            let mut relevant = first_event
+                .paths
+                .iter()
+                .any(|p| !should_ignore_path(p, &project_dir));
 
-    let run = RunPayload {
-        argv: cli.command,
-        outputs,
-        cwd: None,
-        template,
-        no_cache,
-        env: run_env,
-    };
+            let debounce_dur = std::time::Duration::from_millis(150);
+            let deadline = tokio::time::Instant::now() + debounce_dur;
 
-    let remote_start = Instant::now();
-    if let Err(e) = write_json_frame(&mut stream, MsgType::Run, &run).await {
-        eprintln!("Error: failed to send RUN frame: {}", e);
-        exit(EXIT_INFRA_ERROR);
-    }
-
-    // 8. Receive streamed LOG, RESULT, and optional ARTIFACTS frames
-    let mut exit_code = 1;
-    let mut stdout = std::io::stdout();
-    let mut stderr = std::io::stderr();
-    let mut received_result = false;
-
-    loop {
-        let (msg_type, payload) = match read_frame(&mut stream).await {
-            Ok(f) => f,
-            Err(protocol::FrameError::UnexpectedEof) => {
-                if received_result {
-                    break;
-                }
-                eprintln!("Error: connection dropped by agent before completion");
-                exit(EXIT_INFRA_ERROR);
-            }
-            Err(e) => {
-                if received_result {
-                    break;
-                }
-                eprintln!("Error: connection dropped by agent: {}", e);
-                exit(EXIT_INFRA_ERROR);
-            }
-        };
-
-        match msg_type {
-            MsgType::Log => {
-                if let Ok(log) = decode_json::<LogPayload>(&payload) {
-                    if log.stream == "stderr" {
-                        let _ = stderr.write_all(log.data.as_bytes());
-                        let _ = stderr.flush();
-                    } else {
-                        let _ = stdout.write_all(log.data.as_bytes());
-                        let _ = stdout.flush();
+            loop {
+                tokio::select! {
+                    next = rx.recv() => {
+                        if let Some(event) = next {
+                            if event.paths.iter().any(|p| !should_ignore_path(p, &project_dir)) {
+                                relevant = true;
+                            }
+                        } else {
+                            break;
+                        }
                     }
-                }
-            }
-            MsgType::Result => {
-                telemetry.remote_duration = remote_start.elapsed();
-                if let Ok(res) = decode_json::<ResultPayload>(&payload) {
-                    exit_code = res.exit_code;
-                    received_result = true;
-                    if let Some(err_msg) = res.error {
-                        eprintln!("Remote error: {}", err_msg);
-                    }
-                    if exit_code != 0 {
-                        // On command failure, no artifacts will be sent
+                    _ = tokio::time::sleep_until(deadline) => {
                         break;
                     }
-                } else {
-                    eprintln!("Protocol error: failed to decode RESULT payload");
-                    exit(EXIT_INFRA_ERROR);
                 }
             }
-            MsgType::Artifacts => {
-                let extract_start = Instant::now();
-                if let Err(e) = fileset::unpack_tar(&out_dir, &payload) {
-                    eprintln!("Error: failed to extract build artifacts: {}", e);
-                    exit(EXIT_INFRA_ERROR);
-                }
-                telemetry.download_duration = extract_start.elapsed();
-                telemetry.bytes_downloaded = payload.len() as u64;
 
-                if verbose {
-                    println!(
-                        "[Artifacts] Extracted {} bytes into {} in {:?}",
-                        payload.len(),
-                        out_dir.display(),
-                        telemetry.download_duration
-                    );
-                }
-                break;
-            }
-            other => {
-                if verbose {
-                    println!("[farhand] Received control frame: {:?}", other);
-                }
+            if relevant {
+                println!("\n🔄 Change detected, syncing and rebuilding...");
+                let _ = run_build(
+                    &host,
+                    &token,
+                    &project_name,
+                    &project_dir,
+                    &effective_command,
+                    outputs.clone(),
+                    &out_dir,
+                    template.clone(),
+                    no_cache,
+                    run_env.clone(),
+                    effective_tty,
+                    &effective_forwards,
+                    verbose,
+                    &mut telemetry,
+                )
+                .await;
+                println!("\n👁️  Watching for changes...");
             }
         }
+        exit(0);
     }
+
+    let exit_code = match run_build(
+        &host,
+        &token,
+        &project_name,
+        &project_dir,
+        &effective_command,
+        outputs,
+        &out_dir,
+        template,
+        no_cache,
+        run_env,
+        effective_tty,
+        &effective_forwards,
+        verbose,
+        &mut telemetry,
+    )
+    .await
+    {
+        Ok(code) => code,
+        Err(e) => {
+            eprintln!("Build execution error: {}", e);
+            EXIT_INFRA_ERROR
+        }
+    };
 
     if verbose {
         telemetry.print_summary(&project_name, &host);

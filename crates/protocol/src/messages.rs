@@ -23,6 +23,11 @@ pub enum MsgType {
     HistoryResp = 0x0F,
     Clean = 0x10,
     CleanResp = 0x11,
+    Stdin = 0x12,
+    Resize = 0x13,
+    PortOpen = 0x14,
+    PortData = 0x15,
+    PortClose = 0x16,
 }
 
 impl MsgType {
@@ -45,6 +50,11 @@ impl MsgType {
             0x0F => Some(Self::HistoryResp),
             0x10 => Some(Self::Clean),
             0x11 => Some(Self::CleanResp),
+            0x12 => Some(Self::Stdin),
+            0x13 => Some(Self::Resize),
+            0x14 => Some(Self::PortOpen),
+            0x15 => Some(Self::PortData),
+            0x16 => Some(Self::PortClose),
             _ => None,
         }
     }
@@ -112,6 +122,43 @@ pub struct RunPayload {
     pub no_cache: bool,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub env: Option<HashMap<String, String>>,
+    #[serde(default)]
+    pub tty: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cols: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rows: Option<u16>,
+}
+
+/// Client -> Agent: Terminal window resize event
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResizePayload {
+    pub cols: u16,
+    pub rows: u16,
+}
+
+/// Client <-> Agent: Reverse port forwarding channel open request
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PortOpenPayload {
+    #[serde(rename = "channelId")]
+    pub channel_id: u32,
+    #[serde(rename = "targetPort")]
+    pub target_port: u16,
+}
+
+/// Client <-> Agent: Data chunk over a port forwarding channel
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PortDataPayload {
+    #[serde(rename = "channelId")]
+    pub channel_id: u32,
+    pub data: Vec<u8>,
+}
+
+/// Client <-> Agent: Close a port forwarding channel
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PortClosePayload {
+    #[serde(rename = "channelId")]
+    pub channel_id: u32,
 }
 
 /// Agent -> Client: Streamed stdout or stderr line/chunk
@@ -243,6 +290,9 @@ mod tests {
             template: Some("npm".into()),
             no_cache: false,
             env: Some(env.clone()),
+            tty: false,
+            cols: None,
+            rows: None,
         };
 
         let json = serde_json::to_string(&payload_with_env).unwrap();
@@ -254,5 +304,48 @@ mod tests {
         let decoded2: RunPayload = serde_json::from_str(json_without_env).unwrap();
         assert_eq!(decoded2.env, None);
         assert!(!decoded2.no_cache);
+        assert!(!decoded2.tty);
+        assert_eq!(decoded2.cols, None);
+        assert_eq!(decoded2.rows, None);
+    }
+
+    #[test]
+    fn test_tier1_msg_types_and_payloads() {
+        for val in 0x01..=0x16 {
+            let msg = MsgType::from_u8(val).unwrap();
+            assert_eq!(msg.to_u8(), val);
+        }
+
+        let resize = ResizePayload {
+            cols: 120,
+            rows: 40,
+        };
+        let json = serde_json::to_string(&resize).unwrap();
+        let decoded: ResizePayload = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.cols, 120);
+        assert_eq!(decoded.rows, 40);
+
+        let port_open = PortOpenPayload {
+            channel_id: 42,
+            target_port: 3000,
+        };
+        let json = serde_json::to_string(&port_open).unwrap();
+        let decoded: PortOpenPayload = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.channel_id, 42);
+        assert_eq!(decoded.target_port, 3000);
+
+        let port_data = PortDataPayload {
+            channel_id: 42,
+            data: b"hello".to_vec(),
+        };
+        let json = serde_json::to_string(&port_data).unwrap();
+        let decoded: PortDataPayload = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.channel_id, 42);
+        assert_eq!(decoded.data, b"hello");
+
+        let port_close = PortClosePayload { channel_id: 42 };
+        let json = serde_json::to_string(&port_close).unwrap();
+        let decoded: PortClosePayload = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.channel_id, 42);
     }
 }

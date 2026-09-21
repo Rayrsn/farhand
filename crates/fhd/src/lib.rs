@@ -1,12 +1,13 @@
 use protocol::{
     decode_json, read_frame, write_frame, write_json_frame, HelloAckPayload, HelloPayload,
-    LogPayload, ManifestPayload, MsgType, NeedPayload, ResultPayload, RunPayload,
-    CURRENT_PROTOCOL_VERSION,
+    LogPayload, ManifestPayload, MsgType, NeedPayload, PortClosePayload, PortDataPayload,
+    PortOpenPayload, ResizePayload, ResultPayload, RunPayload, CURRENT_PROTOCOL_VERSION,
 };
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncWrite, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::process::Command;
 use tokio::sync::Mutex;
@@ -527,6 +528,9 @@ pub async fn handle_connection(
         &run.argv,
         ctx.custom_shell.as_deref(),
         run.env.as_ref(),
+        run.tty,
+        run.cols,
+        run.rows,
     )
     .await?;
 
@@ -705,6 +709,67 @@ pub async fn kill_process_group(child: &mut tokio::process::Child) {
     }
 }
 
+pub async fn handle_port_open<W: AsyncWrite + Unpin + Send + 'static>(
+    writer: Arc<Mutex<W>>,
+    channels: Arc<Mutex<HashMap<u32, tokio::sync::mpsc::Sender<Vec<u8>>>>>,
+    channel_id: u32,
+    target_port: u16,
+) {
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(128);
+    channels.lock().await.insert(channel_id, tx);
+    let writer_clone = writer.clone();
+    let channels_clone = channels.clone();
+
+    tokio::spawn(async move {
+        match tokio::net::TcpStream::connect(("127.0.0.1", target_port)).await {
+            Ok(stream) => {
+                let (mut tcp_read, mut tcp_write) = stream.into_split();
+                let writer_in = writer_clone.clone();
+
+                let read_task = tokio::spawn(async move {
+                    let mut buf = [0u8; 8192];
+                    while let Ok(n) = tcp_read.read(&mut buf).await {
+                        if n == 0 {
+                            break;
+                        }
+                        let payload = PortDataPayload {
+                            channel_id,
+                            data: buf[..n].to_vec(),
+                        };
+                        let mut w = writer_in.lock().await;
+                        if write_json_frame(&mut *w, MsgType::PortData, &payload)
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    let close = PortClosePayload { channel_id };
+                    let mut w = writer_in.lock().await;
+                    let _ = write_json_frame(&mut *w, MsgType::PortClose, &close).await;
+                });
+
+                let write_task = tokio::spawn(async move {
+                    while let Some(chunk) = rx.recv().await {
+                        if tcp_write.write_all(&chunk).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+
+                let _ = tokio::join!(read_task, write_task);
+            }
+            Err(e) => {
+                warn!("Failed to connect to target port {}: {}", target_port, e);
+                let close = PortClosePayload { channel_id };
+                let mut w = writer_clone.lock().await;
+                let _ = write_json_frame(&mut *w, MsgType::PortClose, &close).await;
+            }
+        }
+        channels_clone.lock().await.remove(&channel_id);
+    });
+}
+
 pub async fn run_child_and_stream<
     W: AsyncWrite + Unpin + Send + 'static,
     R: tokio::io::AsyncRead + Unpin + Send,
@@ -759,28 +824,223 @@ pub async fn run_child_and_stream<
         }
     });
 
-    let disconnect_monitor = async {
-        use tokio::io::AsyncReadExt;
-        let mut buf = [0u8; 1];
-        match reader.read(&mut buf).await {
-            Ok(0) => true,  // EOF: client disconnected
-            Err(_) => true, // Connection reset/error
-            Ok(_) => false,
+    let port_channels = Arc::new(Mutex::new(
+        HashMap::<u32, tokio::sync::mpsc::Sender<Vec<u8>>>::new(),
+    ));
+
+    let exit_code = loop {
+        tokio::select! {
+            status_res = child.wait() => {
+                let status = status_res?;
+                let _ = tokio::join!(stdout_handle, stderr_handle);
+                break status.code().unwrap_or(1);
+            }
+            frame_res = read_frame(reader) => {
+                match frame_res {
+                    Ok((MsgType::PortOpen, payload)) => {
+                        if let Ok(po) = serde_json::from_slice::<PortOpenPayload>(&payload) {
+                            handle_port_open(writer.clone(), port_channels.clone(), po.channel_id, po.target_port).await;
+                        }
+                    }
+                    Ok((MsgType::PortData, payload)) => {
+                        if let Ok(pd) = serde_json::from_slice::<PortDataPayload>(&payload) {
+                            let map = port_channels.lock().await;
+                            if let Some(tx) = map.get(&pd.channel_id) {
+                                let _ = tx.send(pd.data).await;
+                            }
+                        }
+                    }
+                    Ok((MsgType::PortClose, payload)) => {
+                        if let Ok(pc) = serde_json::from_slice::<PortClosePayload>(&payload) {
+                            port_channels.lock().await.remove(&pc.channel_id);
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(_) => {
+                        warn!("Client disconnected while command was executing. Terminating process group.");
+                        kill_process_group(&mut child).await;
+                        return Err("Client disconnected".into());
+                    }
+                }
+            }
         }
     };
 
-    tokio::select! {
-        status_res = child.wait() => {
-            let status = status_res?;
-            let _ = tokio::join!(stdout_handle, stderr_handle);
-            Ok(status.code().unwrap_or(1))
+    Ok(exit_code)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn run_pty_child_and_stream<
+    W: AsyncWrite + Unpin + Send + 'static,
+    R: tokio::io::AsyncRead + Unpin + Send,
+>(
+    writer: Arc<Mutex<W>>,
+    reader: &mut R,
+    cwd: &Path,
+    argv: &[String],
+    custom_shell: Option<&str>,
+    env: Option<&std::collections::HashMap<String, String>>,
+    cols: Option<u16>,
+    rows: Option<u16>,
+) -> Result<i32, Box<dyn std::error::Error>> {
+    let pty_system = portable_pty::native_pty_system();
+    let initial_size = portable_pty::PtySize {
+        rows: rows.unwrap_or(24),
+        cols: cols.unwrap_or(80),
+        pixel_width: 0,
+        pixel_height: 0,
+    };
+    let pair = pty_system.openpty(initial_size)?;
+
+    let joined_cmd = argv
+        .iter()
+        .map(|a| shell_escape(a))
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    let mut cmd_builder = if let Some(shell_override) = custom_shell {
+        let parts: Vec<&str> = shell_override.split_whitespace().collect();
+        let mut cb = portable_pty::CommandBuilder::new(parts[0]);
+        for part in &parts[1..] {
+            cb.arg(part);
         }
-        _ = disconnect_monitor => {
-            warn!("Client disconnected while command was executing. Terminating process group.");
-            kill_process_group(&mut child).await;
-            Err("Client disconnected".into())
+        cb.arg(&joined_cmd);
+        cb
+    } else if cfg!(windows) {
+        let mut cb = portable_pty::CommandBuilder::new("cmd.exe");
+        cb.arg("/C");
+        cb.arg(&joined_cmd);
+        cb
+    } else {
+        let mut cb = portable_pty::CommandBuilder::new("/bin/sh");
+        cb.arg("-c");
+        cb.arg(&joined_cmd);
+        cb
+    };
+
+    cmd_builder.cwd(cwd);
+    if let Some(envs) = env {
+        for (k, v) in envs {
+            cmd_builder.env(k, v);
         }
     }
+
+    let mut child = pair.slave.spawn_command(cmd_builder)?;
+    drop(pair.slave);
+
+    let child_pid = child.process_id();
+    let mut pty_reader = pair.master.try_clone_reader()?;
+    let pty_writer = Arc::new(Mutex::new(pair.master.take_writer()?));
+    let master = Arc::new(Mutex::new(pair.master));
+
+    let (log_tx, mut log_rx) = tokio::sync::mpsc::channel::<LogPayload>(128);
+    let writer_out = Arc::clone(&writer);
+    let log_writer_task = tokio::spawn(async move {
+        while let Some(payload) = log_rx.recv().await {
+            let mut w = writer_out.lock().await;
+            if write_json_frame(&mut *w, MsgType::Log, &payload)
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+    });
+
+    let output_handle = tokio::task::spawn_blocking(move || {
+        use std::io::Read;
+        let mut buf = [0u8; 4096];
+        while let Ok(n) = pty_reader.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            let text = String::from_utf8_lossy(&buf[..n]).to_string();
+            let payload = LogPayload {
+                stream: "stdout".into(),
+                data: text,
+            };
+            if log_tx.blocking_send(payload).is_err() {
+                break;
+            }
+        }
+    });
+
+    let port_channels = Arc::new(Mutex::new(
+        HashMap::<u32, tokio::sync::mpsc::Sender<Vec<u8>>>::new(),
+    ));
+
+    let (exit_tx, mut exit_rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let status = child.wait();
+        let code = match status {
+            Ok(s) if s.success() => 0,
+            Ok(s) => s.exit_code() as i32,
+            Err(_) => 1,
+        };
+        let _ = exit_tx.send(code);
+    });
+
+    let exit_code = loop {
+        tokio::select! {
+            code = &mut exit_rx => {
+                break code.unwrap_or(1);
+            }
+            frame_res = read_frame(reader) => {
+                match frame_res {
+                    Ok((MsgType::Stdin, payload)) => {
+                        let mut pw = pty_writer.lock().await;
+                        use std::io::Write;
+                        let _ = pw.write_all(&payload);
+                        let _ = pw.flush();
+                    }
+                    Ok((MsgType::Resize, payload)) => {
+                        if let Ok(resize) = serde_json::from_slice::<ResizePayload>(&payload) {
+                            let m = master.lock().await;
+                            let _ = m.resize(portable_pty::PtySize {
+                                rows: resize.rows,
+                                cols: resize.cols,
+                                pixel_width: 0,
+                                pixel_height: 0,
+                            });
+                        }
+                    }
+                    Ok((MsgType::PortOpen, payload)) => {
+                        if let Ok(po) = serde_json::from_slice::<PortOpenPayload>(&payload) {
+                            handle_port_open(writer.clone(), port_channels.clone(), po.channel_id, po.target_port).await;
+                        }
+                    }
+                    Ok((MsgType::PortData, payload)) => {
+                        if let Ok(pd) = serde_json::from_slice::<PortDataPayload>(&payload) {
+                            let map = port_channels.lock().await;
+                            if let Some(tx) = map.get(&pd.channel_id) {
+                                let _ = tx.send(pd.data).await;
+                            }
+                        }
+                    }
+                    Ok((MsgType::PortClose, payload)) => {
+                        if let Ok(pc) = serde_json::from_slice::<PortClosePayload>(&payload) {
+                            port_channels.lock().await.remove(&pc.channel_id);
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(_) => {
+                        warn!("Client disconnected during PTY session. Terminating child.");
+                        #[cfg(unix)]
+                        if let Some(pid) = child_pid {
+                            unsafe {
+                                libc::kill(-(pid as i32), libc::SIGTERM);
+                            }
+                        }
+                        return Err("Client disconnected".into());
+                    }
+                }
+            }
+        }
+    };
+
+    let _ = output_handle.await;
+    let _ = log_writer_task.await;
+    Ok(exit_code)
 }
 
 pub async fn execute_raw_command_and_stream<
@@ -801,6 +1061,7 @@ pub async fn execute_raw_command_and_stream<
     run_child_and_stream(writer, reader, cmd).await
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn execute_and_stream<
     W: AsyncWrite + Unpin + Send + 'static,
     R: tokio::io::AsyncRead + Unpin + Send,
@@ -811,13 +1072,20 @@ pub async fn execute_and_stream<
     argv: &[String],
     custom_shell: Option<&str>,
     env: Option<&std::collections::HashMap<String, String>>,
+    tty: bool,
+    cols: Option<u16>,
+    rows: Option<u16>,
 ) -> Result<i32, Box<dyn std::error::Error>> {
     if argv.is_empty() {
         return Ok(0);
     }
-    let mut cmd = build_shell_command(cwd, argv, custom_shell);
-    if let Some(envs) = env {
-        cmd.envs(envs);
+    if tty {
+        run_pty_child_and_stream(writer, reader, cwd, argv, custom_shell, env, cols, rows).await
+    } else {
+        let mut cmd = build_shell_command(cwd, argv, custom_shell);
+        if let Some(envs) = env {
+            cmd.envs(envs);
+        }
+        run_child_and_stream(writer, reader, cmd).await
     }
-    run_child_and_stream(writer, reader, cmd).await
 }
