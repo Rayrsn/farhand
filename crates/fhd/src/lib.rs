@@ -42,6 +42,7 @@ pub struct ServerContext {
     pub tags: Vec<String>,
     pub queue_depth: Arc<std::sync::atomic::AtomicUsize>,
     pub max_runs: usize,
+    pub min_disk_bytes: u64,
 }
 
 pub async fn run_server(
@@ -51,6 +52,7 @@ pub async fn run_server(
     custom_shell: Option<String>,
     max_concurrent_runs: Option<usize>,
     tags: Vec<String>,
+    min_disk_bytes: Option<u64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let max_runs = max_concurrent_runs.unwrap_or_else(|| {
         std::thread::available_parallelism()
@@ -70,6 +72,7 @@ pub async fn run_server(
         tags,
         queue_depth,
         max_runs,
+        min_disk_bytes: min_disk_bytes.unwrap_or(2_500_000_000), // Default: 2.5 GB
     });
 
     loop {
@@ -119,12 +122,18 @@ pub async fn handle_connection(
             .max_runs
             .saturating_sub(ctx.semaphore.available_permits());
         let depth = ctx.queue_depth.load(std::sync::atomic::Ordering::Relaxed);
+        let (disk_free_bytes, disk_total_bytes) = match workspace::get_disk_space(&ctx.workdir_root) {
+            Ok(space) => (Some(space.available_bytes), Some(space.total_bytes)),
+            Err(_) => (None, None),
+        };
         let resp = protocol::StatusResponsePayload {
             active_runs,
             max_runs: ctx.max_runs,
             queue_depth: depth,
             hostname: get_hostname(),
             tags: ctx.tags.clone(),
+            disk_free_bytes,
+            disk_total_bytes,
         };
         write_json_frame(&mut stream, MsgType::StatusResp, &resp).await?;
         return Ok(());
@@ -244,6 +253,42 @@ pub async fn handle_connection(
             };
             write_json_frame(&mut stream, MsgType::HelloAck, &ack).await?;
             return Err("Unauthorized".into());
+        }
+    }
+
+    // Pre-flight disk space guard: verify host volume has sufficient free space
+    if ctx.min_disk_bytes > 0 {
+        if let Ok(space) = workspace::get_disk_space(&ctx.workdir_root) {
+            if space.available_bytes < ctx.min_disk_bytes {
+                let needed = ctx.min_disk_bytes.saturating_sub(space.available_bytes);
+                info!(
+                    "Available disk space ({} bytes) is below minimum threshold ({} bytes). Running emergency GC...",
+                    space.available_bytes, ctx.min_disk_bytes
+                );
+                let gc_report = workspace::run_emergency_disk_gc(&ctx.workdir_root, needed);
+                info!(
+                    "Emergency GC pruned {} workspaces, trimmed {} bytes.",
+                    gc_report.workspaces_deleted, gc_report.caches_trimmed_bytes
+                );
+
+                if let Ok(new_space) = workspace::get_disk_space(&ctx.workdir_root) {
+                    if new_space.available_bytes < ctx.min_disk_bytes {
+                        let free_gb = new_space.available_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+                        let req_gb = ctx.min_disk_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+                        let err_msg = format!(
+                            "Remote agent disk low ({:.2} GB free, required >= {:.2} GB). Run 'fh clean' or free host disk.",
+                            free_gb, req_gb
+                        );
+                        warn!("{}", err_msg);
+                        let ack = HelloAckPayload {
+                            ok: false,
+                            error: Some(err_msg.clone()),
+                        };
+                        write_json_frame(&mut stream, MsgType::HelloAck, &ack).await?;
+                        return Err(err_msg.into());
+                    }
+                }
+            }
         }
     }
 

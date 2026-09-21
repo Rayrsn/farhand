@@ -21,11 +21,30 @@ async fn spawn_test_server_with_tags(
     max_concurrent_runs: Option<usize>,
     tags: Vec<String>,
 ) -> (String, tokio::task::JoinHandle<()>) {
+    spawn_test_server_full(token, workdir, max_concurrent_runs, tags, Some(0)).await
+}
+
+async fn spawn_test_server_full(
+    token: Option<String>,
+    workdir: PathBuf,
+    max_concurrent_runs: Option<usize>,
+    tags: Vec<String>,
+    min_disk_bytes: Option<u64>,
+) -> (String, tokio::task::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap().to_string();
 
     let handle = tokio::spawn(async move {
-        let _ = fhd::run_server(listener, token, workdir, None, max_concurrent_runs, tags).await;
+        let _ = fhd::run_server(
+            listener,
+            token,
+            workdir,
+            None,
+            max_concurrent_runs,
+            tags,
+            min_disk_bytes,
+        )
+        .await;
     });
 
     (addr, handle)
@@ -2213,3 +2232,157 @@ async fn test_e2e_reverse_port_forwarding_tunnel() {
     let close = protocol::PortClosePayload { channel_id: 101 };
     let _ = write_json_frame(&mut stream, MsgType::PortClose, &close).await;
 }
+
+#[tokio::test]
+async fn test_e2e_preflight_disk_guard_rejection_and_status() {
+    let workdir = tempdir().unwrap();
+    let token = "disk-guard-secret".to_string();
+
+    // 1. Check STATUS returns valid disk metrics
+    let (server_addr, _handle) =
+        spawn_test_server_full(Some(token.clone()), workdir.path().to_path_buf(), None, vec![], Some(0)).await;
+
+    let mut stream = TcpStream::connect(&server_addr).await.unwrap();
+    let status_req = protocol::StatusRequestPayload {
+        token: token.clone(),
+    };
+    write_json_frame(&mut stream, MsgType::Status, &status_req).await.unwrap();
+
+    let (msg_type, payload) = read_frame(&mut stream).await.unwrap();
+    assert_eq!(msg_type, MsgType::StatusResp);
+    let resp: protocol::StatusResponsePayload = decode_json(&payload).unwrap();
+    assert!(resp.disk_free_bytes.is_some(), "STATUS response should include disk_free_bytes");
+    assert!(resp.disk_total_bytes.is_some(), "STATUS response should include disk_total_bytes");
+
+    // 2. Start a server demanding an impossible amount of free disk space (u64::MAX)
+    let workdir2 = tempdir().unwrap();
+    let (server_addr2, _handle2) =
+        spawn_test_server_full(Some(token.clone()), workdir2.path().to_path_buf(), None, vec![], Some(u64::MAX)).await;
+
+    let mut stream2 = TcpStream::connect(&server_addr2).await.unwrap();
+    let hello = HelloPayload {
+        token: token.clone(),
+        project: "low-disk-proj".to_string(),
+        protocol_version: CURRENT_PROTOCOL_VERSION,
+    };
+    write_json_frame(&mut stream2, MsgType::Hello, &hello).await.unwrap();
+
+    let (msg_type2, payload2) = read_frame(&mut stream2).await.unwrap();
+    assert_eq!(msg_type2, MsgType::HelloAck);
+    let ack: HelloAckPayload = decode_json(&payload2).unwrap();
+    assert!(!ack.ok, "Daemon must reject HELLO when free disk is below threshold");
+    let err = ack.error.unwrap_or_default();
+    assert!(err.contains("Remote agent disk low"), "Error message should warn about low disk: {}", err);
+}
+
+#[tokio::test]
+async fn test_e2e_cli_output_overrides_and_no_output() {
+    let token = "output-override-secret".to_string();
+    let workdir = tempdir().unwrap();
+    let (server_addr, _handle) =
+        spawn_test_server(Some(token.clone()), workdir.path().to_path_buf()).await;
+
+    let project_dir = tempdir().unwrap();
+    fs::write(project_dir.path().join("src.txt"), "build-me").unwrap();
+
+    // Command that generates an artifact
+    let cmd = vec![
+        "sh".into(),
+        "-c".into(),
+        "mkdir -p dist && echo 'bundle-content' > dist/bundle.js".into(),
+    ];
+
+    // Case 1: Run with explicit outputs
+    let mut stream = TcpStream::connect(&server_addr).await.unwrap();
+    let hello = HelloPayload {
+        token: token.clone(),
+        project: "out-test-1".to_string(),
+        protocol_version: CURRENT_PROTOCOL_VERSION,
+    };
+    write_json_frame(&mut stream, MsgType::Hello, &hello).await.unwrap();
+    let _ = read_frame(&mut stream).await.unwrap();
+
+    let scanned = fileset::scan(project_dir.path(), &[]).unwrap();
+    let manifest_files: Vec<FileEntry> = scanned
+        .values()
+        .map(|m| FileEntry {
+            path: m.path.clone(),
+            hash: m.hash.clone(),
+            size: m.size,
+            mode: m.mode,
+        })
+        .collect();
+    write_json_frame(&mut stream, MsgType::Manifest, &ManifestPayload { files: manifest_files }).await.unwrap();
+    let _ = read_frame(&mut stream).await.unwrap();
+    write_frame(&mut stream, MsgType::Files, &[]).await.unwrap();
+
+    let run_with_output = RunPayload {
+        argv: cmd.clone(),
+        outputs: Some(vec!["dist/bundle.js".into()]),
+        cwd: None,
+        template: None,
+        no_cache: false,
+        env: None,
+        tty: false,
+        cols: None,
+        rows: None,
+    };
+    write_json_frame(&mut stream, MsgType::Run, &run_with_output).await.unwrap();
+
+    let mut received_artifacts = false;
+    loop {
+        let (msg, _) = read_frame(&mut stream).await.unwrap();
+        if msg == MsgType::Artifacts {
+            received_artifacts = true;
+            break;
+        } else if msg == MsgType::Result {
+            // Check if artifacts follow or stop
+            if let Ok((next_msg, _)) = read_frame(&mut stream).await {
+                if next_msg == MsgType::Artifacts {
+                    received_artifacts = true;
+                }
+            }
+            break;
+        }
+    }
+    assert!(received_artifacts, "Expected artifacts frame when outputs requested");
+
+    // Case 2: Run with outputs = None (simulating --no-output or fh exec)
+    let mut stream2 = TcpStream::connect(&server_addr).await.unwrap();
+    let hello2 = HelloPayload {
+        token: token.clone(),
+        project: "out-test-2".to_string(),
+        protocol_version: CURRENT_PROTOCOL_VERSION,
+    };
+    write_json_frame(&mut stream2, MsgType::Hello, &hello2).await.unwrap();
+    let _ = read_frame(&mut stream2).await.unwrap();
+    write_json_frame(&mut stream2, MsgType::Manifest, &ManifestPayload { files: vec![] }).await.unwrap();
+    let _ = read_frame(&mut stream2).await.unwrap();
+    write_frame(&mut stream2, MsgType::Files, &[]).await.unwrap();
+
+    let run_no_output = RunPayload {
+        argv: cmd.clone(),
+        outputs: None,
+        cwd: None,
+        template: None,
+        no_cache: false,
+        env: None,
+        tty: false,
+        cols: None,
+        rows: None,
+    };
+    write_json_frame(&mut stream2, MsgType::Run, &run_no_output).await.unwrap();
+
+    let mut received_artifacts2 = false;
+    loop {
+        let (msg, _) = read_frame(&mut stream2).await.unwrap();
+        if msg == MsgType::Artifacts {
+            received_artifacts2 = true;
+            break;
+        } else if msg == MsgType::Result {
+            break;
+        }
+    }
+    assert!(!received_artifacts2, "Must NOT receive artifacts frame when outputs is None");
+}
+

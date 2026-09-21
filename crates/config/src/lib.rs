@@ -30,6 +30,75 @@ pub struct AgentConfig {
     pub tags: Vec<String>,
 }
 
+/// A build output target which can be either a simple path or a structured entry with conditions.
+#[derive(Debug, Clone, Serialize, Deserialize, Eq)]
+#[serde(untagged)]
+pub enum OutputItem {
+    Simple(String),
+    Detailed {
+        path: String,
+        #[serde(default)]
+        condition: Option<String>,
+    },
+}
+
+impl OutputItem {
+    pub fn is_active(&self) -> bool {
+        match self {
+            Self::Simple(_) => true,
+            Self::Detailed { condition, .. } => {
+                if let Some(cond) = condition {
+                    let trimmed = cond.trim().to_lowercase();
+                    !trimmed.is_empty()
+                        && trimmed != "0"
+                        && trimmed != "false"
+                        && trimmed != "no"
+                        && trimmed != "off"
+                } else {
+                    true
+                }
+            }
+        }
+    }
+
+    pub fn path(&self) -> &str {
+        match self {
+            Self::Simple(p) => p.as_str(),
+            Self::Detailed { path, .. } => path.as_str(),
+        }
+    }
+}
+
+impl PartialEq for OutputItem {
+    fn eq(&self, other: &Self) -> bool {
+        self.path() == other.path()
+    }
+}
+
+impl PartialEq<&str> for OutputItem {
+    fn eq(&self, other: &&str) -> bool {
+        self.path() == *other
+    }
+}
+
+impl PartialEq<String> for OutputItem {
+    fn eq(&self, other: &String) -> bool {
+        self.path() == other.as_str()
+    }
+}
+
+impl From<&str> for OutputItem {
+    fn from(s: &str) -> Self {
+        OutputItem::Simple(s.to_string())
+    }
+}
+
+impl From<String> for OutputItem {
+    fn from(s: String) -> Self {
+        OutputItem::Simple(s)
+    }
+}
+
 /// Project-local configuration parsed from `.farhand.yaml`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -38,7 +107,7 @@ pub struct Config {
     pub token: Option<String>,
     pub name: Option<String>,
     #[serde(default)]
-    pub outputs: Vec<String>,
+    pub outputs: Vec<OutputItem>,
     #[serde(alias = "out_dir")]
     pub out_dir: Option<String>,
     #[serde(alias = "insecure_skip_token", default)]
@@ -60,6 +129,17 @@ pub struct Config {
     pub tty: bool,
     #[serde(default)]
     pub forward: Vec<String>,
+}
+
+impl Config {
+    /// Returns the active output paths, filtering out items whose condition evaluates to false.
+    pub fn resolved_outputs(&self) -> Vec<String> {
+        self.outputs
+            .iter()
+            .filter(|o| o.is_active())
+            .map(|o| o.path().to_string())
+            .collect()
+    }
 }
 
 impl Default for Config {
@@ -335,5 +415,22 @@ env:
         let yaml_snake = "forward_env: false\n";
         let cfg_snake: Config = serde_yaml::from_str(yaml_snake).unwrap();
         assert!(!cfg_snake.forward_env);
+    }
+
+    #[test]
+    fn test_parse_structured_outputs() {
+        let yaml = r#"
+name: structured-app
+outputs:
+  - "dist/bundle.js"
+  - path: "build/debug-symbols.pdb"
+    condition: "false"
+  - path: "build/docs"
+    condition: "true"
+"#;
+        let cfg: Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.outputs.len(), 3);
+        let active = cfg.resolved_outputs();
+        assert_eq!(active, vec!["dist/bundle.js", "build/docs"]);
     }
 }

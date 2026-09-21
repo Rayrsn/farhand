@@ -61,12 +61,14 @@ Logs stream directly into your terminal in real time, and build artifacts (like 
 - ⚡ **Zero External Dependencies**: Pure Rust binaries. Does not invoke or depend on system `ssh`, `rsync`, `tar`, or `gzip`.
 - 📁 **Persistent Workspace Cache**: Remote dependencies (`node_modules/`, `target/`, `.venv/`) remain on the agent host across runs. Only changed source files are transferred.
 - 🍏 **Instant APFS Copy-on-Write (CoW) Forking**: When working across different branches on shared hosts, new branch workspaces are cloned from canonical seeds (`main`/`master`) in **< 100ms using 0 additional disk blocks**.
-- 🧹 **Automated Two-Tier LRU Garbage Collection**: Daemon automatically soft-prunes intermediate caches and evicts stale branch workspaces according to disk quotas (`--max-disk-gb`) and inactivity TTL (`--workspace-ttl-days`).
+- 🧹 **Automated Two-Tier LRU & Emergency GC**: Daemon automatically soft-prunes intermediate caches, performs pre-flight emergency GC when disk space is tight (`--min-disk-gb`), and evicts stale branch workspaces.
+- 👁️ **Continuous Watch Mode (`fh watch`)**: Automatically debounces local file changes, syncs source deltas, and re-triggers remote builds with zero manual intervention.
+- 🖥️ **Interactive Shell & Ad-Hoc Exec (`fh shell`, `fh exec`)**: Drop into an interactive remote PTY shell inside your project workspace or run diagnostic commands without triggering hooks.
 - 🔀 **Branch-Aware Project Addressing**: Automatically detects git branches and scopes workspaces as `<repo>__<branch>` so multiple developers never collide.
 - 🛡️ **Section 5.1 Deletion Safety**: Strictly protects remote dependencies and build outputs from being deleted during manifest synchronization.
 - 🛑 **Process Group Isolation**: Spawns compilation inside isolated process groups (`setpgid`). If you `Ctrl+C` locally, the entire remote compiler hierarchy is gracefully terminated.
 - 🌐 **Multi-Agent Pool & Tag Routing**: Automatically discovers, health-checks, and load-balances jobs across a cluster of build agents.
-- 📊 **Run Observability**: Query execution history, exit codes, synced bytes, and duration using `fh history`.
+- 📊 **Run Observability**: Query execution history, exit codes, synced bytes, and duration using `fh history` and host status via `fh status`.
 
 ---
 
@@ -174,14 +176,28 @@ fh npm test
 # Compile Rust binaries
 fh cargo build --release
 
+# Continuous watch mode: sync and rebuild on local file saves
+fh watch cargo check
+
+# Interactive remote workspace shell (allocated PTY inside remote repo)
+fh shell
+
+# Ad-hoc command execution (bypasses dependency hooks and artifact downloads)
+fh exec -- git status
+
+# Override or suppress artifact downloads on the fly
+fh -o target/release/my-bin -- cargo build --release
+fh --no-output -- cargo test
+
 # Run with secrets from Infisical (env vars forwarded automatically)
 infisical run -- fh npm run build
 
 # Or disable ambient env forwarding / pass explicit variables
 fh --no-env -e DATABASE_URL=postgres://remote/app -- npm run build
 
-# Inspect execution history
+# Inspect execution history and agent status (including available remote disk space)
 fh history
+fh status
 
 # Free remote disk space for the current branch
 fh clean

@@ -153,8 +153,11 @@ struct Cli {
     )]
     verbose: bool,
 
-    #[arg(long = "output", action = clap::ArgAction::Append, help = "Explicit path(s) to fetch back after a successful run (repeatable)")]
+    #[arg(short = 'o', long = "output", action = clap::ArgAction::Append, help = "Explicit path(s) to fetch back after a successful run (repeatable)")]
     output: Vec<String>,
+
+    #[arg(long = "no-output", help = "Disable artifact retrieval for this run")]
+    no_output: bool,
 
     #[arg(
         long = "out-dir",
@@ -269,6 +272,23 @@ enum Subcommands {
         /// Only clean intermediate compiler/build caches (incremental caches, .cache)
         #[arg(long)]
         caches_only: bool,
+    },
+    /// Open an interactive shell inside the remote workspace
+    Shell {
+        /// Optional specific shell to launch (default: $SHELL or /bin/sh)
+        #[arg(long)]
+        shell: Option<String>,
+        /// Do not sync local changes before opening shell
+        #[arg(long)]
+        no_sync: bool,
+    },
+    /// Run an ad-hoc command in the remote workspace without artifact sync or dependency hooks
+    Exec {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<String>,
+        /// Allocate pseudo-terminal (PTY) for interactive execution
+        #[arg(short = 't', long = "tty")]
+        tty: bool,
     },
 }
 
@@ -1056,7 +1076,7 @@ async fn main() {
                 exit(EXIT_INFRA_ERROR);
             }
         }
-    } else if let Some(h) = cfg.host {
+    } else if let Some(h) = cfg.host.clone() {
         (h, None)
     } else {
         eprintln!("Error: agent host address is required (use --host, FARHAND_HOST env, or configure in .farhand.yaml)");
@@ -1065,7 +1085,7 @@ async fn main() {
 
     let insecure_skip_token = cli.insecure_skip_token || cfg.insecure_skip_token;
 
-    let token = cli.token.or(host_token).or(cfg.token).unwrap_or_else(|| {
+    let token = cli.token.or(host_token).or(cfg.token.clone()).unwrap_or_else(|| {
         if insecure_skip_token {
             String::new()
         } else {
@@ -1074,7 +1094,7 @@ async fn main() {
         }
     });
 
-    let base_project_name = cli.name.or(cfg.name).unwrap_or_else(|| {
+    let base_project_name = cli.name.or(cfg.name.clone()).unwrap_or_else(|| {
         project_dir
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
@@ -1255,21 +1275,36 @@ async fn main() {
     }
 
     let is_watch = cli.watch || matches!(cli.subcommand, Some(Subcommands::Watch { .. }));
+    let is_shell = matches!(cli.subcommand, Some(Subcommands::Shell { .. }));
+    let is_exec = matches!(cli.subcommand, Some(Subcommands::Exec { .. }));
 
     let effective_command = match &cli.subcommand {
         Some(Subcommands::Watch { command }) if !command.is_empty() => command.clone(),
+        Some(Subcommands::Shell { shell, .. }) => {
+            if let Some(sh) = shell {
+                vec![sh.clone()]
+            } else if let Ok(sh) = std::env::var("SHELL") {
+                vec![sh]
+            } else {
+                vec!["/bin/sh".to_string()]
+            }
+        }
+        Some(Subcommands::Exec { command, .. }) => command.clone(),
         _ => cli.command.clone(),
     };
 
     if effective_command.is_empty() {
-        eprintln!("Error: no remote command specified. Usage: fh [OPTIONS] <COMMAND>... or fh watch <COMMAND>...");
+        eprintln!("Error: no remote command specified. Usage: fh [OPTIONS] <COMMAND>... or fh watch <COMMAND>... or fh shell");
         exit(EXIT_INFRA_ERROR);
     }
 
-    let outputs = if !cli.output.is_empty() {
+    let resolved_cfg_outputs = cfg.resolved_outputs();
+    let outputs = if is_shell || is_exec || cli.no_output {
+        None
+    } else if !cli.output.is_empty() {
         Some(cli.output)
-    } else if !cfg.outputs.is_empty() {
-        Some(cfg.outputs)
+    } else if !resolved_cfg_outputs.is_empty() {
+        Some(resolved_cfg_outputs)
     } else {
         None
     };
@@ -1279,9 +1314,19 @@ async fn main() {
         .or_else(|| cfg.out_dir.map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from("./farhand-out"));
 
-    let template = cli.template.or(cfg.template);
+    let template = if is_shell || is_exec {
+        None
+    } else {
+        cli.template.or(cfg.template)
+    };
     let no_cache = cli.no_cache || cfg.no_cache;
-    let effective_tty = cli.tty || cfg.tty;
+    let effective_tty = if is_shell {
+        true
+    } else if let Some(Subcommands::Exec { tty, .. }) = &cli.subcommand {
+        *tty || cli.tty || cfg.tty
+    } else {
+        cli.tty || cfg.tty
+    };
     let effective_forwards = if !cli.forward.is_empty() {
         cli.forward
     } else {

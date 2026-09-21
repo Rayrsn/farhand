@@ -229,6 +229,53 @@ pub fn run_garbage_collection(
     report
 }
 
+/// Emergency disk cleanup pass: trims caches in non-canonical workspaces,
+/// and if needed, evicts oldest non-canonical workspaces until target_bytes_to_free is reached.
+pub fn run_emergency_disk_gc(workspaces_root: &Path, target_bytes_to_free: u64) -> GcReport {
+    let mut report = GcReport::default();
+    let mut workspaces = scan_workspaces(workspaces_root);
+    report.total_workspaces_scanned = workspaces.len();
+
+    // Sort LRU: oldest last_used_at first
+    workspaces.sort_by_key(|w| w.last_used_at);
+
+    let mut freed_bytes = 0u64;
+
+    // Phase 1: Trim incremental / compiler caches in non-canonical workspaces
+    for ws in &mut workspaces {
+        if freed_bytes >= target_bytes_to_free {
+            break;
+        }
+        if !ws.is_canonical {
+            let trimmed = trim_workspace_caches(&ws.path);
+            report.caches_trimmed_bytes += trimmed;
+            freed_bytes += trimmed;
+            ws.size_bytes = ws.size_bytes.saturating_sub(trimmed);
+        }
+    }
+
+    // Phase 2: Purge oldest non-canonical workspaces if still below target
+    for ws in &workspaces {
+        if freed_bytes >= target_bytes_to_free {
+            break;
+        }
+        if !ws.is_canonical {
+            info!(
+                "Emergency GC: Purging LRU workspace {} (size {} bytes)...",
+                ws.path.display(),
+                ws.size_bytes
+            );
+            let _ = fs::remove_dir_all(&ws.path);
+            report.workspaces_deleted += 1;
+            report.workspaces_deleted_bytes += ws.size_bytes;
+            freed_bytes += ws.size_bytes;
+        }
+    }
+
+    report.remaining_disk_bytes = freed_bytes;
+    report
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,5 +321,19 @@ mod tests {
         assert_eq!(report.workspaces_deleted, 1);
         assert!(!feat_ws.exists());
         assert!(main_ws.exists(), "Canonical workspace must be preserved");
+    }
+
+    #[test]
+    fn test_run_emergency_disk_gc() {
+        let temp = tempdir().unwrap();
+        let root = temp.path();
+
+        let feat_ws = root.join("my-repo__feat1-87654321");
+        fs::create_dir_all(&feat_ws).unwrap();
+        fs::write(feat_ws.join("data.bin"), vec![0u8; 2000]).unwrap();
+
+        let report = run_emergency_disk_gc(root, 1000);
+        assert_eq!(report.workspaces_deleted, 1);
+        assert!(!feat_ws.exists());
     }
 }

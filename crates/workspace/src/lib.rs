@@ -22,9 +22,12 @@ pub use cow::{cow_clone_dir, find_seed_workspace, parse_base_project_name};
 
 pub mod gc;
 pub use gc::{
-    calculate_dir_size, get_workspace_last_used, run_garbage_collection, scan_workspaces,
-    touch_workspace, trim_workspace_caches, GcReport, WorkspaceMetadata,
+    calculate_dir_size, get_workspace_last_used, run_emergency_disk_gc, run_garbage_collection,
+    scan_workspaces, touch_workspace, trim_workspace_caches, GcReport, WorkspaceMetadata,
 };
+
+pub mod disk;
+pub use disk::{get_disk_space, DiskSpace};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffResult {

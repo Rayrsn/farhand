@@ -63,6 +63,14 @@ struct Cli {
     workspace_ttl_days: Option<u64>,
 
     #[arg(
+        long = "min-disk-gb",
+        env = "FARHAND_MIN_DISK_GB",
+        default_value = "2.5",
+        help = "Minimum free disk space in GB required before accepting builds (default: 2.5)"
+    )]
+    min_disk_gb: f64,
+
+    #[arg(
         long = "gc-interval-secs",
         default_value = "3600",
         help = "Background garbage collection interval in seconds (default: 3600, 0 to disable)"
@@ -73,10 +81,15 @@ struct Cli {
 fn setup_tracing(level_str: &str, format_str: &str) {
     use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level_str));
-    let fmt_layer = tracing_subscriber::fmt::layer().with_target(false);
+    let filter = EnvFilter::try_from_default_env()
+        .or_else(|_| EnvFilter::try_new(level_str))
+        .unwrap_or_else(|_| EnvFilter::new("info"));
 
-    if format_str == "json" {
+    let fmt_layer = tracing_subscriber::fmt::layer()
+        .with_target(false)
+        .with_thread_ids(false);
+
+    if format_str.eq_ignore_ascii_case("json") {
         tracing_subscriber::registry()
             .with(filter)
             .with(fmt_layer.json())
@@ -130,6 +143,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
+    let min_disk_bytes = (cli.min_disk_gb * 1024.0 * 1024.0 * 1024.0) as u64;
+
     fhd::run_server(
         listener,
         cli.token,
@@ -137,6 +152,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cli.shell,
         cli.max_concurrent_runs,
         cli.tags,
+        Some(min_disk_bytes),
     )
     .await?;
     Ok(())
