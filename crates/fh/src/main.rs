@@ -245,6 +245,36 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Subcommands {
+    /// Initialize Farhand project configuration (.farhand.yaml) and templates
+    Init {
+        /// Target project directory (default: current directory)
+        #[arg(default_value = ".")]
+        path: PathBuf,
+
+        /// Remote agent address (host:port)
+        #[arg(long)]
+        host: Option<String>,
+
+        /// Remote authentication token
+        #[arg(long)]
+        token: Option<String>,
+
+        /// Project name (default: directory name)
+        #[arg(short, long)]
+        name: Option<String>,
+
+        /// Project template preset (rust, npm, go, python, maven, gradle, or custom)
+        #[arg(short, long)]
+        template: Option<String>,
+
+        /// Also generate a project-level template in .farhand/templates/<name>.yaml
+        #[arg(long)]
+        with_template: bool,
+
+        /// Overwrite existing configuration and template files if they exist
+        #[arg(short, long)]
+        force: bool,
+    },
     /// Watch local files and continuously offload builds on change
     Watch {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -1020,6 +1050,53 @@ async fn main() {
             exit(EXIT_INFRA_ERROR);
         }
     };
+
+    // Check for local init subcommand that does not require remote connection
+    if let Some(Subcommands::Init {
+        path,
+        host,
+        token,
+        name,
+        template,
+        with_template,
+        force,
+    }) = &cli.subcommand
+    {
+        let opts = fh::InitOptions {
+            path: path.clone(),
+            host: host.clone(),
+            token: token.clone(),
+            name: name.clone(),
+            template: template.clone(),
+            with_template: *with_template,
+            force: *force,
+        };
+
+        match fh::init_project(&opts) {
+            Ok(res) => {
+                println!(
+                    "✓ Initialized Farhand configuration at {}",
+                    res.config_path.display()
+                );
+                if let Some(t_path) = res.template_path {
+                    println!("✓ Initialized project template at {}", t_path.display());
+                }
+                println!(
+                    "\nProject '{}' is configured for Farhand!",
+                    res.project_name
+                );
+                if let Some(t) = res.detected_template {
+                    println!("  • Template preset: {}", t);
+                }
+                println!("  • To run a remote build: fh <command>");
+                exit(0);
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                exit(1);
+            }
+        }
+    }
 
     // Check for local template subcommands that do not require remote connection
     if let Some(Subcommands::Templates { ref action }) = cli.subcommand {

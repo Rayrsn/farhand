@@ -701,6 +701,52 @@ fn test_cli_templates_init() {
     assert!(list_stdout.contains("project"));
 }
 
+#[test]
+fn test_cli_init_command() {
+    let project_dir = tempdir().unwrap();
+
+    // 1. Run fh init in empty project
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+        .current_dir(project_dir.path())
+        .args(["init", "--name", "my-test-app"])
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(0));
+    let cfg_path = project_dir.path().join(".farhand.yaml");
+    assert!(cfg_path.exists());
+    let cfg_str = std::fs::read_to_string(&cfg_path).unwrap();
+    assert!(cfg_str.contains("name: my-test-app"));
+    assert!(cfg_str.contains("compression: zstd"));
+
+    // 2. Second init without --force should fail with exit code 1
+    let output2 = std::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+        .current_dir(project_dir.path())
+        .args(["init"])
+        .output()
+        .unwrap();
+    assert_eq!(output2.status.code(), Some(1));
+
+    // 3. With --force and --with-template on a rust project
+    std::fs::write(
+        project_dir.path().join("Cargo.toml"),
+        "[package]\nname = \"my-test-app\"\n",
+    )
+    .unwrap();
+    let output3 = std::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+        .current_dir(project_dir.path())
+        .args(["init", "--force", "--with-template"])
+        .output()
+        .unwrap();
+    assert_eq!(output3.status.code(), Some(0));
+
+    let template_path = project_dir.path().join(".farhand/templates/rust.yaml");
+    assert!(
+        template_path.exists(),
+        "Template file should be generated with --with-template"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn test_e2e_template_monorepo_union_and_explicit_template() {
     let token = "template-token-456".to_string();

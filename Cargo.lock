@@ -340,6 +340,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "templates",
+ "thiserror 2.0.20",
  "tokio",
  "tracing",
  "tracing-subscriber",

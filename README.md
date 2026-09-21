@@ -153,7 +153,17 @@ fhd --listen 0.0.0.0:9876 --token "${FARHAND_TOKEN}" --workdir /var/farhand/work
 
 ### 3. Run Builds Remotely (`fh`)
 
-In your local project directory, configure `.farhand.yaml`:
+In your local project directory, initialize Farhand configuration automatically:
+
+```bash
+# Auto-detect project type and generate .farhand.yaml
+fh init
+
+# Or optionally generate customizable template definitions (.farhand/templates/<name>.yaml)
+fh init --with-template
+```
+
+This generates a `.farhand.yaml` tailored to your project:
 
 ```yaml
 # .farhand.yaml
