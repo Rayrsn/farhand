@@ -2386,3 +2386,56 @@ async fn test_e2e_cli_output_overrides_and_no_output() {
     assert!(!received_artifacts2, "Must NOT receive artifacts frame when outputs is None");
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn test_e2e_pty_shell_fallback_and_spawn_error_exit_code() {
+    let token = "pty-fallback-tok".to_string();
+    let remote_workdir = tempdir().unwrap();
+    let (server_addr, _handle) =
+        spawn_test_server(Some(token.clone()), remote_workdir.path().to_path_buf()).await;
+
+    // Test 1: Nonexistent command under PTY must return exit code 127, NOT disconnect abruptly
+    let mut stream = TcpStream::connect(&server_addr).await.unwrap();
+    let hello = HelloPayload {
+        token: token.clone(),
+        project: "pty-fallback-proj".to_string(),
+        protocol_version: CURRENT_PROTOCOL_VERSION,
+    };
+    write_json_frame(&mut stream, MsgType::Hello, &hello).await.unwrap();
+    let _ = read_frame(&mut stream).await.unwrap();
+    write_json_frame(&mut stream, MsgType::Manifest, &ManifestPayload { files: vec![] }).await.unwrap();
+    let _ = read_frame(&mut stream).await.unwrap();
+    write_frame(&mut stream, MsgType::Files, &[]).await.unwrap();
+
+    let run_bad = RunPayload {
+        argv: vec!["/nonexistent/custom/shell/binary".to_string()],
+        outputs: None,
+        cwd: None,
+        template: None,
+        no_cache: false,
+        env: None,
+        tty: true,
+        cols: Some(80),
+        rows: Some(24),
+    };
+    write_json_frame(&mut stream, MsgType::Run, &run_bad).await.unwrap();
+
+    let exit_code;
+    let mut had_stderr = false;
+    loop {
+        let (msg, payload) = read_frame(&mut stream).await.unwrap();
+        if msg == MsgType::Log {
+            let log: protocol::LogPayload = serde_json::from_slice(&payload).unwrap();
+            if log.stream == "stderr" && log.data.contains("failed to spawn") {
+                had_stderr = true;
+            }
+        } else if msg == MsgType::Result {
+            let res: protocol::ResultPayload = serde_json::from_slice(&payload).unwrap();
+            exit_code = Some(res.exit_code);
+            break;
+        }
+    }
+
+    assert_eq!(exit_code, Some(127), "Failed spawn must return exit code 127");
+    assert!(had_stderr, "Must log spawn failure to stderr");
+}
+

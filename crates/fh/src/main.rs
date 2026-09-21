@@ -1283,10 +1283,8 @@ async fn main() {
         Some(Subcommands::Shell { shell, .. }) => {
             if let Some(sh) = shell {
                 vec![sh.clone()]
-            } else if let Ok(sh) = std::env::var("SHELL") {
-                vec![sh]
             } else {
-                vec!["/bin/sh".to_string()]
+                vec!["$SHELL".to_string()]
             }
         }
         Some(Subcommands::Exec { command, .. }) => command.clone(),

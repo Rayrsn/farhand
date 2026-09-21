@@ -823,7 +823,19 @@ pub async fn run_child_and_stream<
     reader: &mut R,
     mut cmd: Command,
 ) -> Result<i32, Box<dyn std::error::Error>> {
-    let mut child = cmd.spawn()?;
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            let err_msg = format!("farhand: failed to spawn command: {}\n", e);
+            let payload = LogPayload {
+                stream: "stderr".into(),
+                data: err_msg,
+            };
+            let mut w = writer.lock().await;
+            let _ = write_json_frame(&mut *w, MsgType::Log, &payload).await;
+            return Ok(127);
+        }
+    };
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
 
@@ -914,6 +926,41 @@ pub async fn run_child_and_stream<
     Ok(exit_code)
 }
 
+pub fn resolve_shell_executable(requested: &str) -> String {
+    if requested != "$SHELL" && !requested.is_empty() {
+        if Path::new(requested).is_file() {
+            return requested.to_string();
+        }
+        if !requested.contains('/') && !requested.contains('\\') {
+            for dir in &["/bin", "/usr/bin", "/usr/local/bin", "/opt/homebrew/bin"] {
+                let candidate = Path::new(dir).join(requested);
+                if candidate.is_file() {
+                    return candidate.to_string_lossy().to_string();
+                }
+            }
+        }
+    }
+
+    if let Ok(sh) = std::env::var("SHELL") {
+        if Path::new(&sh).is_file() {
+            return sh;
+        }
+    }
+    for candidate in &["/bin/zsh", "/bin/bash", "/usr/bin/zsh", "/usr/bin/bash", "/bin/sh"] {
+        if Path::new(candidate).is_file() {
+            return candidate.to_string();
+        }
+    }
+    #[cfg(windows)]
+    {
+        "powershell.exe".to_string()
+    }
+    #[cfg(not(windows))]
+    {
+        "/bin/sh".to_string()
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn run_pty_child_and_stream<
     W: AsyncWrite + Unpin + Send + 'static,
@@ -937,21 +984,34 @@ pub async fn run_pty_child_and_stream<
     };
     let pair = pty_system.openpty(initial_size)?;
 
-    let joined_cmd = argv
-        .iter()
-        .map(|a| shell_escape(a))
-        .collect::<Vec<_>>()
-        .join(" ");
+    let is_shell_request = argv.is_empty() || argv[0] == "$SHELL" || argv[0] == "shell";
 
-    let mut cmd_builder = if let Some(shell_override) = custom_shell {
+    let mut cmd_builder = if is_shell_request {
+        let sh_bin = resolve_shell_executable("$SHELL");
+        let mut cb = portable_pty::CommandBuilder::new(&sh_bin);
+        if !cfg!(windows) {
+            cb.arg("-l");
+        }
+        cb
+    } else if let Some(shell_override) = custom_shell {
         let parts: Vec<&str> = shell_override.split_whitespace().collect();
         let mut cb = portable_pty::CommandBuilder::new(parts[0]);
         for part in &parts[1..] {
             cb.arg(part);
         }
+        let joined_cmd = argv
+            .iter()
+            .map(|a| shell_escape(a))
+            .collect::<Vec<_>>()
+            .join(" ");
         cb.arg(&joined_cmd);
         cb
     } else if cfg!(windows) {
+        let joined_cmd = argv
+            .iter()
+            .map(|a| shell_escape(a))
+            .collect::<Vec<_>>()
+            .join(" ");
         let mut cb = portable_pty::CommandBuilder::new("cmd.exe");
         cb.arg("/C");
         cb.arg(&joined_cmd);
@@ -968,12 +1028,32 @@ pub async fn run_pty_child_and_stream<
         });
 
         if !has_shell_metachars && !argv.is_empty() {
-            let mut cb = portable_pty::CommandBuilder::new(&argv[0]);
+            let resolved_bin = if Path::new(&argv[0]).is_file() {
+                argv[0].clone()
+            } else if !argv[0].contains('/') && !argv[0].contains('\\') {
+                resolve_shell_executable(&argv[0])
+            } else {
+                let file_name = Path::new(&argv[0])
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("");
+                if matches!(file_name, "fish" | "zsh" | "bash" | "sh" | "csh" | "tcsh") {
+                    resolve_shell_executable(file_name)
+                } else {
+                    argv[0].clone()
+                }
+            };
+            let mut cb = portable_pty::CommandBuilder::new(&resolved_bin);
             for arg in &argv[1..] {
                 cb.arg(arg);
             }
             cb
         } else {
+            let joined_cmd = argv
+                .iter()
+                .map(|a| shell_escape(a))
+                .collect::<Vec<_>>()
+                .join(" ");
             let mut cb = portable_pty::CommandBuilder::new("/bin/sh");
             cb.arg("-c");
             cb.arg(&joined_cmd);
@@ -991,7 +1071,19 @@ pub async fn run_pty_child_and_stream<
         cmd_builder.env("TERM", "xterm-256color");
     }
 
-    let mut child = pair.slave.spawn_command(cmd_builder)?;
+    let mut child = match pair.slave.spawn_command(cmd_builder) {
+        Ok(c) => c,
+        Err(e) => {
+            let err_msg = format!("farhand: failed to spawn '{:?}': {}\r\n", argv, e);
+            let payload = LogPayload {
+                stream: "stderr".into(),
+                data: err_msg,
+            };
+            let mut w = writer.lock().await;
+            let _ = write_json_frame(&mut *w, MsgType::Log, &payload).await;
+            return Ok(127);
+        }
+    };
     drop(pair.slave);
 
     let _child_pid = child.process_id();
