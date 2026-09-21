@@ -43,8 +43,10 @@ pub struct ServerContext {
     pub queue_depth: Arc<std::sync::atomic::AtomicUsize>,
     pub max_runs: usize,
     pub min_disk_bytes: u64,
+    pub cas_store: Option<workspace::CasStore>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run_server(
     listener: TcpListener,
     expected_token: Option<String>,
@@ -53,6 +55,8 @@ pub async fn run_server(
     max_concurrent_runs: Option<usize>,
     tags: Vec<String>,
     min_disk_bytes: Option<u64>,
+    cas_dir: Option<PathBuf>,
+    no_cas: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let max_runs = max_concurrent_runs.unwrap_or_else(|| {
         std::thread::available_parallelism()
@@ -62,6 +66,13 @@ pub async fn run_server(
     let semaphore = Arc::new(tokio::sync::Semaphore::new(max_runs));
     let lock_manager = workspace::WorkspaceLockManager::new();
     let queue_depth = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+    let cas_store = if !no_cas {
+        let base = cas_dir.unwrap_or_else(|| workdir.clone());
+        Some(workspace::CasStore::new(&base))
+    } else {
+        None
+    };
 
     let ctx = Arc::new(ServerContext {
         expected_token,
@@ -73,6 +84,7 @@ pub async fn run_server(
         queue_depth,
         max_runs,
         min_disk_bytes: min_disk_bytes.unwrap_or(2_500_000_000), // Default: 2.5 GB
+        cas_store,
     });
 
     loop {
@@ -113,6 +125,7 @@ pub async fn handle_connection(
                 let ack = HelloAckPayload {
                     ok: false,
                     error: Some("Unauthorized STATUS request".into()),
+                    compression: None,
                 };
                 write_json_frame(&mut stream, MsgType::HelloAck, &ack).await?;
                 return Err("Unauthorized STATUS request".into());
@@ -122,7 +135,8 @@ pub async fn handle_connection(
             .max_runs
             .saturating_sub(ctx.semaphore.available_permits());
         let depth = ctx.queue_depth.load(std::sync::atomic::Ordering::Relaxed);
-        let (disk_free_bytes, disk_total_bytes) = match workspace::get_disk_space(&ctx.workdir_root) {
+        let (disk_free_bytes, disk_total_bytes) = match workspace::get_disk_space(&ctx.workdir_root)
+        {
             Ok(space) => (Some(space.available_bytes), Some(space.total_bytes)),
             Err(_) => (None, None),
         };
@@ -146,6 +160,7 @@ pub async fn handle_connection(
                 let ack = HelloAckPayload {
                     ok: false,
                     error: Some("Unauthorized HISTORY request".into()),
+                    compression: None,
                 };
                 write_json_frame(&mut stream, MsgType::HelloAck, &ack).await?;
                 return Err("Unauthorized HISTORY request".into());
@@ -170,6 +185,7 @@ pub async fn handle_connection(
                 let ack = HelloAckPayload {
                     ok: false,
                     error: Some("Unauthorized CLEAN request".into()),
+                    compression: None,
                 };
                 write_json_frame(&mut stream, MsgType::HelloAck, &ack).await?;
                 return Err("Unauthorized CLEAN request".into());
@@ -227,6 +243,7 @@ pub async fn handle_connection(
         let ack = HelloAckPayload {
             ok: false,
             error: Some("Expected HELLO, STATUS, HISTORY, or CLEAN frame".into()),
+            compression: None,
         };
         write_json_frame(&mut stream, MsgType::HelloAck, &ack).await?;
         return Err("Protocol error: expected HELLO, STATUS, HISTORY, or CLEAN".into());
@@ -240,6 +257,7 @@ pub async fn handle_connection(
                 "Protocol version mismatch: expected {}, got {}",
                 CURRENT_PROTOCOL_VERSION, hello.protocol_version
             )),
+            compression: None,
         };
         write_json_frame(&mut stream, MsgType::HelloAck, &ack).await?;
         return Err("Protocol version mismatch".into());
@@ -250,6 +268,7 @@ pub async fn handle_connection(
             let ack = HelloAckPayload {
                 ok: false,
                 error: Some("Unauthorized: invalid auth token".into()),
+                compression: None,
             };
             write_json_frame(&mut stream, MsgType::HelloAck, &ack).await?;
             return Err("Unauthorized".into());
@@ -283,6 +302,7 @@ pub async fn handle_connection(
                         let ack = HelloAckPayload {
                             ok: false,
                             error: Some(err_msg.clone()),
+                            compression: None,
                         };
                         write_json_frame(&mut stream, MsgType::HelloAck, &ack).await?;
                         return Err(err_msg.into());
@@ -292,13 +312,35 @@ pub async fn handle_connection(
         }
     }
 
+    // Negotiate compression algorithm from client's offered list
+    let negotiated_compression = if let Some(client_algos) = &hello.compressions {
+        if client_algos.iter().any(|a| a.eq_ignore_ascii_case("zstd")) {
+            "zstd".to_string()
+        } else if client_algos
+            .iter()
+            .any(|a| a.eq_ignore_ascii_case("gzip") || a.eq_ignore_ascii_case("gz"))
+        {
+            "gzip".to_string()
+        } else if client_algos.iter().any(|a| a.eq_ignore_ascii_case("none")) {
+            "none".to_string()
+        } else {
+            "gzip".to_string()
+        }
+    } else {
+        "gzip".to_string()
+    };
+
     // Acknowledge handshake
     let ack = HelloAckPayload {
         ok: true,
         error: None,
+        compression: Some(negotiated_compression.clone()),
     };
     write_json_frame(&mut stream, MsgType::HelloAck, &ack).await?;
-    info!("Handshake successful for project '{}'", hello.project);
+    info!(
+        "Handshake successful for project '{}' (negotiated compression: '{}')",
+        hello.project, negotiated_compression
+    );
 
     // Resolve persistent workspace directory (forks from seed via APFS CoW if branch)
     let workspace_dir = workspace::ensure_workspace_dir(&ctx.workdir_root, &hello.project)?;
@@ -323,6 +365,7 @@ pub async fn handle_connection(
                 let ack = HelloAckPayload {
                     ok: true,
                     error: None,
+                    compression: None,
                 };
                 write_json_frame(&mut stream, MsgType::HelloAck, &ack).await?;
                 return Ok(());
@@ -332,6 +375,7 @@ pub async fn handle_connection(
                 let ack = HelloAckPayload {
                     ok: false,
                     error: Some(e.to_string()),
+                    compression: None,
                 };
                 write_json_frame(&mut stream, MsgType::HelloAck, &ack).await?;
                 return Err(format!("Failed to save template: {}", e).into());
@@ -397,7 +441,40 @@ pub async fn handle_connection(
     );
 
     let extra_ignores = templates::resolve_template_extra_ignores(&workspace_dir, None);
-    let diff = workspace::diff_manifests(&workspace_dir, &manifest, &extra_ignores)?;
+    let mut diff = workspace::diff_manifests(&workspace_dir, &manifest, &extra_ignores)?;
+
+    if let Some(cas) = &ctx.cas_store {
+        let manifest_map: std::collections::HashMap<&str, &str> = manifest
+            .files
+            .iter()
+            .map(|f| (f.path.as_str(), f.hash.as_str()))
+            .collect();
+
+        let mut remaining_want = Vec::new();
+        let mut hydrated_count = 0;
+
+        for rel_path in diff.want {
+            if let Some(hash) = manifest_map.get(rel_path.as_str()) {
+                if let Ok(rel_buf) = protocol::from_wire_path(&rel_path) {
+                    let target_path = workspace_dir.join(rel_buf);
+                    if let Ok(true) = cas.materialize_to(hash, &target_path) {
+                        hydrated_count += 1;
+                        continue;
+                    }
+                }
+            }
+            remaining_want.push(rel_path);
+        }
+
+        if hydrated_count > 0 {
+            info!(
+                "Hydrated {} file(s) from global CAS without network transfer",
+                hydrated_count
+            );
+        }
+        diff.want = remaining_want;
+    }
+
     info!(
         "Diff computed: {} files needed, {} extraneous files flagged for deletion",
         diff.want.len(),
@@ -411,7 +488,7 @@ pub async fn handle_connection(
     };
     write_json_frame(&mut stream, MsgType::Need, &need).await?;
 
-    // 4. Receive FILES frame (delta tar.gz)
+    // 4. Receive FILES frame (delta archive)
     let (msg_type, payload) = read_frame(&mut stream).await?;
     if msg_type != MsgType::Files {
         return Err(format!("Expected FILES frame, got {:?}", msg_type).into());
@@ -421,6 +498,17 @@ pub async fn handle_connection(
     if !payload.is_empty() {
         info!("Unpacking {} delta bytes into workspace", payload.len());
         fileset::unpack_tar(&workspace_dir, &payload)?;
+
+        if let Some(cas) = &ctx.cas_store {
+            for entry in &manifest.files {
+                if let Ok(rel_buf) = protocol::from_wire_path(&entry.path) {
+                    let local_file = workspace_dir.join(rel_buf);
+                    if local_file.is_file() {
+                        let _ = cas.put_file(&entry.hash, &local_file);
+                    }
+                }
+            }
+        }
     } else {
         info!("Zero delta bytes uploaded (workspace up to date)");
     }
@@ -591,10 +679,15 @@ pub async fn handle_connection(
             run.template.as_deref(),
         );
         if !artifact_paths.is_empty() {
-            info!("Packing {} artifact paths", artifact_paths.len());
-            let tar_gz = fileset::pack_tar(&workspace_dir, &artifact_paths)?;
-            artifact_size = tar_gz.len() as u64;
-            artifact_payload = Some(tar_gz);
+            info!(
+                "Packing {} artifact paths using compression '{}'",
+                artifact_paths.len(),
+                negotiated_compression
+            );
+            let algo = fileset::CompressionAlgo::from_str_opt(Some(&negotiated_compression));
+            let tar_bytes = fileset::pack_tar_with_algo(&workspace_dir, &artifact_paths, algo)?;
+            artifact_size = tar_bytes.len() as u64;
+            artifact_payload = Some(tar_bytes);
         }
     }
 
@@ -946,7 +1039,13 @@ pub fn resolve_shell_executable(requested: &str) -> String {
             return sh;
         }
     }
-    for candidate in &["/bin/zsh", "/bin/bash", "/usr/bin/zsh", "/usr/bin/bash", "/bin/sh"] {
+    for candidate in &[
+        "/bin/zsh",
+        "/bin/bash",
+        "/usr/bin/zsh",
+        "/usr/bin/bash",
+        "/bin/sh",
+    ] {
         if Path::new(candidate).is_file() {
             return candidate.to_string();
         }

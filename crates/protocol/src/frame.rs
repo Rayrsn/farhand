@@ -144,6 +144,7 @@ mod tests {
             token: "secret-token".to_string(),
             project: "my-crate".to_string(),
             protocol_version: 1,
+            compressions: None,
         };
 
         let mut buffer = Vec::new();

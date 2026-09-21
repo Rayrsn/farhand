@@ -43,6 +43,8 @@ async fn spawn_test_server_full(
             max_concurrent_runs,
             tags,
             min_disk_bytes,
+            None,
+            false,
         )
         .await;
     });
@@ -93,6 +95,7 @@ async fn client_roundtrip_with_options(
         token: token.to_string(),
         project: project_name.to_string(),
         protocol_version: CURRENT_PROTOCOL_VERSION,
+        compressions: None,
     };
     write_json_frame(&mut stream, MsgType::Hello, &hello)
         .await
@@ -309,6 +312,7 @@ async fn test_e2e_invalid_token_rejection() {
         token: "wrong-token".into(),
         project: "test-auth".into(),
         protocol_version: CURRENT_PROTOCOL_VERSION,
+        compressions: None,
     };
     write_json_frame(&mut stream, MsgType::Hello, &hello)
         .await
@@ -336,6 +340,7 @@ async fn client_roundtrip_with_artifacts(
         token: token.to_string(),
         project: project_name.to_string(),
         protocol_version: CURRENT_PROTOCOL_VERSION,
+        compressions: None,
     };
     write_json_frame(&mut stream, MsgType::Hello, &hello)
         .await
@@ -916,6 +921,7 @@ async fn test_e2e_concurrency_project_workspace_locking_and_queued() {
         token: token.clone(),
         project: project_name.to_string(),
         protocol_version: CURRENT_PROTOCOL_VERSION,
+        compressions: None,
     };
     write_json_frame(&mut stream2, MsgType::Hello, &hello2)
         .await
@@ -1024,6 +1030,7 @@ async fn test_e2e_concurrency_global_semaphore_limit() {
         token: token.clone(),
         project: "project-beta".to_string(),
         protocol_version: CURRENT_PROTOCOL_VERSION,
+        compressions: None,
     };
     write_json_frame(&mut stream2, MsgType::Hello, &hello2)
         .await
@@ -1099,6 +1106,7 @@ async fn test_e2e_client_disconnect_terminates_remote_process_group() {
         token,
         project: "disconnect-test".to_string(),
         protocol_version: CURRENT_PROTOCOL_VERSION,
+        compressions: None,
     };
     write_json_frame(&mut stream, MsgType::Hello, &hello)
         .await
@@ -1162,6 +1170,7 @@ async fn test_e2e_multi_agent_pool_least_busy_dispatch() {
         token: token.clone(),
         project: "busy-proj".into(),
         protocol_version: CURRENT_PROTOCOL_VERSION,
+        compressions: None,
     };
     write_json_frame(&mut stream_a, MsgType::Hello, &hello)
         .await
@@ -1980,6 +1989,7 @@ async fn test_e2e_pty_interactive_execution() {
         token: token.clone(),
         project: "pty-test-proj".to_string(),
         protocol_version: CURRENT_PROTOCOL_VERSION,
+        compressions: None,
     };
     write_json_frame(&mut stream, MsgType::Hello, &hello)
         .await
@@ -2051,6 +2061,7 @@ async fn test_e2e_pty_terminal_resize_and_stdin() {
         token: token.clone(),
         project: "pty-resize-proj".to_string(),
         protocol_version: CURRENT_PROTOCOL_VERSION,
+        compressions: None,
     };
     write_json_frame(&mut stream, MsgType::Hello, &hello)
         .await
@@ -2146,6 +2157,7 @@ async fn test_e2e_reverse_port_forwarding_tunnel() {
         token: token.clone(),
         project: "port-fwd-proj".to_string(),
         protocol_version: CURRENT_PROTOCOL_VERSION,
+        compressions: None,
     };
     write_json_frame(&mut stream, MsgType::Hello, &hello)
         .await
@@ -2239,40 +2251,70 @@ async fn test_e2e_preflight_disk_guard_rejection_and_status() {
     let token = "disk-guard-secret".to_string();
 
     // 1. Check STATUS returns valid disk metrics
-    let (server_addr, _handle) =
-        spawn_test_server_full(Some(token.clone()), workdir.path().to_path_buf(), None, vec![], Some(0)).await;
+    let (server_addr, _handle) = spawn_test_server_full(
+        Some(token.clone()),
+        workdir.path().to_path_buf(),
+        None,
+        vec![],
+        Some(0),
+    )
+    .await;
 
     let mut stream = TcpStream::connect(&server_addr).await.unwrap();
     let status_req = protocol::StatusRequestPayload {
         token: token.clone(),
     };
-    write_json_frame(&mut stream, MsgType::Status, &status_req).await.unwrap();
+    write_json_frame(&mut stream, MsgType::Status, &status_req)
+        .await
+        .unwrap();
 
     let (msg_type, payload) = read_frame(&mut stream).await.unwrap();
     assert_eq!(msg_type, MsgType::StatusResp);
     let resp: protocol::StatusResponsePayload = decode_json(&payload).unwrap();
-    assert!(resp.disk_free_bytes.is_some(), "STATUS response should include disk_free_bytes");
-    assert!(resp.disk_total_bytes.is_some(), "STATUS response should include disk_total_bytes");
+    assert!(
+        resp.disk_free_bytes.is_some(),
+        "STATUS response should include disk_free_bytes"
+    );
+    assert!(
+        resp.disk_total_bytes.is_some(),
+        "STATUS response should include disk_total_bytes"
+    );
 
     // 2. Start a server demanding an impossible amount of free disk space (u64::MAX)
     let workdir2 = tempdir().unwrap();
-    let (server_addr2, _handle2) =
-        spawn_test_server_full(Some(token.clone()), workdir2.path().to_path_buf(), None, vec![], Some(u64::MAX)).await;
+    let (server_addr2, _handle2) = spawn_test_server_full(
+        Some(token.clone()),
+        workdir2.path().to_path_buf(),
+        None,
+        vec![],
+        Some(u64::MAX),
+    )
+    .await;
 
     let mut stream2 = TcpStream::connect(&server_addr2).await.unwrap();
     let hello = HelloPayload {
         token: token.clone(),
         project: "low-disk-proj".to_string(),
         protocol_version: CURRENT_PROTOCOL_VERSION,
+        compressions: None,
     };
-    write_json_frame(&mut stream2, MsgType::Hello, &hello).await.unwrap();
+    write_json_frame(&mut stream2, MsgType::Hello, &hello)
+        .await
+        .unwrap();
 
     let (msg_type2, payload2) = read_frame(&mut stream2).await.unwrap();
     assert_eq!(msg_type2, MsgType::HelloAck);
     let ack: HelloAckPayload = decode_json(&payload2).unwrap();
-    assert!(!ack.ok, "Daemon must reject HELLO when free disk is below threshold");
+    assert!(
+        !ack.ok,
+        "Daemon must reject HELLO when free disk is below threshold"
+    );
     let err = ack.error.unwrap_or_default();
-    assert!(err.contains("Remote agent disk low"), "Error message should warn about low disk: {}", err);
+    assert!(
+        err.contains("Remote agent disk low"),
+        "Error message should warn about low disk: {}",
+        err
+    );
 }
 
 #[tokio::test]
@@ -2298,8 +2340,11 @@ async fn test_e2e_cli_output_overrides_and_no_output() {
         token: token.clone(),
         project: "out-test-1".to_string(),
         protocol_version: CURRENT_PROTOCOL_VERSION,
+        compressions: None,
     };
-    write_json_frame(&mut stream, MsgType::Hello, &hello).await.unwrap();
+    write_json_frame(&mut stream, MsgType::Hello, &hello)
+        .await
+        .unwrap();
     let _ = read_frame(&mut stream).await.unwrap();
 
     let scanned = fileset::scan(project_dir.path(), &[]).unwrap();
@@ -2312,7 +2357,15 @@ async fn test_e2e_cli_output_overrides_and_no_output() {
             mode: m.mode,
         })
         .collect();
-    write_json_frame(&mut stream, MsgType::Manifest, &ManifestPayload { files: manifest_files }).await.unwrap();
+    write_json_frame(
+        &mut stream,
+        MsgType::Manifest,
+        &ManifestPayload {
+            files: manifest_files,
+        },
+    )
+    .await
+    .unwrap();
     let _ = read_frame(&mut stream).await.unwrap();
     write_frame(&mut stream, MsgType::Files, &[]).await.unwrap();
 
@@ -2327,7 +2380,9 @@ async fn test_e2e_cli_output_overrides_and_no_output() {
         cols: None,
         rows: None,
     };
-    write_json_frame(&mut stream, MsgType::Run, &run_with_output).await.unwrap();
+    write_json_frame(&mut stream, MsgType::Run, &run_with_output)
+        .await
+        .unwrap();
 
     let mut received_artifacts = false;
     loop {
@@ -2345,7 +2400,10 @@ async fn test_e2e_cli_output_overrides_and_no_output() {
             break;
         }
     }
-    assert!(received_artifacts, "Expected artifacts frame when outputs requested");
+    assert!(
+        received_artifacts,
+        "Expected artifacts frame when outputs requested"
+    );
 
     // Case 2: Run with outputs = None (simulating --no-output or fh exec)
     let mut stream2 = TcpStream::connect(&server_addr).await.unwrap();
@@ -2353,12 +2411,23 @@ async fn test_e2e_cli_output_overrides_and_no_output() {
         token: token.clone(),
         project: "out-test-2".to_string(),
         protocol_version: CURRENT_PROTOCOL_VERSION,
+        compressions: None,
     };
-    write_json_frame(&mut stream2, MsgType::Hello, &hello2).await.unwrap();
+    write_json_frame(&mut stream2, MsgType::Hello, &hello2)
+        .await
+        .unwrap();
     let _ = read_frame(&mut stream2).await.unwrap();
-    write_json_frame(&mut stream2, MsgType::Manifest, &ManifestPayload { files: vec![] }).await.unwrap();
+    write_json_frame(
+        &mut stream2,
+        MsgType::Manifest,
+        &ManifestPayload { files: vec![] },
+    )
+    .await
+    .unwrap();
     let _ = read_frame(&mut stream2).await.unwrap();
-    write_frame(&mut stream2, MsgType::Files, &[]).await.unwrap();
+    write_frame(&mut stream2, MsgType::Files, &[])
+        .await
+        .unwrap();
 
     let run_no_output = RunPayload {
         argv: cmd.clone(),
@@ -2371,7 +2440,9 @@ async fn test_e2e_cli_output_overrides_and_no_output() {
         cols: None,
         rows: None,
     };
-    write_json_frame(&mut stream2, MsgType::Run, &run_no_output).await.unwrap();
+    write_json_frame(&mut stream2, MsgType::Run, &run_no_output)
+        .await
+        .unwrap();
 
     let mut received_artifacts2 = false;
     loop {
@@ -2383,7 +2454,10 @@ async fn test_e2e_cli_output_overrides_and_no_output() {
             break;
         }
     }
-    assert!(!received_artifacts2, "Must NOT receive artifacts frame when outputs is None");
+    assert!(
+        !received_artifacts2,
+        "Must NOT receive artifacts frame when outputs is None"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2399,10 +2473,19 @@ async fn test_e2e_pty_shell_fallback_and_spawn_error_exit_code() {
         token: token.clone(),
         project: "pty-fallback-proj".to_string(),
         protocol_version: CURRENT_PROTOCOL_VERSION,
+        compressions: None,
     };
-    write_json_frame(&mut stream, MsgType::Hello, &hello).await.unwrap();
+    write_json_frame(&mut stream, MsgType::Hello, &hello)
+        .await
+        .unwrap();
     let _ = read_frame(&mut stream).await.unwrap();
-    write_json_frame(&mut stream, MsgType::Manifest, &ManifestPayload { files: vec![] }).await.unwrap();
+    write_json_frame(
+        &mut stream,
+        MsgType::Manifest,
+        &ManifestPayload { files: vec![] },
+    )
+    .await
+    .unwrap();
     let _ = read_frame(&mut stream).await.unwrap();
     write_frame(&mut stream, MsgType::Files, &[]).await.unwrap();
 
@@ -2417,7 +2500,9 @@ async fn test_e2e_pty_shell_fallback_and_spawn_error_exit_code() {
         cols: Some(80),
         rows: Some(24),
     };
-    write_json_frame(&mut stream, MsgType::Run, &run_bad).await.unwrap();
+    write_json_frame(&mut stream, MsgType::Run, &run_bad)
+        .await
+        .unwrap();
 
     let exit_code;
     let mut had_stderr = false;
@@ -2435,7 +2520,196 @@ async fn test_e2e_pty_shell_fallback_and_spawn_error_exit_code() {
         }
     }
 
-    assert_eq!(exit_code, Some(127), "Failed spawn must return exit code 127");
+    assert_eq!(
+        exit_code,
+        Some(127),
+        "Failed spawn must return exit code 127"
+    );
     assert!(had_stderr, "Must log spawn failure to stderr");
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn test_e2e_compression_negotiation_zstd_and_none() {
+    let token = "comp-tok".to_string();
+    let remote_workdir = tempdir().unwrap();
+    let (server_addr, _handle) =
+        spawn_test_server(Some(token.clone()), remote_workdir.path().to_path_buf()).await;
+
+    // Case 1: Negotiate zstd
+    let mut stream = TcpStream::connect(&server_addr).await.unwrap();
+    let hello_zstd = HelloPayload {
+        token: token.clone(),
+        project: "zstd-proj".to_string(),
+        protocol_version: CURRENT_PROTOCOL_VERSION,
+        compressions: Some(vec!["zstd".to_string(), "gzip".to_string()]),
+    };
+    write_json_frame(&mut stream, MsgType::Hello, &hello_zstd)
+        .await
+        .unwrap();
+    let (msg, payload) = read_frame(&mut stream).await.unwrap();
+    assert_eq!(msg, MsgType::HelloAck);
+    let ack: HelloAckPayload = serde_json::from_slice(&payload).unwrap();
+    assert!(ack.ok);
+    assert_eq!(ack.compression.as_deref(), Some("zstd"));
+
+    // Case 2: Negotiate none
+    let mut stream2 = TcpStream::connect(&server_addr).await.unwrap();
+    let hello_none = HelloPayload {
+        token: token.clone(),
+        project: "none-proj".to_string(),
+        protocol_version: CURRENT_PROTOCOL_VERSION,
+        compressions: Some(vec!["none".to_string()]),
+    };
+    write_json_frame(&mut stream2, MsgType::Hello, &hello_none)
+        .await
+        .unwrap();
+    let (msg2, payload2) = read_frame(&mut stream2).await.unwrap();
+    assert_eq!(msg2, MsgType::HelloAck);
+    let ack2: HelloAckPayload = serde_json::from_slice(&payload2).unwrap();
+    assert!(ack2.ok);
+    assert_eq!(ack2.compression.as_deref(), Some("none"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_e2e_cas_cross_project_zero_upload() {
+    let token = "cas-e2e-tok".to_string();
+    let remote_workdir = tempdir().unwrap();
+    let (server_addr, _handle) =
+        spawn_test_server(Some(token.clone()), remote_workdir.path().to_path_buf()).await;
+
+    // 1. First project uploads "shared_library.txt"
+    let local1 = tempdir().unwrap();
+    let content = b"shared big binary content across projects";
+    fs::write(local1.path().join("shared.txt"), content).unwrap();
+
+    let meta = fileset::scan(local1.path(), &[]).unwrap();
+    let entry = meta.get("shared.txt").unwrap();
+    let file_hash = entry.hash.clone();
+
+    let mut stream1 = TcpStream::connect(&server_addr).await.unwrap();
+    let hello1 = HelloPayload {
+        token: token.clone(),
+        project: "cas-project-alpha".to_string(),
+        protocol_version: CURRENT_PROTOCOL_VERSION,
+        compressions: Some(vec!["zstd".to_string()]),
+    };
+    write_json_frame(&mut stream1, MsgType::Hello, &hello1)
+        .await
+        .unwrap();
+    let _ = read_frame(&mut stream1).await.unwrap();
+
+    let manifest1 = ManifestPayload {
+        files: vec![FileEntry {
+            path: "shared.txt".to_string(),
+            hash: file_hash.clone(),
+            size: content.len() as u64,
+            mode: 0o644,
+        }],
+    };
+    write_json_frame(&mut stream1, MsgType::Manifest, &manifest1)
+        .await
+        .unwrap();
+    let (msg, need_bytes) = read_frame(&mut stream1).await.unwrap();
+    assert_eq!(msg, MsgType::Need);
+    let need1: NeedPayload = serde_json::from_slice(&need_bytes).unwrap();
+    assert_eq!(need1.want, vec!["shared.txt"]);
+
+    // Upload delta
+    let delta1 = fileset::pack_tar(local1.path(), &need1.want).unwrap();
+    write_frame(&mut stream1, MsgType::Files, &delta1)
+        .await
+        .unwrap();
+
+    // Run simple command to complete alpha run
+    let cmd = if cfg!(windows) {
+        vec![
+            "cmd.exe".to_string(),
+            "/C".to_string(),
+            "exit 0".to_string(),
+        ]
+    } else {
+        vec![
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            "exit 0".to_string(),
+        ]
+    };
+    let run = RunPayload {
+        argv: cmd.clone(),
+        outputs: None,
+        cwd: None,
+        template: None,
+        no_cache: false,
+        env: None,
+        tty: false,
+        cols: None,
+        rows: None,
+    };
+    write_json_frame(&mut stream1, MsgType::Run, &run)
+        .await
+        .unwrap();
+    loop {
+        let (m, _) = read_frame(&mut stream1).await.unwrap();
+        if m == MsgType::Result {
+            break;
+        }
+    }
+
+    // 2. Second project (brand new project!) contains the same file hash
+    let mut stream2 = TcpStream::connect(&server_addr).await.unwrap();
+    let hello2 = HelloPayload {
+        token: token.clone(),
+        project: "cas-project-beta".to_string(),
+        protocol_version: CURRENT_PROTOCOL_VERSION,
+        compressions: Some(vec!["zstd".to_string()]),
+    };
+    write_json_frame(&mut stream2, MsgType::Hello, &hello2)
+        .await
+        .unwrap();
+    let _ = read_frame(&mut stream2).await.unwrap();
+
+    let manifest2 = ManifestPayload {
+        files: vec![FileEntry {
+            path: "shared.txt".to_string(),
+            hash: file_hash.clone(),
+            size: content.len() as u64,
+            mode: 0o644,
+        }],
+    };
+    write_json_frame(&mut stream2, MsgType::Manifest, &manifest2)
+        .await
+        .unwrap();
+
+    let (msg2, need_bytes2) = read_frame(&mut stream2).await.unwrap();
+    assert_eq!(msg2, MsgType::Need);
+    let need2: NeedPayload = serde_json::from_slice(&need_bytes2).unwrap();
+
+    // Verify: Agent hydrated from CAS! need2.want must be EMPTY!
+    assert!(
+        need2.want.is_empty(),
+        "Agent must hydrate shared.txt from CAS, want list should be empty!"
+    );
+
+    // Client sends 0 delta bytes
+    write_frame(&mut stream2, MsgType::Files, &[])
+        .await
+        .unwrap();
+
+    write_json_frame(&mut stream2, MsgType::Run, &run)
+        .await
+        .unwrap();
+    loop {
+        let (m, _) = read_frame(&mut stream2).await.unwrap();
+        if m == MsgType::Result {
+            break;
+        }
+    }
+
+    // Verify that beta's remote workspace actually contains the file with matching content!
+    let beta_ws = workspace::resolve_workspace_dir(remote_workdir.path(), "cas-project-beta");
+    assert_eq!(
+        fs::read(beta_ws.join("shared.txt")).unwrap(),
+        content,
+        "File materialized from CAS must have identical content"
+    );
+}

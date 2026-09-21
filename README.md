@@ -24,7 +24,7 @@
 
 <p align="center">
   <a href="https://github.com/Rayrsn/farhand/actions"><img src="https://img.shields.io/badge/build-passing-brightgreen?style=flat-square" alt="Build Status" /></a>
-  <a href="https://github.com/Rayrsn/farhand/releases/tag/v1.1.0"><img src="https://img.shields.io/badge/version-1.1.0-orange?style=flat-square" alt="Version" /></a>
+  <a href="https://github.com/Rayrsn/farhand/releases/tag/v1.4.0"><img src="https://img.shields.io/badge/version-1.4.0-orange?style=flat-square" alt="Version" /></a>
   <a href="https://raw.githubusercontent.com/Rayrsn/farhand/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT%2FApache--2.0-blue?style=flat-square" alt="License" /></a>
   <img src="https://img.shields.io/badge/dependencies-zero-success?style=flat-square" alt="Zero Dependencies" />
   <img src="https://img.shields.io/badge/platform-linux%20%7C%20macos%20%7C%20windows-lightgrey?style=flat-square" alt="Platforms" />
@@ -47,6 +47,8 @@ Logs stream directly into your terminal in real time, and build artifacts (like 
 | Feature | Farhand (`fh`) | `ssh` + `rsync` scripts | Remote Desktop / SSH VSCode |
 | :--- | :---: | :---: | :---: |
 | **Zero Runtime Dependencies** | **Yes** (pure static Rust) | No (requires `rsync`, `ssh`, `tar`) | No (heavy daemon) |
+| **Zstandard (zstd) Wire Compression** | **Yes** (negotiated, 3–5x faster) | No (gzip or none) | N/A |
+| **Global Content-Addressable Storage (CAS)** | **Yes** (zero-copy CoW hydration) | No | No |
 | **Persistent Dependency Cache** | **Yes** (`node_modules` stays remote) | Often wipes or conflicts | Local to remote box |
 | **Multi-Branch APFS CoW Forking** | **Yes** (< 100ms, 0-byte duplicate) | No (duplicates entire folder) | No |
 | **Delta Source Sync** | **Yes** (SHA-256 manifests over TCP) | Yes (rsync delta) | N/A (entire edit remote) |
@@ -59,6 +61,8 @@ Logs stream directly into your terminal in real time, and build artifacts (like 
 ## Core Features
 
 - ⚡ **Zero External Dependencies**: Pure Rust binaries. Does not invoke or depend on system `ssh`, `rsync`, `tar`, or `gzip`.
+- 🚀 **High-Speed Zstandard (zstd) Wire Compression**: Automatic handshake negotiation chooses `zstd` (level 3) for delta and artifact transfers, delivering 3–5× faster compression throughput than gzip with minimal CPU overhead.
+- 🗄️ **Global Content-Addressable Storage (CAS)**: Files with matching SHA-256 hashes are deduplicated globally on the agent host across all branches and projects, hydrated instantly via zero-copy CoW reflinks (`clonefile` on macOS / `FICLONE` ioctl on Linux). Zero-byte uploads for known files!
 - 📁 **Persistent Workspace Cache**: Remote dependencies (`node_modules/`, `target/`, `.venv/`) remain on the agent host across runs. Only changed source files are transferred.
 - 🍏 **Instant APFS Copy-on-Write (CoW) Forking**: When working across different branches on shared hosts, new branch workspaces are cloned from canonical seeds (`main`/`master`) in **< 100ms using 0 additional disk blocks**.
 - 🧹 **Automated Two-Tier LRU & Emergency GC**: Daemon automatically soft-prunes intermediate caches, performs pre-flight emergency GC when disk space is tight (`--min-disk-gb`), and evicts stale branch workspaces.
@@ -104,17 +108,17 @@ powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.c
 
 ---
 
-#### 📦 Pre-Built Release Packages (v1.2.0)
+#### 📦 Pre-Built Release Packages (v1.4.0)
 
-Pre-compiled static release packages and checksums are available on the [**Farhand v1.2.0 Release**](https://github.com/Rayrsn/farhand/releases/tag/v1.2.0):
+Pre-compiled static release packages and checksums are available on the [**Farhand v1.4.0 Release**](https://github.com/Rayrsn/farhand/releases/tag/v1.4.0):
 
 | Platform | Architecture | Package Archive |
 | :--- | :--- | :--- |
-| **Linux** | x86_64 (64-bit) | [`farhand-v1.2.0-x86_64-unknown-linux-musl.tar.gz`](https://github.com/Rayrsn/farhand/releases/download/v1.2.0/farhand-v1.2.0-x86_64-unknown-linux-musl.tar.gz) |
-| **Linux** | aarch64 (ARM64) | [`farhand-v1.2.0-aarch64-unknown-linux-musl.tar.gz`](https://github.com/Rayrsn/farhand/releases/download/v1.2.0/farhand-v1.2.0-aarch64-unknown-linux-musl.tar.gz) |
-| **macOS** | Apple Silicon (M1/M2/M3/M4) | [`farhand-v1.2.0-aarch64-apple-darwin.tar.gz`](https://github.com/Rayrsn/farhand/releases/download/v1.2.0/farhand-v1.2.0-aarch64-apple-darwin.tar.gz) |
-| **macOS** | Intel x86_64 | [`farhand-v1.2.0-x86_64-apple-darwin.tar.gz`](https://github.com/Rayrsn/farhand/releases/download/v1.2.0/farhand-v1.2.0-x86_64-apple-darwin.tar.gz) |
-| **Windows** | x86_64 (Standalone Static) | [`farhand-v1.2.0-x86_64-pc-windows-msvc.zip`](https://github.com/Rayrsn/farhand/releases/download/v1.2.0/farhand-v1.2.0-x86_64-pc-windows-msvc.zip) |
+| **Linux** | x86_64 (64-bit) | [`farhand-v1.4.0-x86_64-unknown-linux-musl.tar.gz`](https://github.com/Rayrsn/farhand/releases/download/v1.4.0/farhand-v1.4.0-x86_64-unknown-linux-musl.tar.gz) |
+| **Linux** | aarch64 (ARM64) | [`farhand-v1.4.0-aarch64-unknown-linux-musl.tar.gz`](https://github.com/Rayrsn/farhand/releases/download/v1.4.0/farhand-v1.4.0-aarch64-unknown-linux-musl.tar.gz) |
+| **macOS** | Apple Silicon (M1/M2/M3/M4) | [`farhand-v1.4.0-aarch64-apple-darwin.tar.gz`](https://github.com/Rayrsn/farhand/releases/download/v1.4.0/farhand-v1.4.0-aarch64-apple-darwin.tar.gz) |
+| **macOS** | Intel x86_64 | [`farhand-v1.4.0-x86_64-apple-darwin.tar.gz`](https://github.com/Rayrsn/farhand/releases/download/v1.4.0/farhand-v1.4.0-x86_64-apple-darwin.tar.gz) |
+| **Windows** | x86_64 (Standalone Static) | [`farhand-v1.4.0-x86_64-pc-windows-msvc.zip`](https://github.com/Rayrsn/farhand/releases/download/v1.4.0/farhand-v1.4.0-x86_64-pc-windows-msvc.zip) |
 
 ---
 

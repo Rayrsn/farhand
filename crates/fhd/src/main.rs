@@ -76,6 +76,20 @@ struct Cli {
         help = "Background garbage collection interval in seconds (default: 3600, 0 to disable)"
     )]
     gc_interval_secs: u64,
+
+    #[arg(
+        long = "cas-dir",
+        env = "FARHAND_CAS_DIR",
+        help = "Directory for content-addressable storage (default: <workdir>/cas/objects)"
+    )]
+    cas_dir: Option<PathBuf>,
+
+    #[arg(
+        long = "no-cas",
+        action = clap::ArgAction::SetTrue,
+        help = "Disable global content-addressable storage (CAS)"
+    )]
+    no_cas: bool,
 }
 
 fn setup_tracing(level_str: &str, format_str: &str) {
@@ -153,6 +167,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cli.max_concurrent_runs,
         cli.tags,
         Some(min_disk_bytes),
+        cli.cas_dir,
+        cli.no_cas,
     )
     .await?;
     Ok(())

@@ -18,7 +18,10 @@ pub mod history;
 pub use history::{format_rfc3339, get_recent_runs, save_run, MAX_RUNS_RETAINED, RUNS_DIR};
 
 pub mod cow;
-pub use cow::{cow_clone_dir, find_seed_workspace, parse_base_project_name};
+pub use cow::{cow_clone_dir, cow_clone_file, find_seed_workspace, parse_base_project_name};
+
+pub mod cas;
+pub use cas::CasStore;
 
 pub mod gc;
 pub use gc::{

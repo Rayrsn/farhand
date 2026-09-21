@@ -233,6 +233,12 @@ struct Cli {
     )]
     watch: bool,
 
+    #[arg(
+        long = "compression",
+        help = "Wire compression algorithm ('zstd', 'gzip', or 'none')"
+    )]
+    compression: Option<String>,
+
     #[arg(trailing_var_arg = true, help = "Command to run remotely")]
     command: Vec<String>,
 }
@@ -525,6 +531,7 @@ async fn run_build(
     run_env: Option<HashMap<String, String>>,
     tty: bool,
     forwards: &[String],
+    compression: Option<String>,
     verbose: bool,
     telemetry: &mut Telemetry,
 ) -> Result<i32, Box<dyn std::error::Error + Send + Sync>> {
@@ -554,10 +561,17 @@ async fn run_build(
     };
 
     // 2. Handshake: Send HELLO
+    let client_compressions = if let Some(c) = &compression {
+        vec![c.to_string()]
+    } else {
+        vec!["zstd".to_string(), "gzip".to_string(), "none".to_string()]
+    };
+
     let hello = HelloPayload {
         token: token.to_string(),
         project: project_name.to_string(),
         protocol_version: CURRENT_PROTOCOL_VERSION,
+        compressions: Some(client_compressions),
     };
 
     if let Err(e) = write_json_frame(&mut stream, MsgType::Hello, &hello).await {
@@ -607,6 +621,18 @@ async fn run_build(
             ack.error.as_deref().unwrap_or("rejected by agent")
         );
         exit(EXIT_INFRA_ERROR);
+    }
+
+    let negotiated_compression = ack
+        .compression
+        .clone()
+        .unwrap_or_else(|| "gzip".to_string());
+    let compression_algo = fileset::CompressionAlgo::from_str_opt(Some(&negotiated_compression));
+    if verbose {
+        println!(
+            "[Negotiation] Wire compression: {}",
+            compression_algo.as_str()
+        );
     }
 
     // 3. Scan local files & Build MANIFEST
@@ -707,7 +733,7 @@ async fn run_build(
                 need.want.len()
             );
         }
-        let tar_gz = match fileset::pack_tar(project_dir, &need.want) {
+        let tar_gz = match fileset::pack_tar_with_algo(project_dir, &need.want, compression_algo) {
             Ok(t) => t,
             Err(e) => {
                 eprintln!("Error: failed to pack delta files into archive: {}", e);
@@ -1197,6 +1223,7 @@ async fn main() {
             token,
             project: project_name,
             protocol_version: CURRENT_PROTOCOL_VERSION,
+            compressions: None,
         };
         if let Err(e) = write_json_frame(&mut stream, MsgType::Hello, &hello).await {
             eprintln!("Error: failed to send HELLO: {}", e);
@@ -1330,16 +1357,16 @@ async fn main() {
     } else {
         cfg.forward
     };
-fn is_mutation_event(event: &notify::Event) -> bool {
-    matches!(
-        event.kind,
-        notify::EventKind::Create(_)
-            | notify::EventKind::Modify(notify::event::ModifyKind::Data(_))
-            | notify::EventKind::Modify(notify::event::ModifyKind::Name(_))
-            | notify::EventKind::Modify(notify::event::ModifyKind::Any)
-            | notify::EventKind::Remove(_)
-    )
-}
+    fn is_mutation_event(event: &notify::Event) -> bool {
+        matches!(
+            event.kind,
+            notify::EventKind::Create(_)
+                | notify::EventKind::Modify(notify::event::ModifyKind::Data(_))
+                | notify::EventKind::Modify(notify::event::ModifyKind::Name(_))
+                | notify::EventKind::Modify(notify::event::ModifyKind::Any)
+                | notify::EventKind::Remove(_)
+        )
+    }
 
     let mut run_env = collect_forward_env(cli.no_env, cfg.forward_env, &cfg.env, &cli.env);
     if effective_tty {
@@ -1349,6 +1376,8 @@ fn is_mutation_event(event: &notify::Event) -> bool {
             env_map.insert("TERM".to_string(), term);
         }
     }
+
+    let effective_compression = cli.compression.or(cfg.compression);
 
     if is_watch {
         println!(
@@ -1371,6 +1400,7 @@ fn is_mutation_event(event: &notify::Event) -> bool {
             run_env.clone(),
             effective_tty,
             &effective_forwards,
+            effective_compression.clone(),
             verbose,
             &mut telemetry,
         )
@@ -1479,6 +1509,7 @@ fn is_mutation_event(event: &notify::Event) -> bool {
                     run_env.clone(),
                     effective_tty,
                     &effective_forwards,
+                    effective_compression.clone(),
                     verbose,
                     &mut telemetry,
                 )
@@ -1512,6 +1543,7 @@ fn is_mutation_event(event: &notify::Event) -> bool {
         run_env,
         effective_tty,
         &effective_forwards,
+        effective_compression,
         verbose,
         &mut telemetry,
     )

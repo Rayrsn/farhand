@@ -71,6 +71,8 @@ pub struct HelloPayload {
     pub project: String,
     #[serde(rename = "protocolVersion")]
     pub protocol_version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compressions: Option<Vec<String>>,
 }
 
 /// Agent -> Client: Handshake acknowledgement
@@ -79,6 +81,8 @@ pub struct HelloAckPayload {
     pub ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compression: Option<String>,
 }
 
 /// Metadata for an individual tracked file
@@ -210,9 +214,17 @@ pub struct StatusResponsePayload {
     pub hostname: String,
     #[serde(default)]
     pub tags: Vec<String>,
-    #[serde(rename = "diskFreeBytes", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "diskFreeBytes",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub disk_free_bytes: Option<u64>,
-    #[serde(rename = "diskTotalBytes", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "diskTotalBytes",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub disk_total_bytes: Option<u64>,
 }
 

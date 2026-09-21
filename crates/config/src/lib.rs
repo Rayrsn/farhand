@@ -129,6 +129,8 @@ pub struct Config {
     pub tty: bool,
     #[serde(default)]
     pub forward: Vec<String>,
+    #[serde(default)]
+    pub compression: Option<String>,
 }
 
 impl Config {
@@ -160,6 +162,7 @@ impl Default for Config {
             env: HashMap::new(),
             tty: false,
             forward: Vec::new(),
+            compression: None,
         }
     }
 }

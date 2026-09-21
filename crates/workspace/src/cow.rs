@@ -118,6 +118,74 @@ fn recursive_copy(src: &Path, dst: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Clone a single file using Copy-on-Write (CoW) or hardlinking.
+///
+/// On macOS (APFS), leverages `clonefile(2)` for instant 0-block duplication.
+/// On Linux, attempts `ioctl(FICLONE)` reflink on Btrfs/XFS/ZFS, then falls back to hardlink or copy.
+/// On Windows, attempts hard link, then falls back to copy.
+pub fn cow_clone_file(src: &Path, dst: &Path) -> io::Result<()> {
+    if !src.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("Source file does not exist: {}", src.display()),
+        ));
+    }
+
+    if dst.exists() {
+        let _ = fs::remove_file(dst);
+    } else if let Some(parent) = dst.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    // 1. macOS: APFS clonefile(2)
+    #[cfg(target_os = "macos")]
+    {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+
+        if let (Ok(c_src), Ok(c_dst)) = (
+            CString::new(src.as_os_str().as_bytes()),
+            CString::new(dst.as_os_str().as_bytes()),
+        ) {
+            let res = unsafe { libc::clonefile(c_src.as_ptr(), c_dst.as_ptr(), 0) };
+            if res == 0 {
+                return Ok(());
+            }
+        }
+    }
+
+    // 2. Linux: ioctl FICLONE
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::io::AsRawFd;
+        if let (Ok(src_file), Ok(dst_file)) = (
+            fs::File::open(src),
+            fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(dst),
+        ) {
+            // FICLONE is 0x40049409 on Linux
+            let res =
+                unsafe { libc::ioctl(dst_file.as_raw_fd(), 0x40049409, src_file.as_raw_fd()) };
+            if res == 0 {
+                return Ok(());
+            }
+        }
+        let _ = fs::remove_file(dst);
+    }
+
+    // 3. Fallback: hardlink
+    if fs::hard_link(src, dst).is_ok() {
+        return Ok(());
+    }
+
+    // 4. Fallback: standard file copy
+    fs::copy(src, dst)?;
+    Ok(())
+}
+
 /// Extract base project name from a project key.
 /// E.g. "my-repo:feature-1" -> Some("my-repo")
 ///      "my-repo/feature-1" -> Some("my-repo")
