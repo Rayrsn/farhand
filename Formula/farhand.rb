@@ -7,20 +7,20 @@ class Farhand < Formula
   on_macos do
     if Hardware::CPU.arm?
       url "https://github.com/Rayrsn/farhand/releases/download/v#{version}/farhand-aarch64-apple-darwin.tar.gz"
-      sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+      sha256 "c513385683c6bd73bfb1eaa4ff99611d87810dda811e321c204df032d38a94c4"
     else
       url "https://github.com/Rayrsn/farhand/releases/download/v#{version}/farhand-x86_64-apple-darwin.tar.gz"
-      sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+      sha256 "f392ebc94ee8569b43582797d55b2c34f672c00d9955e3721e3e4b333fcaf45b"
     end
   end
 
   on_linux do
     if Hardware::CPU.arm?
       url "https://github.com/Rayrsn/farhand/releases/download/v#{version}/farhand-aarch64-unknown-linux-musl.tar.gz"
-      sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+      sha256 "2a0d903a5760900eaa7da02fa3a2c8d581933d9e10ce21030d2e28f9b7b8828c"
     else
       url "https://github.com/Rayrsn/farhand/releases/download/v#{version}/farhand-x86_64-unknown-linux-musl.tar.gz"
-      sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+      sha256 "cf7006e5c3e4b4c16c3a130211a7ed1b1fc5331659c01cc3d0e559c785428f34"
     end
   end
 
