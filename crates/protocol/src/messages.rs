@@ -132,6 +132,8 @@ pub struct RunPayload {
     pub cols: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rows: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub toolchain: Option<HashMap<String, String>>,
 }
 
 /// Client -> Agent: Terminal window resize event
@@ -309,6 +311,7 @@ mod tests {
             tty: false,
             cols: None,
             rows: None,
+            toolchain: None,
         };
 
         let json = serde_json::to_string(&payload_with_env).unwrap();

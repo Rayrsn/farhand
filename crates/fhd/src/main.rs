@@ -90,6 +90,32 @@ struct Cli {
         help = "Disable global content-addressable storage (CAS)"
     )]
     no_cas: bool,
+
+    #[arg(
+        long = "tls",
+        action = clap::ArgAction::SetTrue,
+        help = "Enable TLS encryption"
+    )]
+    tls: bool,
+
+    #[arg(long = "tls-cert", help = "Path to PEM-encoded TLS certificate chain")]
+    tls_cert: Option<PathBuf>,
+
+    #[arg(long = "tls-key", help = "Path to PEM-encoded TLS private key")]
+    tls_key: Option<PathBuf>,
+
+    #[arg(
+        long = "tls-client-ca",
+        help = "Path to PEM-encoded CA certificate to require and verify client certificates (mTLS)"
+    )]
+    tls_client_ca: Option<PathBuf>,
+
+    #[arg(
+        long = "tls-auto",
+        action = clap::ArgAction::SetTrue,
+        help = "Automatically generate an in-memory self-signed certificate and log fingerprint"
+    )]
+    tls_auto: bool,
 }
 
 fn setup_tracing(level_str: &str, format_str: &str) {
@@ -159,6 +185,54 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let min_disk_bytes = (cli.min_disk_gb * 1024.0 * 1024.0 * 1024.0) as u64;
 
+    let tls_acceptor = if cli.tls || cli.tls_auto || cli.tls_cert.is_some() {
+        let (cert_pem, key_pem) =
+            if cli.tls_auto || (cli.tls_cert.is_none() && cli.tls_key.is_none()) {
+                info!("Generating self-signed TLS certificate (ephemeral)...");
+                let san = vec![
+                    "localhost".to_string(),
+                    "127.0.0.1".to_string(),
+                    fhd::get_hostname(),
+                ];
+                let self_cert = protocol::generate_self_signed_cert(san)?;
+                info!(
+                    "Self-signed TLS SHA-256 fingerprint: {}",
+                    self_cert.fingerprint
+                );
+                (self_cert.cert_pem, self_cert.key_pem)
+            } else {
+                let cert_path = cli
+                    .tls_cert
+                    .as_ref()
+                    .ok_or("--tls-cert required when --tls is set without --tls-auto")?;
+                let key_path = cli
+                    .tls_key
+                    .as_ref()
+                    .ok_or("--tls-key required when --tls is set without --tls-auto")?;
+                let cert_pem = std::fs::read_to_string(cert_path)?;
+                let key_pem = std::fs::read_to_string(key_path)?;
+                let parsed_certs = protocol::parse_pem_certs(&cert_pem)?;
+                if let Some(first) = parsed_certs.first() {
+                    let fp = protocol::compute_cert_fingerprint(first.as_ref());
+                    info!("Server TLS SHA-256 fingerprint: {}", fp);
+                }
+                (cert_pem, key_pem)
+            };
+
+        let client_ca_pem = if let Some(ref ca_path) = cli.tls_client_ca {
+            Some(std::fs::read_to_string(ca_path)?)
+        } else {
+            None
+        };
+
+        let server_config =
+            protocol::create_server_config(&cert_pem, &key_pem, client_ca_pem.as_deref())?;
+        info!("TLS enabled on listener");
+        Some(protocol::TlsAcceptor::from(server_config))
+    } else {
+        None
+    };
+
     fhd::run_server(
         listener,
         cli.token,
@@ -169,6 +243,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(min_disk_bytes),
         cli.cas_dir,
         cli.no_cas,
+        tls_acceptor,
     )
     .await?;
     Ok(())

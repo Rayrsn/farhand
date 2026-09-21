@@ -5,11 +5,18 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-tokio = { workspace = true, features = ["io-util"] }
+tokio = { workspace = true, features = ["io-util", "net"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 byteorder.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true
+rustls-pki-types.workspace = true
+rcgen.workspace = true
+webpki-roots.workspace = true
+sha2.workspace = true
+hex.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["io-util", "macros", "rt"] }

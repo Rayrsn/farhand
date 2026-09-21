@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 
 const EXIT_INFRA_ERROR: i32 = 125;
@@ -100,6 +100,23 @@ fn collect_forward_env(
         }
     }
 
+    if map.is_empty() {
+        None
+    } else {
+        Some(map)
+    }
+}
+
+fn collect_toolchain(
+    config_toolchain: &std::collections::HashMap<String, String>,
+    cli_toolchain: &[String],
+) -> Option<std::collections::HashMap<String, String>> {
+    let mut map = config_toolchain.clone();
+    for entry in cli_toolchain {
+        if let Some((k, v)) = entry.split_once('=') {
+            map.insert(k.trim().to_string(), v.trim().to_string());
+        }
+    }
     if map.is_empty() {
         None
     } else {
@@ -238,6 +255,52 @@ struct Cli {
         help = "Wire compression algorithm ('zstd', 'gzip', or 'none')"
     )]
     compression: Option<String>,
+
+    #[arg(
+        long = "tls",
+        action = clap::ArgAction::SetTrue,
+        help = "Enable TLS encryption for connection to agent"
+    )]
+    tls: bool,
+
+    #[arg(
+        long = "tls-ca",
+        help = "Path to custom CA certificate (PEM) to verify agent TLS certificate"
+    )]
+    tls_ca: Option<PathBuf>,
+
+    #[arg(
+        long = "tls-fingerprint",
+        help = "Expected SHA-256 fingerprint of the agent TLS certificate"
+    )]
+    tls_fingerprint: Option<String>,
+
+    #[arg(
+        long = "tls-insecure",
+        action = clap::ArgAction::SetTrue,
+        help = "Accept any server TLS certificate without validation (INSECURE)"
+    )]
+    tls_insecure: bool,
+
+    #[arg(
+        long = "tls-cert",
+        help = "Path to client TLS certificate (PEM) for mTLS authentication"
+    )]
+    tls_cert: Option<PathBuf>,
+
+    #[arg(
+        long = "tls-key",
+        help = "Path to client TLS private key (PEM) for mTLS authentication"
+    )]
+    tls_key: Option<PathBuf>,
+
+    #[arg(
+        short = 'T',
+        long = "toolchain",
+        action = clap::ArgAction::Append,
+        help = "Declarative toolchain version override, e.g. -T rust=1.78.0 -T node=20 (repeatable)"
+    )]
+    toolchain: Vec<String>,
 
     #[arg(trailing_var_arg = true, help = "Command to run remotely")]
     command: Vec<String>,
@@ -559,10 +622,12 @@ async fn run_build(
     template: Option<String>,
     no_cache: bool,
     run_env: Option<HashMap<String, String>>,
+    run_toolchain: Option<HashMap<String, String>>,
     tty: bool,
     forwards: &[String],
     compression: Option<String>,
     verbose: bool,
+    tls_config: Option<&config::TlsConfig>,
     telemetry: &mut Telemetry,
 ) -> Result<i32, Box<dyn std::error::Error + Send + Sync>> {
     if verbose {
@@ -578,8 +643,8 @@ async fn run_build(
         }
     }
 
-    // 1. Connect TCP to agent
-    let mut stream = match TcpStream::connect(host).await {
+    // 1. Connect TCP/TLS to agent
+    let mut stream = match fh::connect_to_agent(host, tls_config).await {
         Ok(s) => s,
         Err(e) => {
             eprintln!(
@@ -794,7 +859,7 @@ async fn run_build(
     }
 
     // 6. Split stream for concurrent communication
-    let (mut read_half, write_half) = stream.into_split();
+    let (mut read_half, write_half) = tokio::io::split(stream);
     let shared_writer = Arc::new(Mutex::new(write_half));
 
     // 7. Setup Reverse Port Forwarding
@@ -845,6 +910,7 @@ async fn run_build(
         template,
         no_cache,
         env: run_env,
+        toolchain: run_toolchain,
         tty,
         cols,
         rows,
@@ -1168,23 +1234,36 @@ async fn main() {
     let verbose = cli.verbose || cfg.verbose;
 
     // Precedence: CLI Flags > Environment Variables > Multi-Agent Pool > Config Host > Defaults
-    let (host, host_token) = if let Some(h) = cli.host {
-        (h, None)
+    let (host, host_token, pool_tls) = if let Some(h) = cli.host {
+        (h, None, None)
     } else if !cfg.agents.is_empty() {
         let tag = cli.agent_tag.as_deref().or(cfg.agent_tag.as_deref());
         match fh::select_best_agent(&cfg.agents, tag, verbose).await {
-            Ok(selected) => (selected.host, selected.token),
+            Ok(selected) => (selected.host, selected.token, selected.tls),
             Err(e) => {
                 eprintln!("Error: failed to select agent from pool: {}", e);
                 exit(EXIT_INFRA_ERROR);
             }
         }
     } else if let Some(h) = cfg.host.clone() {
-        (h, None)
+        (h, None, None)
     } else {
         eprintln!("Error: agent host address is required (use --host, FARHAND_HOST env, or configure in .farhand.yaml)");
         exit(EXIT_INFRA_ERROR);
     };
+
+    let effective_tls_setting = pool_tls.as_ref().or(cfg.tls.as_ref());
+    let tls_config = fh::resolve_tls_config(
+        effective_tls_setting,
+        cli.tls,
+        cli.tls_ca.as_deref(),
+        cli.tls_fingerprint.as_deref(),
+        cli.tls_insecure,
+        cli.tls_cert.as_deref(),
+        cli.tls_key.as_deref(),
+    );
+
+    let run_toolchain = collect_toolchain(&cfg.toolchain, &cli.toolchain);
 
     let insecure_skip_token = cli.insecure_skip_token || cfg.insecure_skip_token;
 
@@ -1228,7 +1307,16 @@ async fn main() {
     {
         let proj = name.unwrap_or(project_name);
 
-        match fh::clean_workspace(&host, &token, &proj, all_branches, caches_only).await {
+        match fh::clean_workspace(
+            &host,
+            &token,
+            &proj,
+            all_branches,
+            caches_only,
+            tls_config.as_ref(),
+        )
+        .await
+        {
             Ok(resp) => {
                 if cli.log_format == "json" {
                     if let Ok(json) = serde_json::to_string_pretty(&resp) {
@@ -1256,7 +1344,7 @@ async fn main() {
     if let Some(Subcommands::History { name, limit }) = cli.subcommand {
         let proj = name.unwrap_or(project_name);
 
-        match fh::query_history(&host, &token, &proj, limit).await {
+        match fh::query_history(&host, &token, &proj, limit, tls_config.as_ref()).await {
             Ok(resp) => {
                 if cli.log_format == "json" {
                     if let Ok(json) = serde_json::to_string_pretty(&resp) {
@@ -1288,7 +1376,7 @@ async fn main() {
             }
         };
 
-        let mut stream = match TcpStream::connect(&host).await {
+        let mut stream = match fh::connect_to_agent(&host, tls_config.as_ref()).await {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("Error: unable to reach agent at {}: {}", host, e);
@@ -1475,10 +1563,12 @@ async fn main() {
             template.clone(),
             no_cache,
             run_env.clone(),
+            run_toolchain.clone(),
             effective_tty,
             &effective_forwards,
             effective_compression.clone(),
             verbose,
+            tls_config.as_ref(),
             &mut telemetry,
         )
         .await;
@@ -1584,10 +1674,12 @@ async fn main() {
                     template.clone(),
                     no_cache,
                     run_env.clone(),
+                    run_toolchain.clone(),
                     effective_tty,
                     &effective_forwards,
                     effective_compression.clone(),
                     verbose,
+                    tls_config.as_ref(),
                     &mut telemetry,
                 )
                 .await;
@@ -1618,10 +1710,12 @@ async fn main() {
         template,
         no_cache,
         run_env,
+        run_toolchain,
         effective_tty,
         &effective_forwards,
         effective_compression,
         verbose,
+        tls_config.as_ref(),
         &mut telemetry,
     )
     .await

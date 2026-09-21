@@ -7,8 +7,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::net::TcpListener;
 use tokio::process::Command;
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
@@ -57,6 +57,7 @@ pub async fn run_server(
     min_disk_bytes: Option<u64>,
     cas_dir: Option<PathBuf>,
     no_cas: bool,
+    tls_acceptor: Option<protocol::TlsAcceptor>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let max_runs = max_concurrent_runs.unwrap_or_else(|| {
         std::thread::available_parallelism()
@@ -92,8 +93,33 @@ pub async fn run_server(
             Ok((stream, addr)) => {
                 info!("Accepted connection from {}", addr);
                 let ctx_clone = Arc::clone(&ctx);
+                let tls_acceptor_clone = tls_acceptor.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = handle_connection(stream, ctx_clone).await {
+                    let res = match tls_acceptor_clone {
+                        Some(acceptor) => match acceptor.accept(stream).await {
+                            Ok(tls_stream) => {
+                                handle_connection(
+                                    protocol::MaybeTlsStream::Server(tls_stream),
+                                    ctx_clone,
+                                    addr.to_string(),
+                                )
+                                .await
+                            }
+                            Err(e) => {
+                                error!("TLS handshake failed with {}: {}", addr, e);
+                                Err(e.into())
+                            }
+                        },
+                        None => {
+                            handle_connection(
+                                protocol::MaybeTlsStream::Plain(stream),
+                                ctx_clone,
+                                addr.to_string(),
+                            )
+                            .await
+                        }
+                    };
+                    if let Err(e) = res {
                         error!("Connection from {} error: {}", addr, e);
                     }
                     info!("Connection from {} closed", addr);
@@ -106,15 +132,11 @@ pub async fn run_server(
     }
 }
 
-pub async fn handle_connection(
-    mut stream: TcpStream,
+pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
+    mut stream: S,
     ctx: Arc<ServerContext>,
+    client_addr: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let client_addr = stream
-        .peer_addr()
-        .map(|a| a.to_string())
-        .unwrap_or_else(|_| "unknown".to_string());
-
     // 1. First frame: can be STATUS probe, HISTORY query, or HELLO handshake
     let (msg_type, payload) = read_frame(&mut stream).await?;
 
@@ -538,7 +560,7 @@ pub async fn handle_connection(
     );
 
     // 6. Pre-build dependency caching hook
-    let (mut read_half, write_half) = stream.into_split();
+    let (mut read_half, write_half) = tokio::io::split(stream);
     let shared_writer = Arc::new(Mutex::new(write_half));
 
     let matched_templates = templates::match_templates(&workspace_dir, run.template.as_deref());
@@ -586,6 +608,7 @@ pub async fn handle_connection(
                 install_cmd,
                 ctx.custom_shell.as_deref(),
                 run.env.as_ref(),
+                run.toolchain.as_ref(),
             )
             .await?;
 
@@ -661,6 +684,7 @@ pub async fn handle_connection(
         &run.argv,
         ctx.custom_shell.as_deref(),
         run.env.as_ref(),
+        run.toolchain.as_ref(),
         run.tty,
         run.cols,
         run.rows,
@@ -756,12 +780,117 @@ fn shell_escape(arg: &str) -> String {
     format!("'{}'", arg.replace('\'', "'\\''"))
 }
 
-pub fn build_shell_command(cwd: &Path, argv: &[String], custom_shell: Option<&str>) -> Command {
+pub fn wrap_command_with_toolchain(
+    cmd_str: &str,
+    toolchain: Option<&HashMap<String, String>>,
+) -> String {
+    let Some(toolchain) = toolchain else {
+        return cmd_str.to_string();
+    };
+    if toolchain.is_empty() {
+        return cmd_str.to_string();
+    }
+
+    let mut prefixes = Vec::new();
+    for (lang, ver) in toolchain {
+        let l = lang.to_ascii_lowercase();
+        match l.as_str() {
+            "node" | "nodejs" => {
+                #[cfg(unix)]
+                {
+                    prefixes.push(format!(
+                        "(export NVM_DIR=\"$HOME/.nvm\"; [ -s \"$NVM_DIR/nvm.sh\" ] && \\. \"$NVM_DIR/nvm.sh\" && nvm use {} >/dev/null 2>&1) || (which fnm >/dev/null 2>&1 && eval \"$(fnm env)\" && fnm use {} >/dev/null 2>&1) || true",
+                        ver, ver
+                    ));
+                }
+            }
+            "go" | "golang" => {
+                #[cfg(unix)]
+                {
+                    prefixes.push(format!(
+                        "(which goenv >/dev/null 2>&1 && export GOENV_VERSION={} && eval \"$(goenv init -)\") || true",
+                        ver
+                    ));
+                }
+            }
+            "python" | "pyenv" => {
+                #[cfg(unix)]
+                {
+                    prefixes.push(format!(
+                        "(which pyenv >/dev/null 2>&1 && eval \"$(pyenv init -)\") || true"
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if prefixes.is_empty() {
+        cmd_str.to_string()
+    } else {
+        format!("{} && {}", prefixes.join(" && "), cmd_str)
+    }
+}
+
+pub fn apply_toolchain_env(cmd: &mut Command, toolchain: Option<&HashMap<String, String>>) {
+    if let Some(tc) = toolchain {
+        for (lang, ver) in tc {
+            let l = lang.to_ascii_lowercase();
+            match l.as_str() {
+                "rust" | "rustup" => {
+                    cmd.env("RUSTUP_TOOLCHAIN", ver);
+                }
+                "python" | "pyenv" => {
+                    cmd.env("PYENV_VERSION", ver);
+                }
+                "node" | "nodejs" => {
+                    cmd.env("NODE_VERSION", ver);
+                }
+                _ => {}
+            }
+            let env_key = format!("FARHAND_TOOLCHAIN_{}", l.to_ascii_uppercase());
+            cmd.env(env_key, ver);
+        }
+    }
+}
+
+pub fn apply_toolchain_pty(
+    cmd_builder: &mut portable_pty::CommandBuilder,
+    toolchain: Option<&HashMap<String, String>>,
+) {
+    if let Some(tc) = toolchain {
+        for (lang, ver) in tc {
+            let l = lang.to_ascii_lowercase();
+            match l.as_str() {
+                "rust" | "rustup" => {
+                    cmd_builder.env("RUSTUP_TOOLCHAIN", ver);
+                }
+                "python" | "pyenv" => {
+                    cmd_builder.env("PYENV_VERSION", ver);
+                }
+                "node" | "nodejs" => {
+                    cmd_builder.env("NODE_VERSION", ver);
+                }
+                _ => {}
+            }
+            let env_key = format!("FARHAND_TOOLCHAIN_{}", l.to_ascii_uppercase());
+            cmd_builder.env(env_key, ver);
+        }
+    }
+}
+
+pub fn build_shell_command(
+    cwd: &Path,
+    argv: &[String],
+    custom_shell: Option<&str>,
+    toolchain: Option<&HashMap<String, String>>,
+) -> Command {
     let joined_cmd = argv
         .iter()
         .map(|a| shell_escape(a))
         .collect::<Vec<_>>()
         .join(" ");
+    let wrapped_cmd = wrap_command_with_toolchain(&joined_cmd, toolchain);
 
     let mut cmd = if let Some(shell_override) = custom_shell {
         let parts: Vec<&str> = shell_override.split_whitespace().collect();
@@ -769,18 +898,18 @@ pub fn build_shell_command(cwd: &Path, argv: &[String], custom_shell: Option<&st
         for part in &parts[1..] {
             c.arg(part);
         }
-        c.arg(&joined_cmd);
+        c.arg(&wrapped_cmd);
         c
     } else if cfg!(windows) {
         let mut c = Command::new("cmd.exe");
         #[cfg(windows)]
-        c.raw_arg(format!("/C \"{}\"", joined_cmd));
+        c.raw_arg(format!("/C \"{}\"", wrapped_cmd));
         #[cfg(not(windows))]
-        c.arg("/C").arg(&joined_cmd);
+        c.arg("/C").arg(&wrapped_cmd);
         c
     } else {
         let mut c = Command::new("/bin/sh");
-        c.arg("-c").arg(&joined_cmd);
+        c.arg("-c").arg(&wrapped_cmd);
         c
     };
 
@@ -794,25 +923,31 @@ pub fn build_shell_command(cwd: &Path, argv: &[String], custom_shell: Option<&st
     cmd
 }
 
-pub fn build_raw_shell_command(cwd: &Path, raw_cmd: &str, custom_shell: Option<&str>) -> Command {
+pub fn build_raw_shell_command(
+    cwd: &Path,
+    raw_cmd: &str,
+    custom_shell: Option<&str>,
+    toolchain: Option<&HashMap<String, String>>,
+) -> Command {
+    let wrapped_cmd = wrap_command_with_toolchain(raw_cmd, toolchain);
     let mut cmd = if let Some(shell_override) = custom_shell {
         let parts: Vec<&str> = shell_override.split_whitespace().collect();
         let mut c = Command::new(parts[0]);
         for part in &parts[1..] {
             c.arg(part);
         }
-        c.arg(raw_cmd);
+        c.arg(&wrapped_cmd);
         c
     } else if cfg!(windows) {
         let mut c = Command::new("cmd.exe");
         #[cfg(windows)]
-        c.raw_arg(format!("/C \"{}\"", raw_cmd));
+        c.raw_arg(format!("/C \"{}\"", wrapped_cmd));
         #[cfg(not(windows))]
-        c.arg("/C").arg(raw_cmd);
+        c.arg("/C").arg(&wrapped_cmd);
         c
     } else {
         let mut c = Command::new("/bin/sh");
-        c.arg("-c").arg(raw_cmd);
+        c.arg("-c").arg(&wrapped_cmd);
         c
     };
 
@@ -1071,6 +1206,7 @@ pub async fn run_pty_child_and_stream<
     argv: &[String],
     custom_shell: Option<&str>,
     env: Option<&std::collections::HashMap<String, String>>,
+    toolchain: Option<&std::collections::HashMap<String, String>>,
     cols: Option<u16>,
     rows: Option<u16>,
 ) -> Result<i32, Box<dyn std::error::Error>> {
@@ -1103,7 +1239,8 @@ pub async fn run_pty_child_and_stream<
             .map(|a| shell_escape(a))
             .collect::<Vec<_>>()
             .join(" ");
-        cb.arg(&joined_cmd);
+        let wrapped_cmd = wrap_command_with_toolchain(&joined_cmd, toolchain);
+        cb.arg(&wrapped_cmd);
         cb
     } else if cfg!(windows) {
         let joined_cmd = argv
@@ -1111,9 +1248,10 @@ pub async fn run_pty_child_and_stream<
             .map(|a| shell_escape(a))
             .collect::<Vec<_>>()
             .join(" ");
+        let wrapped_cmd = wrap_command_with_toolchain(&joined_cmd, toolchain);
         let mut cb = portable_pty::CommandBuilder::new("cmd.exe");
         cb.arg("/C");
-        cb.arg(&joined_cmd);
+        cb.arg(&wrapped_cmd);
         cb
     } else {
         let has_shell_metachars = argv.iter().any(|arg| {
@@ -1153,9 +1291,10 @@ pub async fn run_pty_child_and_stream<
                 .map(|a| shell_escape(a))
                 .collect::<Vec<_>>()
                 .join(" ");
+            let wrapped_cmd = wrap_command_with_toolchain(&joined_cmd, toolchain);
             let mut cb = portable_pty::CommandBuilder::new("/bin/sh");
             cb.arg("-c");
-            cb.arg(&joined_cmd);
+            cb.arg(&wrapped_cmd);
             cb
         }
     };
@@ -1166,6 +1305,7 @@ pub async fn run_pty_child_and_stream<
             cmd_builder.env(k, v);
         }
     }
+    apply_toolchain_pty(&mut cmd_builder, toolchain);
     if env.map(|e| !e.contains_key("TERM")).unwrap_or(true) {
         cmd_builder.env("TERM", "xterm-256color");
     }
@@ -1310,11 +1450,13 @@ pub async fn execute_raw_command_and_stream<
     raw_cmd: &str,
     custom_shell: Option<&str>,
     env: Option<&std::collections::HashMap<String, String>>,
+    toolchain: Option<&std::collections::HashMap<String, String>>,
 ) -> Result<i32, Box<dyn std::error::Error>> {
-    let mut cmd = build_raw_shell_command(cwd, raw_cmd, custom_shell);
+    let mut cmd = build_raw_shell_command(cwd, raw_cmd, custom_shell, toolchain);
     if let Some(envs) = env {
         cmd.envs(envs);
     }
+    apply_toolchain_env(&mut cmd, toolchain);
     run_child_and_stream(writer, reader, cmd).await
 }
 
@@ -1329,6 +1471,7 @@ pub async fn execute_and_stream<
     argv: &[String],
     custom_shell: Option<&str>,
     env: Option<&std::collections::HashMap<String, String>>,
+    toolchain: Option<&std::collections::HashMap<String, String>>,
     tty: bool,
     cols: Option<u16>,
     rows: Option<u16>,
@@ -1337,12 +1480,24 @@ pub async fn execute_and_stream<
         return Ok(0);
     }
     if tty {
-        run_pty_child_and_stream(writer, reader, cwd, argv, custom_shell, env, cols, rows).await
+        run_pty_child_and_stream(
+            writer,
+            reader,
+            cwd,
+            argv,
+            custom_shell,
+            env,
+            toolchain,
+            cols,
+            rows,
+        )
+        .await
     } else {
-        let mut cmd = build_shell_command(cwd, argv, custom_shell);
+        let mut cmd = build_shell_command(cwd, argv, custom_shell, toolchain);
         if let Some(envs) = env {
             cmd.envs(envs);
         }
+        apply_toolchain_env(&mut cmd, toolchain);
         run_child_and_stream(writer, reader, cmd).await
     }
 }

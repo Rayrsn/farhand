@@ -2,7 +2,6 @@ use protocol::{
     decode_json, read_frame, write_json_frame, HelloAckPayload, HistoryRequestPayload,
     HistoryResponsePayload, MsgType,
 };
-use tokio::net::TcpStream;
 
 /// Queries execution and build history for a project from a remote agent daemon.
 pub async fn query_history(
@@ -10,8 +9,9 @@ pub async fn query_history(
     token: &str,
     project: &str,
     limit: usize,
-) -> Result<HistoryResponsePayload, Box<dyn std::error::Error>> {
-    let mut stream = TcpStream::connect(host).await?;
+    tls_config: Option<&config::TlsConfig>,
+) -> Result<HistoryResponsePayload, Box<dyn std::error::Error + Send + Sync>> {
+    let mut stream = crate::connect_to_agent(host, tls_config).await?;
     let req = HistoryRequestPayload {
         token: token.to_string(),
         project: project.to_string(),

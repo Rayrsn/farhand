@@ -3,7 +3,6 @@ use protocol::{
     decode_json, read_frame, write_json_frame, MsgType, StatusRequestPayload, StatusResponsePayload,
 };
 use std::time::{Duration, Instant};
-use tokio::net::TcpStream;
 
 #[derive(Debug, Clone)]
 pub struct AgentScore {
@@ -19,8 +18,9 @@ pub struct AgentScore {
 pub async fn probe_agent_status(
     host: &str,
     token: &str,
+    tls_config: Option<&config::TlsConfig>,
 ) -> Result<StatusResponsePayload, Box<dyn std::error::Error + Send + Sync>> {
-    let connect_future = TcpStream::connect(host);
+    let connect_future = crate::connect_to_agent(host, tls_config);
     let mut stream = tokio::time::timeout(Duration::from_secs(3), connect_future)
         .await
         .map_err(|_| "connection timeout")??;
@@ -81,7 +81,10 @@ pub async fn select_best_agent(
             async move {
                 let start = Instant::now();
                 let token = agent.token.clone().unwrap_or_default();
-                let status = probe_agent_status(&agent.host, &token).await.ok();
+                let tls_cfg = agent.tls.as_ref().map(|s| s.to_config());
+                let status = probe_agent_status(&agent.host, &token, tls_cfg.as_ref())
+                    .await
+                    .ok();
                 let latency = start.elapsed();
                 AgentScore {
                     config: agent,

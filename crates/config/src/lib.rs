@@ -28,6 +28,40 @@ pub struct AgentConfig {
     pub token: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
+    #[serde(default)]
+    pub tls: Option<TlsSetting>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TlsConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    pub ca: Option<String>,
+    pub cert: Option<String>,
+    pub key: Option<String>,
+    pub fingerprint: Option<String>,
+    #[serde(default)]
+    pub insecure: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum TlsSetting {
+    Bool(bool),
+    Detailed(TlsConfig),
+}
+
+impl TlsSetting {
+    pub fn to_config(&self) -> TlsConfig {
+        match self {
+            Self::Bool(b) => TlsConfig {
+                enabled: *b,
+                ..Default::default()
+            },
+            Self::Detailed(d) => d.clone(),
+        }
+    }
 }
 
 /// A build output target which can be either a simple path or a structured entry with conditions.
@@ -131,6 +165,10 @@ pub struct Config {
     pub forward: Vec<String>,
     #[serde(default)]
     pub compression: Option<String>,
+    #[serde(default)]
+    pub tls: Option<TlsSetting>,
+    #[serde(default)]
+    pub toolchain: HashMap<String, String>,
 }
 
 impl Config {
@@ -141,6 +179,11 @@ impl Config {
             .filter(|o| o.is_active())
             .map(|o| o.path().to_string())
             .collect()
+    }
+
+    /// Returns resolved TLS configuration if enabled or configured.
+    pub fn tls_config(&self) -> Option<TlsConfig> {
+        self.tls.as_ref().map(|t| t.to_config())
     }
 }
 
@@ -163,6 +206,8 @@ impl Default for Config {
             tty: false,
             forward: Vec::new(),
             compression: None,
+            tls: None,
+            toolchain: HashMap::new(),
         }
     }
 }
@@ -435,5 +480,41 @@ outputs:
         assert_eq!(cfg.outputs.len(), 3);
         let active = cfg.resolved_outputs();
         assert_eq!(active, vec!["dist/bundle.js", "build/docs"]);
+    }
+
+    #[test]
+    fn test_parse_tls_and_toolchain_options() {
+        // Boolean TLS
+        let yaml_bool = "tls: true\n";
+        let cfg_bool: Config = serde_yaml::from_str(yaml_bool).unwrap();
+        let tls_bool = cfg_bool.tls_config().unwrap();
+        assert!(tls_bool.enabled);
+        assert!(!tls_bool.insecure);
+
+        // Detailed TLS and toolchain
+        let yaml_detailed = r#"
+name: enterprise-app
+tls:
+  enabled: true
+  fingerprint: "7f9a8b1c2d3e4f50"
+  insecure: true
+toolchain:
+  rust: "1.82"
+  node: "22"
+"#;
+        let cfg_detailed: Config = serde_yaml::from_str(yaml_detailed).unwrap();
+        let tls_det = cfg_detailed.tls_config().unwrap();
+        assert!(tls_det.enabled);
+        assert_eq!(tls_det.fingerprint.as_deref(), Some("7f9a8b1c2d3e4f50"));
+        assert!(tls_det.insecure);
+
+        assert_eq!(
+            cfg_detailed.toolchain.get("rust").map(|s| s.as_str()),
+            Some("1.82")
+        );
+        assert_eq!(
+            cfg_detailed.toolchain.get("node").map(|s| s.as_str()),
+            Some("22")
+        );
     }
 }

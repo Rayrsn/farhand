@@ -2,7 +2,6 @@ use protocol::{
     decode_json, read_frame, write_json_frame, CleanRequestPayload, CleanResponsePayload,
     HelloAckPayload, MsgType,
 };
-use tokio::net::TcpStream;
 
 /// Sends a CLEAN request to the remote agent daemon.
 pub async fn clean_workspace(
@@ -11,8 +10,9 @@ pub async fn clean_workspace(
     project: &str,
     all_branches: bool,
     caches_only: bool,
-) -> Result<CleanResponsePayload, Box<dyn std::error::Error>> {
-    let mut stream = TcpStream::connect(host).await?;
+    tls_config: Option<&config::TlsConfig>,
+) -> Result<CleanResponsePayload, Box<dyn std::error::Error + Send + Sync>> {
+    let mut stream = crate::connect_to_agent(host, tls_config).await?;
     let req = CleanRequestPayload {
         token: token.to_string(),
         project: project.to_string(),

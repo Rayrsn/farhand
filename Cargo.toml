@@ -11,7 +11,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.5.0"
+version = "1.6.0"
 edition = "2021"
 rust-version = "1.75"
 authors = ["https://github.com/Rayrsn"]
@@ -47,6 +47,11 @@ libc = "0.2"
 portable-pty = "0.9"
 crossterm = "0.29"
 notify = "8.2.0"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "logging"] }
+rustls-pki-types = "1.0"
+rcgen = { version = "0.13", default-features = false, features = ["crypto", "pem", "ring"] }
+webpki-roots = "0.26"
 
 [profile.release]
 opt-level = 3

@@ -45,6 +45,34 @@ async fn spawn_test_server_full(
             min_disk_bytes,
             None,
             false,
+            None,
+        )
+        .await;
+    });
+
+    (addr, handle)
+}
+
+async fn spawn_agent_tls(
+    workdir: PathBuf,
+    token: Option<String>,
+    tls_acceptor: protocol::TlsAcceptor,
+) -> (String, tokio::task::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+
+    let handle = tokio::spawn(async move {
+        let _ = fhd::run_server(
+            listener,
+            token,
+            workdir,
+            None,
+            None,
+            Vec::new(),
+            None,
+            None,
+            false,
+            Some(tls_acceptor),
         )
         .await;
     });
@@ -153,6 +181,7 @@ async fn client_roundtrip_with_options(
         template,
         no_cache,
         env: None,
+        toolchain: None,
         tty: false,
         cols: None,
         rows: None,
@@ -393,6 +422,7 @@ async fn client_roundtrip_with_artifacts(
         template: None,
         no_cache: false,
         env: None,
+        toolchain: None,
         tty: false,
         cols: None,
         rows: None,
@@ -1008,6 +1038,7 @@ async fn test_e2e_concurrency_project_workspace_locking_and_queued() {
         template: None,
         no_cache: false,
         env: None,
+        toolchain: None,
         tty: false,
         cols: None,
         rows: None,
@@ -1113,6 +1144,7 @@ async fn test_e2e_concurrency_global_semaphore_limit() {
         template: None,
         no_cache: false,
         env: None,
+        toolchain: None,
         tty: false,
         cols: None,
         rows: None,
@@ -1178,6 +1210,7 @@ async fn test_e2e_client_disconnect_terminates_remote_process_group() {
         template: None,
         no_cache: false,
         env: None,
+        toolchain: None,
         tty: false,
         cols: None,
         rows: None,
@@ -1238,6 +1271,7 @@ async fn test_e2e_multi_agent_pool_least_busy_dispatch() {
         template: None,
         no_cache: false,
         env: None,
+        toolchain: None,
         tty: false,
         cols: None,
         rows: None,
@@ -1253,11 +1287,13 @@ async fn test_e2e_multi_agent_pool_least_busy_dispatch() {
             host: addr_a.clone(),
             token: Some(token.clone()),
             tags: vec!["generic".into()],
+            tls: None,
         },
         config::AgentConfig {
             host: addr_b.clone(),
             token: Some(token.clone()),
             tags: vec!["generic".into()],
+            tls: None,
         },
     ];
 
@@ -1292,11 +1328,13 @@ async fn test_e2e_multi_agent_pool_tag_filtering() {
             host: addr_a.clone(),
             token: Some(token.clone()),
             tags: vec!["cpu".into(), "fast".into()],
+            tls: None,
         },
         config::AgentConfig {
             host: addr_b.clone(),
             token: Some(token.clone()),
             tags: vec!["gpu".into(), "cuda".into()],
+            tls: None,
         },
     ];
 
@@ -1332,11 +1370,13 @@ async fn test_e2e_multi_agent_pool_offline_failover() {
             host: addr_offline,
             token: Some(token.clone()),
             tags: vec![],
+            tls: None,
         },
         config::AgentConfig {
             host: addr_live.clone(),
             token: Some(token.clone()),
             tags: vec![],
+            tls: None,
         },
     ];
 
@@ -1548,7 +1588,7 @@ async fn test_e2e_history_query_and_persistence() {
     assert_eq!(exit_code, 0);
 
     // 2. Query history using fh::query_history function directly
-    let mut resp = fh::query_history(&server_addr, &token, project_name, 10)
+    let mut resp = fh::query_history(&server_addr, &token, project_name, 10, None)
         .await
         .expect("query_history should succeed");
     for _ in 0..10 {
@@ -1556,7 +1596,7 @@ async fn test_e2e_history_query_and_persistence() {
             break;
         }
         tokio::time::sleep(tokio::time::Duration::from_millis(15)).await;
-        resp = fh::query_history(&server_addr, &token, project_name, 10)
+        resp = fh::query_history(&server_addr, &token, project_name, 10, None)
             .await
             .expect("query_history should succeed");
     }
@@ -1643,7 +1683,7 @@ async fn test_e2e_history_limit_and_ordering() {
     }
 
     // Query with limit 2
-    let resp = fh::query_history(&server_addr, &token, project_name, 2)
+    let resp = fh::query_history(&server_addr, &token, project_name, 2, None)
         .await
         .expect("query_history should succeed");
 
@@ -1660,7 +1700,7 @@ async fn test_e2e_history_unauthorized() {
     let (server_addr, _handle) =
         spawn_test_server(Some(token), remote_workdir.path().to_path_buf()).await;
 
-    let res = fh::query_history(&server_addr, "wrong-token", "some-proj", 10).await;
+    let res = fh::query_history(&server_addr, "wrong-token", "some-proj", 10, None).await;
     assert!(res.is_err(), "Unauthorized history request must fail");
 
     // Also via CLI binary: must exit with code 125
@@ -1782,7 +1822,7 @@ async fn test_e2e_workspace_clean_subcommand() {
     assert!(dir2.is_dir());
 
     // 1. Clean branch 1 specifically
-    let resp1 = fh::clean_workspace(&server_addr, &token, proj1, false, false)
+    let resp1 = fh::clean_workspace(&server_addr, &token, proj1, false, false, None)
         .await
         .expect("clean should succeed");
     assert!(resp1.ok);
@@ -1790,7 +1830,7 @@ async fn test_e2e_workspace_clean_subcommand() {
     assert!(dir2.exists());
 
     // 2. Clean all branches for clean-repo
-    let resp2 = fh::clean_workspace(&server_addr, &token, "clean-repo", true, false)
+    let resp2 = fh::clean_workspace(&server_addr, &token, "clean-repo", true, false, None)
         .await
         .expect("clean all should succeed");
     assert!(resp2.ok);
@@ -2060,6 +2100,7 @@ async fn test_e2e_pty_interactive_execution() {
         template: None,
         no_cache: false,
         env: None,
+        toolchain: None,
         tty: true,
         cols: Some(80),
         rows: Some(24),
@@ -2132,6 +2173,7 @@ async fn test_e2e_pty_terminal_resize_and_stdin() {
         template: None,
         no_cache: false,
         env: None,
+        toolchain: None,
         tty: true,
         cols: Some(80),
         rows: Some(24),
@@ -2233,6 +2275,7 @@ async fn test_e2e_reverse_port_forwarding_tunnel() {
         template: None,
         no_cache: false,
         env: None,
+        toolchain: None,
         tty: false,
         cols: None,
         rows: None,
@@ -2422,6 +2465,7 @@ async fn test_e2e_cli_output_overrides_and_no_output() {
         template: None,
         no_cache: false,
         env: None,
+        toolchain: None,
         tty: false,
         cols: None,
         rows: None,
@@ -2482,6 +2526,7 @@ async fn test_e2e_cli_output_overrides_and_no_output() {
         template: None,
         no_cache: false,
         env: None,
+        toolchain: None,
         tty: false,
         cols: None,
         rows: None,
@@ -2542,6 +2587,7 @@ async fn test_e2e_pty_shell_fallback_and_spawn_error_exit_code() {
         template: None,
         no_cache: false,
         env: None,
+        toolchain: None,
         tty: true,
         cols: Some(80),
         rows: Some(24),
@@ -2687,6 +2733,7 @@ async fn test_e2e_cas_cross_project_zero_upload() {
         template: None,
         no_cache: false,
         env: None,
+        toolchain: None,
         tty: false,
         cols: None,
         rows: None,
@@ -2758,4 +2805,238 @@ async fn test_e2e_cas_cross_project_zero_upload() {
         content,
         "File materialized from CAS must have identical content"
     );
+}
+
+#[tokio::test]
+async fn test_e2e_tls_self_signed_with_fingerprint_verification() {
+    let remote_workdir = tempdir().unwrap();
+    let cert =
+        protocol::generate_self_signed_cert(vec!["localhost".into(), "127.0.0.1".into()]).unwrap();
+    let server_cfg = protocol::create_server_config(&cert.cert_pem, &cert.key_pem, None).unwrap();
+    let acceptor = protocol::TlsAcceptor::from(server_cfg);
+
+    let (server_addr, _server_handle) = spawn_agent_tls(
+        remote_workdir.path().to_path_buf(),
+        Some("tls-token".into()),
+        acceptor,
+    )
+    .await;
+
+    let tls_config = config::TlsConfig {
+        enabled: true,
+        fingerprint: Some(cert.fingerprint.clone()),
+        ..Default::default()
+    };
+
+    let mut stream = fh::connect_to_agent(&server_addr, Some(&tls_config))
+        .await
+        .unwrap();
+
+    let hello = HelloPayload {
+        token: "tls-token".into(),
+        project: "tls-project".into(),
+        protocol_version: CURRENT_PROTOCOL_VERSION,
+        compressions: None,
+    };
+    write_json_frame(&mut stream, MsgType::Hello, &hello)
+        .await
+        .unwrap();
+
+    let (msg, ack_bytes) = read_frame(&mut stream).await.unwrap();
+    assert_eq!(msg, MsgType::HelloAck);
+    let ack: HelloAckPayload = serde_json::from_slice(&ack_bytes).unwrap();
+    assert!(ack.ok);
+
+    let manifest = ManifestPayload { files: Vec::new() };
+    write_json_frame(&mut stream, MsgType::Manifest, &manifest)
+        .await
+        .unwrap();
+
+    let (msg, _) = read_frame(&mut stream).await.unwrap();
+    assert_eq!(msg, MsgType::Need);
+
+    write_frame(&mut stream, MsgType::Files, &[]).await.unwrap();
+
+    let run = RunPayload {
+        argv: vec!["echo".into(), "tls connection works!".into()],
+        outputs: None,
+        cwd: None,
+        template: None,
+        no_cache: false,
+        env: None,
+        toolchain: None,
+        tty: false,
+        cols: None,
+        rows: None,
+    };
+    write_json_frame(&mut stream, MsgType::Run, &run)
+        .await
+        .unwrap();
+
+    let mut output_logs = Vec::new();
+    loop {
+        let (msg, payload) = read_frame(&mut stream).await.unwrap();
+        if msg == MsgType::Log {
+            let log: LogPayload = serde_json::from_slice(&payload).unwrap();
+            output_logs.push(log.data);
+        } else if msg == MsgType::Result {
+            let res: ResultPayload = serde_json::from_slice(&payload).unwrap();
+            assert_eq!(res.exit_code, 0);
+            break;
+        }
+    }
+
+    let joined = output_logs.join("");
+    assert!(joined.contains("tls connection works!"));
+}
+
+#[tokio::test]
+async fn test_e2e_tls_insecure_flag() {
+    let remote_workdir = tempdir().unwrap();
+    let cert =
+        protocol::generate_self_signed_cert(vec!["localhost".into(), "127.0.0.1".into()]).unwrap();
+    let server_cfg = protocol::create_server_config(&cert.cert_pem, &cert.key_pem, None).unwrap();
+    let acceptor = protocol::TlsAcceptor::from(server_cfg);
+
+    let (server_addr, _server_handle) = spawn_agent_tls(
+        remote_workdir.path().to_path_buf(),
+        Some("tls-token".into()),
+        acceptor,
+    )
+    .await;
+
+    let tls_config = config::TlsConfig {
+        enabled: true,
+        insecure: true,
+        ..Default::default()
+    };
+
+    let mut stream = fh::connect_to_agent(&server_addr, Some(&tls_config))
+        .await
+        .unwrap();
+
+    let hello = HelloPayload {
+        token: "tls-token".into(),
+        project: "tls-insecure-project".into(),
+        protocol_version: CURRENT_PROTOCOL_VERSION,
+        compressions: None,
+    };
+    write_json_frame(&mut stream, MsgType::Hello, &hello)
+        .await
+        .unwrap();
+
+    let (msg, ack_bytes) = read_frame(&mut stream).await.unwrap();
+    assert_eq!(msg, MsgType::HelloAck);
+    let ack: HelloAckPayload = serde_json::from_slice(&ack_bytes).unwrap();
+    assert!(ack.ok);
+}
+
+#[tokio::test]
+async fn test_e2e_tls_mismatched_fingerprint_rejected() {
+    let remote_workdir = tempdir().unwrap();
+    let cert =
+        protocol::generate_self_signed_cert(vec!["localhost".into(), "127.0.0.1".into()]).unwrap();
+    let server_cfg = protocol::create_server_config(&cert.cert_pem, &cert.key_pem, None).unwrap();
+    let acceptor = protocol::TlsAcceptor::from(server_cfg);
+
+    let (server_addr, _server_handle) = spawn_agent_tls(
+        remote_workdir.path().to_path_buf(),
+        Some("tls-token".into()),
+        acceptor,
+    )
+    .await;
+
+    let bogus_fingerprint =
+        "0000000000000000000000000000000000000000000000000000000000000000".to_string();
+    let tls_config = config::TlsConfig {
+        enabled: true,
+        fingerprint: Some(bogus_fingerprint),
+        ..Default::default()
+    };
+
+    let conn_res = fh::connect_to_agent(&server_addr, Some(&tls_config)).await;
+    assert!(
+        conn_res.is_err(),
+        "Connection with mismatched TLS fingerprint must be rejected!"
+    );
+}
+
+#[tokio::test]
+async fn test_e2e_toolchain_rustup_and_python_env_injection() {
+    let remote_workdir = tempdir().unwrap();
+    let (server_addr, _server_handle) = spawn_test_server(
+        Some("toolchain-token".into()),
+        remote_workdir.path().to_path_buf(),
+    )
+    .await;
+
+    let mut stream = TcpStream::connect(&server_addr).await.unwrap();
+
+    let hello = HelloPayload {
+        token: "toolchain-token".into(),
+        project: "toolchain-project".into(),
+        protocol_version: CURRENT_PROTOCOL_VERSION,
+        compressions: None,
+    };
+    write_json_frame(&mut stream, MsgType::Hello, &hello)
+        .await
+        .unwrap();
+
+    let (msg, ack_bytes) = read_frame(&mut stream).await.unwrap();
+    assert_eq!(msg, MsgType::HelloAck);
+    let ack: HelloAckPayload = serde_json::from_slice(&ack_bytes).unwrap();
+    assert!(ack.ok);
+
+    let manifest = ManifestPayload { files: Vec::new() };
+    write_json_frame(&mut stream, MsgType::Manifest, &manifest)
+        .await
+        .unwrap();
+
+    let (msg, _) = read_frame(&mut stream).await.unwrap();
+    assert_eq!(msg, MsgType::Need);
+
+    write_frame(&mut stream, MsgType::Files, &[]).await.unwrap();
+
+    let mut toolchain_map = std::collections::HashMap::new();
+    toolchain_map.insert("rust".to_string(), "nightly-2026".to_string());
+    toolchain_map.insert("python".to_string(), "3.12.1".to_string());
+
+    let run = RunPayload {
+        argv: vec![
+            "sh".into(),
+            "-c".into(),
+            "echo RUSTUP=$RUSTUP_TOOLCHAIN PYENV=$PYENV_VERSION TC_RUST=$FARHAND_TOOLCHAIN_RUST"
+                .into(),
+        ],
+        outputs: None,
+        cwd: None,
+        template: None,
+        no_cache: false,
+        env: None,
+        toolchain: Some(toolchain_map),
+        tty: false,
+        cols: None,
+        rows: None,
+    };
+    write_json_frame(&mut stream, MsgType::Run, &run)
+        .await
+        .unwrap();
+
+    let mut output_logs = Vec::new();
+    loop {
+        let (msg, payload) = read_frame(&mut stream).await.unwrap();
+        if msg == MsgType::Log {
+            let log: LogPayload = serde_json::from_slice(&payload).unwrap();
+            output_logs.push(log.data);
+        } else if msg == MsgType::Result {
+            let res: ResultPayload = serde_json::from_slice(&payload).unwrap();
+            assert_eq!(res.exit_code, 0);
+            break;
+        }
+    }
+
+    let joined = output_logs.join("");
+    assert!(joined.contains("RUSTUP=nightly-2026"));
+    assert!(joined.contains("PYENV=3.12.1"));
+    assert!(joined.contains("TC_RUST=nightly-2026"));
 }
