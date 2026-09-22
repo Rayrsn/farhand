@@ -263,7 +263,12 @@ mod tests {
         // Second init without force must fail
         let err = init_project(&opts).unwrap_err();
         match err {
-            InitError::AlreadyExists(p) => assert!(p.contains(dir.path().to_str().unwrap())),
+            InitError::AlreadyExists(p) => {
+                let p_canon = fs::canonicalize(&p).unwrap_or_else(|_| PathBuf::from(&p));
+                let dir_canon =
+                    fs::canonicalize(dir.path()).unwrap_or_else(|_| dir.path().to_path_buf());
+                assert_eq!(p_canon, dir_canon);
+            }
             _ => panic!("Expected AlreadyExists error, got {:?}", err),
         }
 

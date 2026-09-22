@@ -1,31 +1,40 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Check if this push is purely branch/tag deletions
-all_delete=true
-has_input=false
-while read -r local_ref local_oid remote_ref remote_oid; do
-    has_input=true
-    if [ "$local_oid" != "0000000000000000000000000000000000000000" ] && [ -n "$local_oid" ]; then
-        all_delete=false
-        break
-    fi
-done
+# Check if this push is purely branch/tag deletions (only if piped on stdin)
+if [ ! -t 0 ]; then
+    all_delete=true
+    has_input=false
+    while read -r local_ref local_oid remote_ref remote_oid; do
+        has_input=true
+        if [ "$local_oid" != "0000000000000000000000000000000000000000" ] && [ -n "$local_oid" ]; then
+            all_delete=false
+            break
+        fi
+    done
 
-if [ "$has_input" = "true" ] && [ "$all_delete" = "true" ]; then
-    exit 0
+    if [ "$has_input" = "true" ] && [ "$all_delete" = "true" ]; then
+        exit 0
+    fi
 fi
 
 echo "================================================="
 echo "  [farhand] Pre-push Hook: Formatting & Tests    "
 echo "================================================="
 
-echo "--> Checking code formatting (cargo fmt --check)..."
-if ! cargo fmt --check; then
+echo "--> Checking code formatting (cargo fmt --all --check)..."
+if ! cargo fmt --all --check; then
     echo "❌ Formatting check failed! Run 'cargo fmt' before pushing." >&2
     exit 1
 fi
 echo "✓ Formatting clean."
+
+echo "--> Running Clippy checks (cargo clippy --workspace --all-targets -- -D warnings)..."
+if ! cargo clippy --workspace --all-targets -- -D warnings; then
+    echo "❌ Clippy checks failed! Fix warnings before pushing." >&2
+    exit 1
+fi
+echo "✓ Clippy clean."
 
 echo "--> Running test suite (cargo test --workspace)..."
 if ! cargo test --workspace; then
