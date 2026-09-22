@@ -2078,6 +2078,13 @@ async fn test_cli_tier1_help_flags() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_e2e_pty_interactive_execution() {
+    // ConPTY requires an interactive desktop window station; headless Windows CI runners
+    // in Session 0 cannot allocate a console screen buffer and will hang.
+    if cfg!(windows) {
+        eprintln!("Skipping PTY interactive execution test on headless Windows");
+        return;
+    }
+
     let token = "pty-secret".to_string();
     let workdir = tempdir().unwrap();
     let (server_addr, _handle) =
@@ -2162,6 +2169,13 @@ async fn test_e2e_pty_interactive_execution() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_e2e_pty_terminal_resize_and_stdin() {
+    // ConPTY requires an interactive desktop window station; headless Windows CI runners
+    // in Session 0 cannot allocate a console screen buffer and will hang.
+    if cfg!(windows) {
+        eprintln!("Skipping PTY terminal resize/stdin test on headless Windows");
+        return;
+    }
+
     let token = "pty-resize-secret".to_string();
     let workdir = tempdir().unwrap();
     let (server_addr, _handle) =
