@@ -72,7 +72,7 @@ pub fn get_memory_info() -> (Option<u64>, Option<u64>) {
     #[cfg(windows)]
     {
         #[repr(C)]
-        #[allow(non_snake_case)]
+        #[allow(non_snake_case, clippy::upper_case_acronyms)]
         struct MEMORYSTATUSEX {
             dwLength: u32,
             dwMemoryLoad: u32,
