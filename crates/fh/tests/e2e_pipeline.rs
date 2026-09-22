@@ -185,6 +185,7 @@ async fn client_roundtrip_with_options(
         tty: false,
         cols: None,
         rows: None,
+        raw_stdio: None,
     };
     write_json_frame(&mut stream, MsgType::Run, &run)
         .await
@@ -426,6 +427,7 @@ async fn client_roundtrip_with_artifacts(
         tty: false,
         cols: None,
         rows: None,
+        raw_stdio: None,
     };
     write_json_frame(&mut stream, MsgType::Run, &run)
         .await
@@ -1042,6 +1044,7 @@ async fn test_e2e_concurrency_project_workspace_locking_and_queued() {
         tty: false,
         cols: None,
         rows: None,
+        raw_stdio: None,
     };
     write_json_frame(&mut stream2, MsgType::Run, &run2)
         .await
@@ -1148,6 +1151,7 @@ async fn test_e2e_concurrency_global_semaphore_limit() {
         tty: false,
         cols: None,
         rows: None,
+        raw_stdio: None,
     };
     write_json_frame(&mut stream2, MsgType::Run, &run2)
         .await
@@ -1214,6 +1218,7 @@ async fn test_e2e_client_disconnect_terminates_remote_process_group() {
         tty: false,
         cols: None,
         rows: None,
+        raw_stdio: None,
     };
     write_json_frame(&mut stream, MsgType::Run, &run)
         .await
@@ -1275,6 +1280,7 @@ async fn test_e2e_multi_agent_pool_least_busy_dispatch() {
         tty: false,
         cols: None,
         rows: None,
+        raw_stdio: None,
     };
     write_json_frame(&mut stream_a, MsgType::Run, &run)
         .await
@@ -2104,6 +2110,7 @@ async fn test_e2e_pty_interactive_execution() {
         tty: true,
         cols: Some(80),
         rows: Some(24),
+        raw_stdio: None,
     };
     write_json_frame(&mut stream, MsgType::Run, &run)
         .await
@@ -2177,6 +2184,7 @@ async fn test_e2e_pty_terminal_resize_and_stdin() {
         tty: true,
         cols: Some(80),
         rows: Some(24),
+        raw_stdio: None,
     };
     write_json_frame(&mut stream, MsgType::Run, &run)
         .await
@@ -2279,6 +2287,7 @@ async fn test_e2e_reverse_port_forwarding_tunnel() {
         tty: false,
         cols: None,
         rows: None,
+        raw_stdio: None,
     };
     write_json_frame(&mut stream, MsgType::Run, &run)
         .await
@@ -2469,6 +2478,7 @@ async fn test_e2e_cli_output_overrides_and_no_output() {
         tty: false,
         cols: None,
         rows: None,
+        raw_stdio: None,
     };
     write_json_frame(&mut stream, MsgType::Run, &run_with_output)
         .await
@@ -2530,6 +2540,7 @@ async fn test_e2e_cli_output_overrides_and_no_output() {
         tty: false,
         cols: None,
         rows: None,
+        raw_stdio: None,
     };
     write_json_frame(&mut stream2, MsgType::Run, &run_no_output)
         .await
@@ -2591,6 +2602,7 @@ async fn test_e2e_pty_shell_fallback_and_spawn_error_exit_code() {
         tty: true,
         cols: Some(80),
         rows: Some(24),
+        raw_stdio: None,
     };
     write_json_frame(&mut stream, MsgType::Run, &run_bad)
         .await
@@ -2737,6 +2749,7 @@ async fn test_e2e_cas_cross_project_zero_upload() {
         tty: false,
         cols: None,
         rows: None,
+        raw_stdio: None,
     };
     write_json_frame(&mut stream1, MsgType::Run, &run)
         .await
@@ -2868,6 +2881,7 @@ async fn test_e2e_tls_self_signed_with_fingerprint_verification() {
         tty: false,
         cols: None,
         rows: None,
+        raw_stdio: None,
     };
     write_json_frame(&mut stream, MsgType::Run, &run)
         .await
@@ -3017,6 +3031,7 @@ async fn test_e2e_toolchain_rustup_and_python_env_injection() {
         tty: false,
         cols: None,
         rows: None,
+        raw_stdio: None,
     };
     write_json_frame(&mut stream, MsgType::Run, &run)
         .await
@@ -3039,4 +3054,192 @@ async fn test_e2e_toolchain_rustup_and_python_env_injection() {
     assert!(joined.contains("RUSTUP=nightly-2026"));
     assert!(joined.contains("PYENV=3.12.1"));
     assert!(joined.contains("TC_RUST=nightly-2026"));
+}
+
+#[tokio::test]
+async fn test_enriched_status_and_top_snapshot() {
+    let workdir = tempfile::tempdir().unwrap();
+    let (addr, _server_handle) = spawn_test_server(
+        Some("test-token-secret".into()),
+        workdir.path().to_path_buf(),
+    )
+    .await;
+
+    let status = fh::probe_agent_status(&addr, "test-token-secret", None)
+        .await
+        .expect("probe should succeed");
+
+    assert!(!status.hostname.is_empty());
+    assert!(status.cpu_count.unwrap_or(0) >= 1);
+    assert!(status.uptime_secs.is_some());
+    assert_eq!(status.active_runs, 0);
+    assert_eq!(status.queue_depth, 0);
+    assert!(status.active_builds.is_some());
+    assert!(status.active_builds.as_ref().unwrap().is_empty());
+
+    // Verify snapshot renderer executes without panicking
+    fh::top::render_snapshot(&status, &addr);
+}
+
+#[tokio::test]
+async fn test_active_build_registry_tracking() {
+    let workdir = tempfile::tempdir().unwrap();
+    let (addr, _server_handle) = spawn_test_server(
+        Some("test-token-secret".into()),
+        workdir.path().to_path_buf(),
+    )
+    .await;
+    let mut stream = TcpStream::connect(&addr).await.unwrap();
+
+    let hello = HelloPayload {
+        protocol_version: CURRENT_PROTOCOL_VERSION,
+        token: "test-token-secret".into(),
+        project: "active-build-test".into(),
+        compressions: None,
+    };
+    write_json_frame(&mut stream, MsgType::Hello, &hello)
+        .await
+        .unwrap();
+    let (msg, payload) = read_frame(&mut stream).await.unwrap();
+    assert_eq!(msg, MsgType::HelloAck);
+    let ack: HelloAckPayload = serde_json::from_slice(&payload).unwrap();
+    assert!(ack.ok);
+    assert!(ack.remote_workdir.is_some());
+
+    // Manifest
+    let manifest = ManifestPayload { files: vec![] };
+    write_json_frame(&mut stream, MsgType::Manifest, &manifest)
+        .await
+        .unwrap();
+    let (msg, _) = read_frame(&mut stream).await.unwrap();
+    assert_eq!(msg, MsgType::Need);
+    write_frame(&mut stream, MsgType::Files, &[]).await.unwrap();
+
+    // Spawn a long-running command (sleep 1)
+    let run = RunPayload {
+        argv: if cfg!(windows) {
+            vec!["timeout".into(), "/t".into(), "1".into()]
+        } else {
+            vec!["sleep".into(), "1".into()]
+        },
+        outputs: None,
+        cwd: None,
+        template: None,
+        no_cache: false,
+        env: None,
+        toolchain: None,
+        tty: false,
+        cols: None,
+        rows: None,
+        raw_stdio: None,
+    };
+    write_json_frame(&mut stream, MsgType::Run, &run)
+        .await
+        .unwrap();
+
+    // Small delay to let child process spawn
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    // Probe status while run is active
+    let status_mid = fh::probe_agent_status(&addr, "test-token-secret", None)
+        .await
+        .expect("probe should succeed while run is active");
+
+    let builds = status_mid
+        .active_builds
+        .as_ref()
+        .expect("active builds present");
+    assert_eq!(builds.len(), 1, "expected exactly 1 active build");
+    assert_eq!(builds[0].project, "active-build-test");
+
+    // Finish reading from stream
+    loop {
+        let (msg, payload) = read_frame(&mut stream).await.unwrap();
+        if msg == MsgType::Result {
+            let res: ResultPayload = serde_json::from_slice(&payload).unwrap();
+            assert_eq!(res.exit_code, 0);
+            break;
+        }
+    }
+
+    // Small delay for cleanup guard
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Probe status again: active builds should now be empty
+    let status_post = fh::probe_agent_status(&addr, "test-token-secret", None)
+        .await
+        .expect("probe should succeed");
+    assert!(status_post.active_builds.as_ref().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_lsp_raw_stdio_echo() {
+    let workdir = tempfile::tempdir().unwrap();
+    let (addr, _server_handle) = spawn_test_server(
+        Some("test-token-secret".into()),
+        workdir.path().to_path_buf(),
+    )
+    .await;
+    let mut stream = TcpStream::connect(&addr).await.unwrap();
+
+    let hello = HelloPayload {
+        protocol_version: CURRENT_PROTOCOL_VERSION,
+        token: "test-token-secret".into(),
+        project: "lsp-echo-test".into(),
+        compressions: None,
+    };
+    write_json_frame(&mut stream, MsgType::Hello, &hello)
+        .await
+        .unwrap();
+    let (msg, payload) = read_frame(&mut stream).await.unwrap();
+    assert_eq!(msg, MsgType::HelloAck);
+    let ack: HelloAckPayload = serde_json::from_slice(&payload).unwrap();
+    assert!(ack.ok);
+    assert!(ack.remote_workdir.is_some());
+
+    let manifest = ManifestPayload { files: vec![] };
+    write_json_frame(&mut stream, MsgType::Manifest, &manifest)
+        .await
+        .unwrap();
+    let (msg, _) = read_frame(&mut stream).await.unwrap();
+    assert_eq!(msg, MsgType::Need);
+    write_frame(&mut stream, MsgType::Files, &[]).await.unwrap();
+
+    // Start cat (or Windows findstr) with raw_stdio: true
+    let run = RunPayload {
+        argv: if cfg!(windows) {
+            vec!["findstr".into(), "^".into()]
+        } else {
+            vec!["cat".into()]
+        },
+        outputs: None,
+        cwd: None,
+        template: None,
+        no_cache: true,
+        env: None,
+        toolchain: None,
+        tty: false,
+        cols: None,
+        rows: None,
+        raw_stdio: Some(true),
+    };
+    write_json_frame(&mut stream, MsgType::Run, &run)
+        .await
+        .unwrap();
+
+    let sample_msg = "Content-Length: 26\r\n\r\n{\"jsonrpc\":\"2.0\",\"id\":1}";
+    write_frame(&mut stream, MsgType::Stdin, sample_msg.as_bytes())
+        .await
+        .unwrap();
+
+    // Read echoed log frame
+    let (msg, payload) =
+        tokio::time::timeout(std::time::Duration::from_secs(3), read_frame(&mut stream))
+            .await
+            .expect("timeout waiting for echoed raw stdio")
+            .unwrap();
+
+    assert_eq!(msg, MsgType::Log);
+    let log: LogPayload = serde_json::from_slice(&payload).unwrap();
+    assert!(log.data.contains("Content-Length: 26"));
 }

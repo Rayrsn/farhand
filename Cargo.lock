@@ -184,7 +184,7 @@ checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 
 [[package]]
 name = "config"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "serde",
  "serde_yaml",
@@ -339,7 +339,7 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
 name = "fh"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "clap",
  "config",
@@ -361,7 +361,7 @@ dependencies = [
 
 [[package]]
 name = "fhd"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "clap",
  "fileset",
@@ -390,7 +390,7 @@ dependencies = [
 
 [[package]]
 name = "fileset"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "flate2",
  "glob",
@@ -881,7 +881,7 @@ dependencies = [
 
 [[package]]
 name = "protocol"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "byteorder",
  "hex",
@@ -1277,7 +1277,7 @@ dependencies = [
 
 [[package]]
 name = "templates"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "glob",
  "protocol",
@@ -1748,7 +1748,7 @@ dependencies = [
 
 [[package]]
 name = "workspace"
-version = "1.6.0"
+version = "1.7.0"
 dependencies = [
  "fileset",
  "glob",

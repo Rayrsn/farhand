@@ -83,6 +83,12 @@ pub struct HelloAckPayload {
     pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compression: Option<String>,
+    #[serde(
+        rename = "remoteWorkdir",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub remote_workdir: Option<String>,
 }
 
 /// Metadata for an individual tracked file
@@ -134,6 +140,8 @@ pub struct RunPayload {
     pub rows: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub toolchain: Option<HashMap<String, String>>,
+    #[serde(rename = "rawStdio", default, skip_serializing_if = "Option::is_none")]
+    pub raw_stdio: Option<bool>,
 }
 
 /// Client -> Agent: Terminal window resize event
@@ -204,8 +212,20 @@ pub struct StatusRequestPayload {
     pub token: String,
 }
 
-/// Agent -> Client: Status response for multi-agent dispatch
+/// Information about an active build running on the agent
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ActiveBuildInfo {
+    pub id: String,
+    pub project: String,
+    pub argv: Vec<String>,
+    #[serde(rename = "elapsedMs")]
+    pub elapsed_ms: u64,
+    #[serde(rename = "clientAddr")]
+    pub client_addr: String,
+}
+
+/// Agent -> Client: Status response for multi-agent dispatch and live telemetry
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StatusResponsePayload {
     #[serde(rename = "activeRuns")]
     pub active_runs: usize,
@@ -228,6 +248,44 @@ pub struct StatusResponsePayload {
         skip_serializing_if = "Option::is_none"
     )]
     pub disk_total_bytes: Option<u64>,
+    #[serde(rename = "cpuCount", default, skip_serializing_if = "Option::is_none")]
+    pub cpu_count: Option<usize>,
+    #[serde(
+        rename = "loadAverages",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub load_averages: Option<[f64; 3]>,
+    #[serde(
+        rename = "memoryUsedBytes",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub memory_used_bytes: Option<u64>,
+    #[serde(
+        rename = "memoryTotalBytes",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub memory_total_bytes: Option<u64>,
+    #[serde(
+        rename = "uptimeSecs",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub uptime_secs: Option<u64>,
+    #[serde(
+        rename = "activeBuilds",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub active_builds: Option<Vec<ActiveBuildInfo>>,
+    #[serde(
+        rename = "workspacesCount",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub workspaces_count: Option<usize>,
 }
 
 /// Agent-side record of a completed run
@@ -312,11 +370,13 @@ mod tests {
             cols: None,
             rows: None,
             toolchain: None,
+            raw_stdio: None,
         };
 
         let json = serde_json::to_string(&payload_with_env).unwrap();
         let decoded: RunPayload = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded.env, Some(env));
+        assert_eq!(decoded.raw_stdio, None);
 
         // Test without env (omitted in json, defaults to None)
         let json_without_env = r#"{"argv":["cargo","build"]}"#;
@@ -326,6 +386,40 @@ mod tests {
         assert!(!decoded2.tty);
         assert_eq!(decoded2.cols, None);
         assert_eq!(decoded2.rows, None);
+        assert_eq!(decoded2.raw_stdio, None);
+    }
+
+    #[test]
+    fn test_status_response_payload_enriched_telemetry() {
+        let status = StatusResponsePayload {
+            active_runs: 1,
+            max_runs: 4,
+            queue_depth: 0,
+            hostname: "agent-01".to_string(),
+            tags: vec!["mac".into(), "m2".into()],
+            disk_free_bytes: Some(100_000_000_000),
+            disk_total_bytes: Some(500_000_000_000),
+            cpu_count: Some(8),
+            load_averages: Some([1.2, 0.8, 0.5]),
+            memory_used_bytes: Some(8_000_000_000),
+            memory_total_bytes: Some(16_000_000_000),
+            uptime_secs: Some(3600),
+            active_builds: Some(vec![ActiveBuildInfo {
+                id: "run-123".into(),
+                project: "my-app".into(),
+                argv: vec!["cargo".into(), "check".into()],
+                elapsed_ms: 1500,
+                client_addr: "192.168.1.50:52123".into(),
+            }]),
+            workspaces_count: Some(5),
+        };
+
+        let json = serde_json::to_string(&status).unwrap();
+        let decoded: StatusResponsePayload = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.hostname, "agent-01");
+        assert_eq!(decoded.cpu_count, Some(8));
+        assert_eq!(decoded.load_averages, Some([1.2, 0.8, 0.5]));
+        assert_eq!(decoded.active_builds.unwrap().len(), 1);
     }
 
     #[test]

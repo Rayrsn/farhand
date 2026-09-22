@@ -1,3 +1,5 @@
+pub mod metrics;
+
 use protocol::{
     decode_json, read_frame, write_frame, write_json_frame, HelloAckPayload, HelloPayload,
     LogPayload, ManifestPayload, MsgType, NeedPayload, PortClosePayload, PortDataPayload,
@@ -32,6 +34,9 @@ pub fn get_hostname() -> String {
         .unwrap_or_else(|_| "fhd-agent".to_string())
 }
 
+pub type ActiveBuildEntry = (String, Vec<String>, std::time::Instant, String);
+pub type ActiveBuildMap = Arc<tokio::sync::Mutex<HashMap<String, ActiveBuildEntry>>>;
+
 #[derive(Clone)]
 pub struct ServerContext {
     pub expected_token: Option<String>,
@@ -44,6 +49,8 @@ pub struct ServerContext {
     pub max_runs: usize,
     pub min_disk_bytes: u64,
     pub cas_store: Option<workspace::CasStore>,
+    pub start_time: std::time::Instant,
+    pub active_builds: ActiveBuildMap,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -86,6 +93,8 @@ pub async fn run_server(
         max_runs,
         min_disk_bytes: min_disk_bytes.unwrap_or(2_500_000_000), // Default: 2.5 GB
         cas_store,
+        start_time: std::time::Instant::now(),
+        active_builds: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
     });
 
     loop {
@@ -132,6 +141,21 @@ pub async fn run_server(
     }
 }
 
+struct ActiveBuildGuard {
+    active_builds: ActiveBuildMap,
+    run_id: String,
+}
+
+impl Drop for ActiveBuildGuard {
+    fn drop(&mut self) {
+        let active_builds = self.active_builds.clone();
+        let run_id = self.run_id.clone();
+        tokio::spawn(async move {
+            active_builds.lock().await.remove(&run_id);
+        });
+    }
+}
+
 pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     mut stream: S,
     ctx: Arc<ServerContext>,
@@ -148,6 +172,7 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
                     ok: false,
                     error: Some("Unauthorized STATUS request".into()),
                     compression: None,
+                    remote_workdir: None,
                 };
                 write_json_frame(&mut stream, MsgType::HelloAck, &ack).await?;
                 return Err("Unauthorized STATUS request".into());
@@ -162,6 +187,27 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
             Ok(space) => (Some(space.available_bytes), Some(space.total_bytes)),
             Err(_) => (None, None),
         };
+        let (memory_used_bytes, memory_total_bytes) = metrics::get_memory_info();
+        let cpu_count = Some(metrics::get_cpu_count());
+        let load_averages = metrics::get_load_averages();
+        let uptime_secs = Some(ctx.start_time.elapsed().as_secs());
+        let workspaces_count = metrics::get_workspaces_count(&ctx.workdir_root);
+
+        let active_builds_guard = ctx.active_builds.lock().await;
+        let active_builds: Vec<protocol::ActiveBuildInfo> = active_builds_guard
+            .iter()
+            .map(
+                |(id, (project, argv, start_instant, client_addr))| protocol::ActiveBuildInfo {
+                    id: id.clone(),
+                    project: project.clone(),
+                    argv: argv.clone(),
+                    elapsed_ms: start_instant.elapsed().as_millis() as u64,
+                    client_addr: client_addr.clone(),
+                },
+            )
+            .collect();
+        drop(active_builds_guard);
+
         let resp = protocol::StatusResponsePayload {
             active_runs,
             max_runs: ctx.max_runs,
@@ -170,6 +216,13 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
             tags: ctx.tags.clone(),
             disk_free_bytes,
             disk_total_bytes,
+            cpu_count,
+            load_averages,
+            memory_used_bytes,
+            memory_total_bytes,
+            uptime_secs,
+            active_builds: Some(active_builds),
+            workspaces_count,
         };
         write_json_frame(&mut stream, MsgType::StatusResp, &resp).await?;
         return Ok(());
@@ -183,6 +236,7 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
                     ok: false,
                     error: Some("Unauthorized HISTORY request".into()),
                     compression: None,
+                    remote_workdir: None,
                 };
                 write_json_frame(&mut stream, MsgType::HelloAck, &ack).await?;
                 return Err("Unauthorized HISTORY request".into());
@@ -208,6 +262,7 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
                     ok: false,
                     error: Some("Unauthorized CLEAN request".into()),
                     compression: None,
+                    remote_workdir: None,
                 };
                 write_json_frame(&mut stream, MsgType::HelloAck, &ack).await?;
                 return Err("Unauthorized CLEAN request".into());
@@ -266,6 +321,7 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
             ok: false,
             error: Some("Expected HELLO, STATUS, HISTORY, or CLEAN frame".into()),
             compression: None,
+            remote_workdir: None,
         };
         write_json_frame(&mut stream, MsgType::HelloAck, &ack).await?;
         return Err("Protocol error: expected HELLO, STATUS, HISTORY, or CLEAN".into());
@@ -280,6 +336,7 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
                 CURRENT_PROTOCOL_VERSION, hello.protocol_version
             )),
             compression: None,
+            remote_workdir: None,
         };
         write_json_frame(&mut stream, MsgType::HelloAck, &ack).await?;
         return Err("Protocol version mismatch".into());
@@ -291,6 +348,7 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
                 ok: false,
                 error: Some("Unauthorized: invalid auth token".into()),
                 compression: None,
+                remote_workdir: None,
             };
             write_json_frame(&mut stream, MsgType::HelloAck, &ack).await?;
             return Err("Unauthorized".into());
@@ -325,6 +383,7 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
                             ok: false,
                             error: Some(err_msg.clone()),
                             compression: None,
+                            remote_workdir: None,
                         };
                         write_json_frame(&mut stream, MsgType::HelloAck, &ack).await?;
                         return Err(err_msg.into());
@@ -352,21 +411,34 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
         "gzip".to_string()
     };
 
+    // Resolve persistent workspace directory (forks from seed via APFS CoW if branch)
+    let workspace_dir = match workspace::ensure_workspace_dir(&ctx.workdir_root, &hello.project) {
+        Ok(dir) => dir,
+        Err(e) => {
+            let ack = HelloAckPayload {
+                ok: false,
+                error: Some(format!("Failed to prepare workspace: {}", e)),
+                compression: None,
+                remote_workdir: None,
+            };
+            write_json_frame(&mut stream, MsgType::HelloAck, &ack).await?;
+            return Err(e.into());
+        }
+    };
+    info!("Using persistent workspace: {}", workspace_dir.display());
+
     // Acknowledge handshake
     let ack = HelloAckPayload {
         ok: true,
         error: None,
         compression: Some(negotiated_compression.clone()),
+        remote_workdir: Some(workspace_dir.display().to_string()),
     };
     write_json_frame(&mut stream, MsgType::HelloAck, &ack).await?;
     info!(
         "Handshake successful for project '{}' (negotiated compression: '{}')",
         hello.project, negotiated_compression
     );
-
-    // Resolve persistent workspace directory (forks from seed via APFS CoW if branch)
-    let workspace_dir = workspace::ensure_workspace_dir(&ctx.workdir_root, &hello.project)?;
-    info!("Using persistent workspace: {}", workspace_dir.display());
 
     // 2. Receive next frame: PUT_TEMPLATE or MANIFEST
     let (msg_type, payload) = read_frame(&mut stream).await?;
@@ -388,6 +460,7 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
                     ok: true,
                     error: None,
                     compression: None,
+                    remote_workdir: None,
                 };
                 write_json_frame(&mut stream, MsgType::HelloAck, &ack).await?;
                 return Ok(());
@@ -398,6 +471,7 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
                     ok: false,
                     error: Some(e.to_string()),
                     compression: None,
+                    remote_workdir: None,
                 };
                 write_json_frame(&mut stream, MsgType::HelloAck, &ack).await?;
                 return Err(format!("Failed to save template: {}", e).into());
@@ -559,6 +633,20 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
         (now_millis ^ (std::process::id() as u128)) & 0xffffffff
     );
 
+    ctx.active_builds.lock().await.insert(
+        run_id.clone(),
+        (
+            hello.project.clone(),
+            run.argv.clone(),
+            std::time::Instant::now(),
+            client_addr.clone(),
+        ),
+    );
+    let _active_build_guard = ActiveBuildGuard {
+        active_builds: ctx.active_builds.clone(),
+        run_id: run_id.clone(),
+    };
+
     // 6. Pre-build dependency caching hook
     let (mut read_half, write_half) = tokio::io::split(stream);
     let shared_writer = Arc::new(Mutex::new(write_half));
@@ -688,6 +776,7 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
         run.tty,
         run.cols,
         run.rows,
+        run.raw_stdio.unwrap_or(false),
     )
     .await?;
 
@@ -1051,7 +1140,11 @@ pub async fn run_child_and_stream<
     writer: Arc<Mutex<W>>,
     reader: &mut R,
     mut cmd: Command,
+    raw_stdio: bool,
 ) -> Result<i32, Box<dyn std::error::Error>> {
+    if raw_stdio {
+        cmd.stdin(Stdio::piped());
+    }
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
@@ -1067,23 +1160,46 @@ pub async fn run_child_and_stream<
     };
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
+    let mut child_stdin = child.stdin.take();
 
     let writer_out = Arc::clone(&writer);
     let stdout_handle = tokio::spawn(async move {
-        if let Some(out) = stdout {
-            let mut reader = BufReader::new(out).lines();
-            while let Ok(Some(line)) = reader.next_line().await {
-                let clean_line = line.trim_end_matches('\r');
-                let payload = LogPayload {
-                    stream: "stdout".into(),
-                    data: format!("{}\n", clean_line),
-                };
-                let mut w = writer_out.lock().await;
-                if write_json_frame(&mut *w, MsgType::Log, &payload)
-                    .await
-                    .is_err()
-                {
-                    break;
+        if let Some(mut out) = stdout {
+            if raw_stdio {
+                use tokio::io::AsyncReadExt;
+                let mut buf = [0u8; 8192];
+                while let Ok(n) = out.read(&mut buf).await {
+                    if n == 0 {
+                        break;
+                    }
+                    let data = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let payload = LogPayload {
+                        stream: "stdout".into(),
+                        data,
+                    };
+                    let mut w = writer_out.lock().await;
+                    if write_json_frame(&mut *w, MsgType::Log, &payload)
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            } else {
+                let mut reader = BufReader::new(out).lines();
+                while let Ok(Some(line)) = reader.next_line().await {
+                    let clean_line = line.trim_end_matches('\r');
+                    let payload = LogPayload {
+                        stream: "stdout".into(),
+                        data: format!("{}\n", clean_line),
+                    };
+                    let mut w = writer_out.lock().await;
+                    if write_json_frame(&mut *w, MsgType::Log, &payload)
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
                 }
             }
         }
@@ -1091,20 +1207,42 @@ pub async fn run_child_and_stream<
 
     let writer_err = Arc::clone(&writer);
     let stderr_handle = tokio::spawn(async move {
-        if let Some(err) = stderr {
-            let mut reader = BufReader::new(err).lines();
-            while let Ok(Some(line)) = reader.next_line().await {
-                let clean_line = line.trim_end_matches('\r');
-                let payload = LogPayload {
-                    stream: "stderr".into(),
-                    data: format!("{}\n", clean_line),
-                };
-                let mut w = writer_err.lock().await;
-                if write_json_frame(&mut *w, MsgType::Log, &payload)
-                    .await
-                    .is_err()
-                {
-                    break;
+        if let Some(mut err) = stderr {
+            if raw_stdio {
+                use tokio::io::AsyncReadExt;
+                let mut buf = [0u8; 8192];
+                while let Ok(n) = err.read(&mut buf).await {
+                    if n == 0 {
+                        break;
+                    }
+                    let data = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let payload = LogPayload {
+                        stream: "stderr".into(),
+                        data,
+                    };
+                    let mut w = writer_err.lock().await;
+                    if write_json_frame(&mut *w, MsgType::Log, &payload)
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            } else {
+                let mut reader = BufReader::new(err).lines();
+                while let Ok(Some(line)) = reader.next_line().await {
+                    let clean_line = line.trim_end_matches('\r');
+                    let payload = LogPayload {
+                        stream: "stderr".into(),
+                        data: format!("{}\n", clean_line),
+                    };
+                    let mut w = writer_err.lock().await;
+                    if write_json_frame(&mut *w, MsgType::Log, &payload)
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
                 }
             }
         }
@@ -1123,6 +1261,13 @@ pub async fn run_child_and_stream<
             }
             frame_res = read_frame(reader) => {
                 match frame_res {
+                    Ok((MsgType::Stdin, payload)) => {
+                        if let Some(cin) = &mut child_stdin {
+                            use tokio::io::AsyncWriteExt;
+                            let _ = cin.write_all(&payload).await;
+                            let _ = cin.flush().await;
+                        }
+                    }
                     Ok((MsgType::PortOpen, payload)) => {
                         if let Ok(po) = serde_json::from_slice::<PortOpenPayload>(&payload) {
                             handle_port_open(writer.clone(), port_channels.clone(), po.channel_id, po.target_port).await;
@@ -1458,7 +1603,7 @@ pub async fn execute_raw_command_and_stream<
         cmd.envs(envs);
     }
     apply_toolchain_env(&mut cmd, toolchain);
-    run_child_and_stream(writer, reader, cmd).await
+    run_child_and_stream(writer, reader, cmd, false).await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1476,6 +1621,7 @@ pub async fn execute_and_stream<
     tty: bool,
     cols: Option<u16>,
     rows: Option<u16>,
+    raw_stdio: bool,
 ) -> Result<i32, Box<dyn std::error::Error>> {
     if argv.is_empty() {
         return Ok(0);
@@ -1499,6 +1645,6 @@ pub async fn execute_and_stream<
             cmd.envs(envs);
         }
         apply_toolchain_env(&mut cmd, toolchain);
-        run_child_and_stream(writer, reader, cmd).await
+        run_child_and_stream(writer, reader, cmd, raw_stdio).await
     }
 }

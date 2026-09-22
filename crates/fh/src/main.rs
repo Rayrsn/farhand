@@ -389,6 +389,51 @@ enum Subcommands {
         #[arg(short = 't', long = "tty")]
         tty: bool,
     },
+    /// Monitor remote agent daemon activity and resource utilization
+    Top {
+        /// Remote agent address (host:port) to monitor
+        #[arg(long)]
+        agent: Option<String>,
+        /// Print a single snapshot and exit instead of interactive dashboard
+        #[arg(long)]
+        once: bool,
+        /// Update interval in seconds (default: 1)
+        #[arg(short, long, default_value_t = 1)]
+        interval: u64,
+    },
+    /// Inspect or manage remote agents
+    Agent {
+        #[command(subcommand)]
+        action: AgentAction,
+    },
+    /// Offload Language Server Protocol (LSP) server to remote agent workspace
+    Lsp {
+        /// Remote agent address (host:port)
+        #[arg(long)]
+        agent: Option<String>,
+        /// Bypass initial project sync before starting language server
+        #[arg(long)]
+        no_sync: bool,
+        /// Disable auto-syncing changed files on textDocument/didSave
+        #[arg(long)]
+        no_save_sync: bool,
+        /// LSP server binary and arguments to run remotely
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum AgentAction {
+    /// Display system specifications, resource usage, and active jobs for an agent
+    Info {
+        /// Remote agent address (host:port)
+        #[arg(long)]
+        agent: Option<String>,
+        /// Output agent information as formatted JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -914,6 +959,7 @@ async fn run_build(
         tty,
         cols,
         rows,
+        raw_stdio: None,
     };
 
     let remote_start = Instant::now();
@@ -1357,6 +1403,72 @@ async fn main() {
             }
             Err(e) => {
                 eprintln!("Error querying history: {}", e);
+                exit(EXIT_INFRA_ERROR);
+            }
+        }
+    }
+
+    // Handle Top subcommand
+    if let Some(Subcommands::Top {
+        agent,
+        once,
+        interval,
+    }) = cli.subcommand
+    {
+        let target_host = agent.unwrap_or(host);
+        match fh::run_top(&target_host, &token, tls_config.as_ref(), once, interval).await {
+            Ok(_) => exit(0),
+            Err(e) => {
+                eprintln!("Error in top dashboard: {}", e);
+                exit(EXIT_INFRA_ERROR);
+            }
+        }
+    }
+
+    // Handle Agent subcommand
+    if let Some(Subcommands::Agent { action }) = cli.subcommand {
+        match action {
+            AgentAction::Info { agent, json } => {
+                let target_host = agent.unwrap_or(host);
+                match fh::run_agent_info(&target_host, &token, tls_config.as_ref(), json).await {
+                    Ok(_) => exit(0),
+                    Err(e) => {
+                        eprintln!("Error querying agent info: {}", e);
+                        exit(EXIT_INFRA_ERROR);
+                    }
+                }
+            }
+        }
+    }
+
+    // Handle Lsp subcommand
+    if let Some(Subcommands::Lsp {
+        agent,
+        no_sync,
+        no_save_sync,
+        command,
+    }) = cli.subcommand
+    {
+        if command.is_empty() {
+            eprintln!("Error: no LSP command specified. Usage: fh lsp -- <LSP_BINARY> [ARGS]...");
+            exit(EXIT_INFRA_ERROR);
+        }
+        let target_host = agent.unwrap_or(host);
+        match fh::run_lsp(
+            &target_host,
+            &token,
+            &project_name,
+            &project_dir,
+            &command,
+            no_sync,
+            no_save_sync,
+            tls_config.as_ref(),
+        )
+        .await
+        {
+            Ok(code) => exit(code),
+            Err(e) => {
+                eprintln!("Error in LSP bridge: {}", e);
                 exit(EXIT_INFRA_ERROR);
             }
         }
