@@ -791,45 +791,45 @@ pub fn wrap_command_with_toolchain(
         return cmd_str.to_string();
     }
 
-    let mut prefixes = Vec::new();
-    for (lang, ver) in toolchain {
-        let l = lang.to_ascii_lowercase();
-        match l.as_str() {
-            "node" | "nodejs" => {
-                #[cfg(unix)]
-                {
+    #[cfg(not(unix))]
+    {
+        let _ = toolchain;
+        cmd_str.to_string()
+    }
+
+    #[cfg(unix)]
+    {
+        let mut prefixes: Vec<String> = Vec::new();
+        for (lang, ver) in toolchain {
+            let l = lang.to_ascii_lowercase();
+            match l.as_str() {
+                "node" | "nodejs" => {
                     prefixes.push(format!(
                         "(export NVM_DIR=\"$HOME/.nvm\"; [ -s \"$NVM_DIR/nvm.sh\" ] && \\. \"$NVM_DIR/nvm.sh\" && nvm use {} >/dev/null 2>&1) || (which fnm >/dev/null 2>&1 && eval \"$(fnm env)\" && fnm use {} >/dev/null 2>&1) || true",
                         ver, ver
                     ));
                 }
-            }
-            "go" | "golang" => {
-                #[cfg(unix)]
-                {
+                "go" | "golang" => {
                     prefixes.push(format!(
                         "(which goenv >/dev/null 2>&1 && export GOENV_VERSION={} && eval \"$(goenv init -)\") || true",
                         ver
                     ));
                 }
-            }
-            "python" | "pyenv" => {
-                #[cfg(unix)]
-                {
+                "python" | "pyenv" => {
                     prefixes.push(
                         "(which pyenv >/dev/null 2>&1 && eval \"$(pyenv init -)\") || true"
                             .to_string(),
                     );
                 }
+                _ => {}
             }
-            _ => {}
         }
-    }
 
-    if prefixes.is_empty() {
-        cmd_str.to_string()
-    } else {
-        format!("{} && {}", prefixes.join(" && "), cmd_str)
+        if prefixes.is_empty() {
+            cmd_str.to_string()
+        } else {
+            format!("{} && {}", prefixes.join(" && "), cmd_str)
+        }
     }
 }
 
