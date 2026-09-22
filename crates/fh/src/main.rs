@@ -1603,7 +1603,7 @@ async fn main() {
 
         // Drain any filesystem events generated during initial scan/build
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        while let Ok(_) = rx.try_recv() {}
+        while rx.try_recv().is_ok() {}
 
         loop {
             let first_event = tokio::select! {
@@ -1660,7 +1660,7 @@ async fn main() {
 
             if relevant {
                 // Drain any extra pending events before rebuilding
-                while let Ok(_) = rx.try_recv() {}
+                while rx.try_recv().is_ok() {}
 
                 println!("\n🔄 Change detected, syncing and rebuilding...");
                 let code = run_build(
@@ -1691,7 +1691,7 @@ async fn main() {
 
                 // Settle and drain events triggered by local artifact extraction or touch
                 tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-                while let Ok(_) = rx.try_recv() {}
+                while rx.try_recv().is_ok() {}
 
                 println!("\n👁️  Watching for changes...");
             }

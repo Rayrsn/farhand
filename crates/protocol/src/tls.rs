@@ -321,7 +321,7 @@ fn base64_decode_simple(input: &str) -> Result<Vec<u8>, TlsError> {
         .collect();
 
     // Pad if necessary
-    while clean.len() % 4 != 0 {
+    while !clean.len().is_multiple_of(4) {
         clean.push(b'=');
     }
 

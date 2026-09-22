@@ -816,9 +816,10 @@ pub fn wrap_command_with_toolchain(
             "python" | "pyenv" => {
                 #[cfg(unix)]
                 {
-                    prefixes.push(format!(
+                    prefixes.push(
                         "(which pyenv >/dev/null 2>&1 && eval \"$(pyenv init -)\") || true"
-                    ));
+                            .to_string(),
+                    );
                 }
             }
             _ => {}
