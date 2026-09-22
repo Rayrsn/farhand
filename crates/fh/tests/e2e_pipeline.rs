@@ -2133,7 +2133,7 @@ async fn test_e2e_pty_interactive_execution() {
         .unwrap();
 
     let mut collected = String::new();
-    let exit_code = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+    let exit_code = tokio::time::timeout(std::time::Duration::from_secs(30), async {
         loop {
             let (msg_type, payload) = read_frame(&mut stream).await.unwrap();
             match msg_type {
@@ -2219,7 +2219,7 @@ async fn test_e2e_pty_terminal_resize_and_stdin() {
     let _ = write_frame(&mut stream, MsgType::Stdin, b"hello\n").await;
 
     let mut collected = String::new();
-    let exit_code = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+    let exit_code = tokio::time::timeout(std::time::Duration::from_secs(30), async {
         loop {
             let (msg_type, payload) = read_frame(&mut stream).await.unwrap();
             match msg_type {

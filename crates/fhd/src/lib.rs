@@ -1396,23 +1396,48 @@ pub async fn run_pty_child_and_stream<
         let wrapped_cmd = wrap_command_with_toolchain(&joined_cmd, toolchain);
         cb.arg(&wrapped_cmd);
         cb
-    } else if !argv.is_empty() && (argv[0].contains('/') || argv[0].contains('\\')) {
+    } else if !argv.is_empty()
+        && (argv[0].contains('/')
+            || argv[0].contains('\\')
+            || (cfg!(windows)
+                && (argv[0].eq_ignore_ascii_case("cmd.exe")
+                    || argv[0].eq_ignore_ascii_case("cmd"))))
+    {
         let mut cb = portable_pty::CommandBuilder::new(&argv[0]);
         for arg in &argv[1..] {
             cb.arg(arg);
         }
         cb
     } else if cfg!(windows) {
-        let joined_cmd = argv
-            .iter()
-            .map(|a| shell_escape(a))
-            .collect::<Vec<_>>()
-            .join(" ");
-        let wrapped_cmd = wrap_command_with_toolchain(&joined_cmd, toolchain);
-        let mut cb = portable_pty::CommandBuilder::new("cmd.exe");
-        cb.arg("/C");
-        cb.arg(&wrapped_cmd);
-        cb
+        let has_shell_metachars = argv.iter().any(|arg| {
+            arg.contains('&')
+                || arg.contains('|')
+                || arg.contains(';')
+                || arg.contains('>')
+                || arg.contains('<')
+                || arg.contains('^')
+                || arg.contains('%')
+                || arg.contains('`')
+        });
+
+        if !has_shell_metachars && !argv.is_empty() {
+            let mut cb = portable_pty::CommandBuilder::new(&argv[0]);
+            for arg in &argv[1..] {
+                cb.arg(arg);
+            }
+            cb
+        } else {
+            let joined_cmd = argv
+                .iter()
+                .map(|a| shell_escape(a))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let wrapped_cmd = wrap_command_with_toolchain(&joined_cmd, toolchain);
+            let mut cb = portable_pty::CommandBuilder::new("cmd.exe");
+            cb.arg("/C");
+            cb.arg(&wrapped_cmd);
+            cb
+        }
     } else {
         let has_shell_metachars = argv.iter().any(|arg| {
             arg.contains('&')
