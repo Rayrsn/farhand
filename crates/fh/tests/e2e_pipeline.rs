@@ -2076,7 +2076,7 @@ async fn test_cli_tier1_help_flags() {
     assert_eq!(watch_output.status.code(), Some(0));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_e2e_pty_interactive_execution() {
     let token = "pty-secret".to_string();
     let workdir = tempdir().unwrap();
@@ -2108,7 +2108,15 @@ async fn test_e2e_pty_interactive_execution() {
     write_frame(&mut stream, MsgType::Files, &[]).await.unwrap();
 
     let run = RunPayload {
-        argv: vec!["echo".into(), "interactive_pty_output_12345".into()],
+        argv: if cfg!(windows) {
+            vec![
+                "cmd.exe".into(),
+                "/C".into(),
+                "echo interactive_pty_output_12345".into(),
+            ]
+        } else {
+            vec!["echo".into(), "interactive_pty_output_12345".into()]
+        },
         outputs: None,
         cwd: None,
         template: None,
@@ -2125,22 +2133,24 @@ async fn test_e2e_pty_interactive_execution() {
         .unwrap();
 
     let mut collected = String::new();
-    let exit_code;
-    loop {
-        let (msg_type, payload) = read_frame(&mut stream).await.unwrap();
-        match msg_type {
-            MsgType::Log => {
-                let log: LogPayload = decode_json(&payload).unwrap();
-                collected.push_str(&log.data);
+    let exit_code = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let (msg_type, payload) = read_frame(&mut stream).await.unwrap();
+            match msg_type {
+                MsgType::Log => {
+                    let log: LogPayload = decode_json(&payload).unwrap();
+                    collected.push_str(&log.data);
+                }
+                MsgType::Result => {
+                    let res: ResultPayload = decode_json(&payload).unwrap();
+                    return res.exit_code;
+                }
+                _ => {}
             }
-            MsgType::Result => {
-                let res: ResultPayload = decode_json(&payload).unwrap();
-                exit_code = res.exit_code;
-                break;
-            }
-            _ => {}
         }
-    }
+    })
+    .await
+    .expect("PTY interactive execution timed out waiting for Result frame");
 
     assert_eq!(exit_code, 0);
     assert!(
@@ -2150,7 +2160,7 @@ async fn test_e2e_pty_interactive_execution() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_e2e_pty_terminal_resize_and_stdin() {
     let token = "pty-resize-secret".to_string();
     let workdir = tempdir().unwrap();
@@ -2208,23 +2218,25 @@ async fn test_e2e_pty_terminal_resize_and_stdin() {
     // Send Stdin frame
     let _ = write_frame(&mut stream, MsgType::Stdin, b"hello\n").await;
 
-    let exit_code;
     let mut collected = String::new();
-    loop {
-        let (msg_type, payload) = read_frame(&mut stream).await.unwrap();
-        match msg_type {
-            MsgType::Log => {
-                let log: LogPayload = decode_json(&payload).unwrap();
-                collected.push_str(&log.data);
+    let exit_code = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let (msg_type, payload) = read_frame(&mut stream).await.unwrap();
+            match msg_type {
+                MsgType::Log => {
+                    let log: LogPayload = decode_json(&payload).unwrap();
+                    collected.push_str(&log.data);
+                }
+                MsgType::Result => {
+                    let res: ResultPayload = decode_json(&payload).unwrap();
+                    return res.exit_code;
+                }
+                _ => {}
             }
-            MsgType::Result => {
-                let res: ResultPayload = decode_json(&payload).unwrap();
-                exit_code = res.exit_code;
-                break;
-            }
-            _ => {}
         }
-    }
+    })
+    .await
+    .expect("PTY terminal resize/stdin test timed out waiting for Result frame");
 
     assert_eq!(exit_code, 0);
     assert!(collected.contains("pty-ok"));

@@ -1513,14 +1513,25 @@ pub async fn run_pty_child_and_stream<
     ));
 
     let (exit_tx, mut exit_rx) = tokio::sync::oneshot::channel();
-    std::thread::spawn(move || {
-        let status = child.wait();
-        let code = match status {
-            Ok(s) if s.success() => 0,
-            Ok(s) => s.exit_code() as i32,
-            Err(_) => 1,
-        };
-        let _ = exit_tx.send(code);
+    tokio::task::spawn_blocking(move || loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let code = if status.success() {
+                    0
+                } else {
+                    status.exit_code() as i32
+                };
+                let _ = exit_tx.send(code);
+                break;
+            }
+            Ok(None) => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Err(_) => {
+                let _ = exit_tx.send(1);
+                break;
+            }
+        }
     });
 
     let exit_code = loop {
