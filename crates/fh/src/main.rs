@@ -1147,6 +1147,27 @@ async fn run_build(
 
 #[tokio::main]
 async fn main() {
+    let raw_args: Vec<String> = std::env::args().collect();
+    if raw_args.len() > 1 && raw_args[1] == "__test_echo" {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut stdin = tokio::io::stdin();
+        let mut stdout = tokio::io::stdout();
+        let mut buf = [0u8; 4096];
+        while let Ok(n) = stdin.read(&mut buf).await {
+            if n == 0 {
+                break;
+            }
+            let _ = stdout.write_all(&buf[..n]).await;
+            let _ = stdout.flush().await;
+        }
+        std::process::exit(0);
+    }
+    if raw_args.len() > 1 && raw_args[1] == "__test_sleep" {
+        let ms: u64 = raw_args.get(2).and_then(|s| s.parse().ok()).unwrap_or(1000);
+        tokio::time::sleep(tokio::time::Duration::from_millis(ms)).await;
+        std::process::exit(0);
+    }
+
     let cli = Cli::parse();
     setup_tracing(&cli.log_level, &cli.log_format);
     let mut telemetry = Telemetry::default();

@@ -1066,7 +1066,15 @@ pub async fn kill_process_group(child: &mut tokio::process::Child) {
             }
         }
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    if let Some(pid) = child.id() {
+        let _ = tokio::process::Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &pid.to_string()])
+            .output()
+            .await;
+        let _ = child.kill().await;
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = child.kill().await;
     }
@@ -1388,6 +1396,12 @@ pub async fn run_pty_child_and_stream<
         let wrapped_cmd = wrap_command_with_toolchain(&joined_cmd, toolchain);
         cb.arg(&wrapped_cmd);
         cb
+    } else if !argv.is_empty() && (argv[0].contains('/') || argv[0].contains('\\')) {
+        let mut cb = portable_pty::CommandBuilder::new(&argv[0]);
+        for arg in &argv[1..] {
+            cb.arg(arg);
+        }
+        cb
     } else if cfg!(windows) {
         let joined_cmd = argv
             .iter()
@@ -1411,21 +1425,7 @@ pub async fn run_pty_child_and_stream<
         });
 
         if !has_shell_metachars && !argv.is_empty() {
-            let resolved_bin = if Path::new(&argv[0]).is_file() {
-                argv[0].clone()
-            } else if !argv[0].contains('/') && !argv[0].contains('\\') {
-                resolve_shell_executable(&argv[0])
-            } else {
-                let file_name = Path::new(&argv[0])
-                    .file_name()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("");
-                if matches!(file_name, "fish" | "zsh" | "bash" | "sh" | "csh" | "tcsh") {
-                    resolve_shell_executable(file_name)
-                } else {
-                    argv[0].clone()
-                }
-            };
+            let resolved_bin = resolve_shell_executable(&argv[0]);
             let mut cb = portable_pty::CommandBuilder::new(&resolved_bin);
             for arg in &argv[1..] {
                 cb.arg(arg);
@@ -1574,6 +1574,12 @@ pub async fn run_pty_child_and_stream<
                                 libc::kill(-(pid as i32), libc::SIGTERM);
                             }
                         }
+                        #[cfg(windows)]
+                        if let Some(pid) = _child_pid {
+                            let _ = std::process::Command::new("taskkill")
+                                .args(["/F", "/T", "/PID", &pid.to_string()])
+                                .output();
+                        }
                         return Err("Client disconnected".into());
                     }
                 }
@@ -1581,8 +1587,10 @@ pub async fn run_pty_child_and_stream<
         }
     };
 
-    let _ = output_handle.await;
-    let _ = log_writer_task.await;
+    drop(master);
+    drop(pty_writer);
+    let _ = tokio::time::timeout(tokio::time::Duration::from_millis(300), output_handle).await;
+    let _ = tokio::time::timeout(tokio::time::Duration::from_millis(300), log_writer_task).await;
     Ok(exit_code)
 }
 

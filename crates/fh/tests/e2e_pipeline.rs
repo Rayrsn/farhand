@@ -1206,9 +1206,17 @@ async fn test_e2e_client_disconnect_terminates_remote_process_group() {
     assert_eq!(msg_type, MsgType::Need);
     write_frame(&mut stream, MsgType::Files, &[]).await.unwrap();
 
-    // Start a command that sleeps for 60 seconds
+    // Start a command that sleeps in the background
     let run = RunPayload {
-        argv: vec!["sh".into(), "-c".into(), "echo started && sleep 60".into()],
+        argv: if cfg!(windows) {
+            vec![
+                "cmd.exe".into(),
+                "/C".into(),
+                "echo started & ping -n 30 127.0.0.1 > nul".into(),
+            ]
+        } else {
+            vec!["sh".into(), "-c".into(), "echo started && sleep 30".into()]
+        },
         outputs: None,
         cwd: None,
         template: None,
@@ -3115,13 +3123,13 @@ async fn test_active_build_registry_tracking() {
     assert_eq!(msg, MsgType::Need);
     write_frame(&mut stream, MsgType::Files, &[]).await.unwrap();
 
-    // Spawn a long-running command (sleep 1)
+    // Spawn a long-running command (sleep 1s)
     let run = RunPayload {
-        argv: if cfg!(windows) {
-            vec!["timeout".into(), "/t".into(), "1".into()]
-        } else {
-            vec!["sleep".into(), "1".into()]
-        },
+        argv: vec![
+            env!("CARGO_BIN_EXE_fh").into(),
+            "__test_sleep".into(),
+            "1000".into(),
+        ],
         outputs: None,
         cwd: None,
         template: None,
@@ -3205,13 +3213,9 @@ async fn test_lsp_raw_stdio_echo() {
     assert_eq!(msg, MsgType::Need);
     write_frame(&mut stream, MsgType::Files, &[]).await.unwrap();
 
-    // Start cat (or Windows findstr) with raw_stdio: true
+    // Start echo process with raw_stdio: true
     let run = RunPayload {
-        argv: if cfg!(windows) {
-            vec!["findstr".into(), "^".into()]
-        } else {
-            vec!["cat".into()]
-        },
+        argv: vec![env!("CARGO_BIN_EXE_fh").into(), "__test_echo".into()],
         outputs: None,
         cwd: None,
         template: None,
