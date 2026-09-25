@@ -21,3 +21,10 @@ libc = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+criterion = { workspace = true }
+fileset = { path = "../fileset" }
+protocol = { path = "../protocol" }
+
+[[bench]]
+name = "cas_cow"
+harness = false
