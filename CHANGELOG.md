@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-09-25
+
 ### Engineering
 - **MSRV corrected to 1.88.0 and now enforced by CI.** The previous `1.75`
   claim was never true: the dependency graph requires 1.88 (`time`), and our
@@ -17,11 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   green with zero exceptions), RustSec audit, an MSRV job, nightly
   ThreadSanitizer and benchmark-trend jobs, Dependabot, and all third-party
   GitHub Actions pinned by commit SHA.
-- Fuzz-lite property tests (nightly-free cargo-fuzz equivalent): deterministic
-  pseudo-random byte streams and bit-flipped archives run through the frame
-  reader, wire-path parser, and tar unpacker — crash-safety and zip-slip
-  invariants verified in CI on all platforms (nightly cargo-fuzz targets
-  planned as a follow-up).
+- Fuzz-lite property tests: deterministic pseudo-random byte streams and
+  bit-flipped archives run through the frame reader, wire-path parser, and
+  tar unpacker — crash-safety and zip-slip invariants verified in CI on all
+  platforms.
 
 ### Fixed
 - **CAS housekeeping**: new `--cas-ttl-days` (default 30) / `--cas-max-gb`
@@ -210,7 +211,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Run observability (`fh history`) and packaging/distribution (release workflow, Homebrew, install scripts, systemd/launchd units)
 - APFS Copy-on-Write workspace branching, two-tier LRU + emergency disk GC, `fh clean`
 
-[Unreleased]: https://github.com/Rayrsn/farhand/compare/v1.7.0...HEAD
+[Unreleased]: https://github.com/Rayrsn/farhand/compare/v1.8.0...HEAD
+[1.8.0]: https://github.com/Rayrsn/farhand/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/Rayrsn/farhand/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/Rayrsn/farhand/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/Rayrsn/farhand/compare/v1.4.0...v1.5.0
