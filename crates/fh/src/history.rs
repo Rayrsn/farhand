@@ -3,6 +3,20 @@ use protocol::{
     HistoryResponsePayload, MsgType,
 };
 
+/// Truncate a string to at most `max_bytes` without splitting UTF-8
+/// characters. Byte-slicing (`&s[..37]`) panics on multibyte boundaries;
+/// this helper always lands on a char boundary.
+pub fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 /// Queries execution and build history for a project from a remote agent daemon.
 pub async fn query_history(
     host: &str,
@@ -77,7 +91,7 @@ pub fn render_history_table(resp: &HistoryResponsePayload) {
     for run in &resp.runs {
         let cmd = run.argv.join(" ");
         let cmd_truncated = if cmd.len() > 40 {
-            format!("{}...", &cmd[..37])
+            format!("{}...", crate::truncate_utf8(&cmd, 37))
         } else {
             cmd
         };
@@ -91,5 +105,31 @@ pub fn render_history_table(resp: &HistoryResponsePayload) {
             format_bytes(run.artifact_size),
             cmd_truncated,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_utf8_never_splits_multibyte_characters() {
+        // Regression: `&cmd[..37]` panicked when byte 37 landed inside a
+        // multibyte character (e.g. CJK commands).
+        let cjk = "编译项目编译项目编译项目编译项目编译项目编译项目"; // 3-byte chars
+        assert!(cjk.len() > 40);
+        let t = truncate_utf8(cjk, 37);
+        assert!(t.len() <= 37);
+        assert!(std::str::from_utf8(t.as_bytes()).is_ok());
+
+        let emoji = "build 🚀 project 🚀 build 🚀 build 🚀 build 🚀 build 🚀";
+        assert!(emoji.len() > 40);
+        let t = truncate_utf8(emoji, 37);
+        assert!(t.is_char_boundary(t.len()));
+
+        // Short strings pass through untouched.
+        assert_eq!(truncate_utf8("short", 37), "short");
+        // Exact boundary is kept.
+        assert_eq!(truncate_utf8("abcdefgh", 4), "abcd");
     }
 }

@@ -179,6 +179,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(2);
     }
 
+    // A whitespace-only --shell used to panic the connection task; reject it
+    // at startup instead.
+    if let Some(shell) = &cli.shell {
+        if fhd::parse_custom_shell(shell).is_none() {
+            eprintln!("error: --shell '{}' is empty or whitespace-only", shell);
+            std::process::exit(2);
+        }
+    }
+
     let tls_enabled = cli.tls || cli.tls_auto || cli.tls_cert.is_some();
     if cli.allow_unauthenticated {
         warn!(

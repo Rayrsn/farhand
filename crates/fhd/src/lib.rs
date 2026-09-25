@@ -1124,6 +1124,18 @@ pub fn apply_toolchain_pty(
     }
 }
 
+/// Parse a custom shell invocation (e.g. `/bin/sh -c`) into argv tokens.
+/// Returns `None` for empty or whitespace-only input — a misconfiguration the
+/// daemon rejects at startup; library callers fall back to the default shell.
+pub fn parse_custom_shell(shell: &str) -> Option<Vec<String>> {
+    let tokens: Vec<String> = shell.split_whitespace().map(str::to_string).collect();
+    if tokens.is_empty() {
+        None
+    } else {
+        Some(tokens)
+    }
+}
+
 pub fn build_shell_command(
     cwd: &Path,
     argv: &[String],
@@ -1138,9 +1150,10 @@ pub fn build_shell_command(
     let wrapped_cmd = wrap_command_with_toolchain(&joined_cmd, toolchain);
 
     let mut cmd = if let Some(shell_override) = custom_shell {
-        let parts: Vec<&str> = shell_override.split_whitespace().collect();
-        let mut c = Command::new(parts[0]);
-        for part in &parts[1..] {
+        let shell_tokens = parse_custom_shell(shell_override)
+            .unwrap_or_else(|| vec!["/bin/sh".to_string(), "-c".to_string()]);
+        let mut c = Command::new(&shell_tokens[0]);
+        for part in &shell_tokens[1..] {
             c.arg(part);
         }
         c.arg(&wrapped_cmd);
@@ -1176,9 +1189,10 @@ pub fn build_raw_shell_command(
 ) -> Command {
     let wrapped_cmd = wrap_command_with_toolchain(raw_cmd, toolchain);
     let mut cmd = if let Some(shell_override) = custom_shell {
-        let parts: Vec<&str> = shell_override.split_whitespace().collect();
-        let mut c = Command::new(parts[0]);
-        for part in &parts[1..] {
+        let shell_tokens = parse_custom_shell(shell_override)
+            .unwrap_or_else(|| vec!["/bin/sh".to_string(), "-c".to_string()]);
+        let mut c = Command::new(&shell_tokens[0]);
+        for part in &shell_tokens[1..] {
             c.arg(part);
         }
         c.arg(&wrapped_cmd);
@@ -1538,9 +1552,10 @@ pub async fn run_pty_child_and_stream<
         }
         cb
     } else if let Some(shell_override) = custom_shell {
-        let parts: Vec<&str> = shell_override.split_whitespace().collect();
-        let mut cb = portable_pty::CommandBuilder::new(parts[0]);
-        for part in &parts[1..] {
+        let shell_tokens = parse_custom_shell(shell_override)
+            .unwrap_or_else(|| vec!["/bin/sh".to_string(), "-l".to_string()]);
+        let mut cb = portable_pty::CommandBuilder::new(&shell_tokens[0]);
+        for part in &shell_tokens[1..] {
             cb.arg(part);
         }
         let joined_cmd = argv
@@ -1934,6 +1949,17 @@ mod tests {
         assert!(!is_exposed_bind("[::1]:9876"));
         // Unparseable input is treated conservatively as exposed.
         assert!(is_exposed_bind("not-an-address"));
+    }
+
+    #[test]
+    fn parse_custom_shell_rejects_empty_invocations() {
+        // Regression: `--shell " "` panicked the connection task on parts[0].
+        assert_eq!(parse_custom_shell("  "), None);
+        assert_eq!(parse_custom_shell(""), None);
+        assert_eq!(
+            parse_custom_shell("/bin/sh -c"),
+            Some(vec!["/bin/sh".to_string(), "-c".to_string()])
+        );
     }
 
     #[test]

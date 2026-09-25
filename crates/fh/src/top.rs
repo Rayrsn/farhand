@@ -120,7 +120,7 @@ pub fn render_snapshot(status: &StatusResponsePayload, host: &str) {
         for b in builds {
             let cmd = b.argv.join(" ");
             let cmd_trunc = if cmd.len() > 40 {
-                format!("{}...", &cmd[..37])
+                format!("{}...", crate::truncate_utf8(&cmd, 37))
             } else {
                 cmd
             };
@@ -324,7 +324,7 @@ pub async fn run_top(
                     for b in builds {
                         let cmd = b.argv.join(" ");
                         let cmd_trunc = if cmd.len() > 35 {
-                            format!("{}...", &cmd[..32])
+                            format!("{}...", crate::truncate_utf8(&cmd, 32))
                         } else {
                             cmd
                         };

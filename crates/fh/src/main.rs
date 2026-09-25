@@ -1250,6 +1250,27 @@ async fn main() {
 
     let verbose = cli.verbose || cfg.verbose;
 
+    // Validate flag payloads that used to be silently ignored.
+    for spec in &cli.forward {
+        if let Err(e) = fh::parse_forward_spec(spec) {
+            eprintln!("Error: invalid --forward '{}': {}", spec, e);
+            exit(EXIT_INFRA_ERROR);
+        }
+    }
+    if let Some(compression) = &cli.compression {
+        let lowered = compression.to_ascii_lowercase();
+        if !matches!(
+            lowered.as_str(),
+            "zstd" | "gzip" | "gz" | "none" | "plain" | "tar"
+        ) {
+            eprintln!(
+                "Error: unknown --compression '{}'. Allowed values: zstd, gzip, none",
+                compression
+            );
+            exit(EXIT_INFRA_ERROR);
+        }
+    }
+
     // --print-env is a dry-run: show exactly which variable NAMES would be
     // forwarded under the current policy (flags + config), then exit.
     if cli.print_env {
