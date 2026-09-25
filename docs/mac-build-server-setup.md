@@ -199,6 +199,18 @@ ssh -N -f build
 ```
 Developers can now target `127.0.0.1:9876`.
 
+#### Option 3: Cloudflare Tunnel & Automated Setup (Zero Inbound Ports)
+If the Mac is behind a home/office router without a public IP or port forwarding, route through **Cloudflare Tunnel**:
+- Developers on **Linux & macOS**:
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/Rayrsn/farhand/main/scripts/setup_remote_ssh.sh | bash
+  ```
+- Developers on **Windows** (PowerShell):
+  ```powershell
+  irm https://raw.githubusercontent.com/Rayrsn/farhand/main/scripts/setup_remote_ssh.ps1 | iex
+  ```
+This automatically installs `cloudflared`, configures `~/.ssh/config`, and sets up the background `fh-tunnel` manager. See the [Remote Access via Cloudflare Tunnel Guide](cloudflared-tunnel.md) for full server-side instructions.
+
 ---
 
 ## 6. Seed Workspace Initialization

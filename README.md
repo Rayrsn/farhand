@@ -137,6 +137,27 @@ cargo install --git https://github.com/Rayrsn/farhand.git fh fhd
 
 ---
 
+#### ☁️ Automated Remote Setup (SSH Over Cloudflare Tunnel)
+
+To automatically install all prerequisites (`cloudflared`, OpenSSH, and `fh`) on your local client machine and configure seamless SSH port forwarding:
+
+- **Linux & macOS**:
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/Rayrsn/farhand/main/scripts/setup_remote_ssh.sh | bash
+  # Or run locally from repository:
+  ./scripts/setup_remote_ssh.sh --hostname mac.yourdomain.com --alias mac-mini --user builder
+  ```
+- **Windows (PowerShell)**:
+  ```powershell
+  & { irm https://raw.githubusercontent.com/Rayrsn/farhand/main/scripts/setup_remote_ssh.ps1 } -Hostname mac.yourdomain.com -HostAlias mac-mini -RemoteUser builder
+  # Or run locally from repository:
+  .\scripts\setup_remote_ssh.ps1
+  ```
+
+*(See the complete [Remote Access via Cloudflare Tunnel Guide](docs/cloudflared-tunnel.md) for full architecture details).*
+
+---
+
 ### 2. Start the Daemon (`fhd`)
 
 On your remote build machine or Mac Mini:
