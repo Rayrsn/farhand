@@ -1,8 +1,8 @@
 class Farhand < Formula
-  desc "Zero-dependency remote build and test offloader for weak machines"
+  desc "Remote build and test offloader with zero external system binaries"
   homepage "https://github.com/Rayrsn/farhand"
   version "1.7.0"
-  license "MIT"
+  license "MIT OR Apache-2.0"
 
   on_macos do
     if Hardware::CPU.arm?
