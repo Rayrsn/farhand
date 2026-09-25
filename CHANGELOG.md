@@ -107,6 +107,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   can relabel a pool agent — with the libc call as fallback. Miri is
   intentionally not in CI: it cannot follow FFI, so it would cover only the
   non-unsafe majority of the code.
+- **Cancellation is now proven, not assumed.** The old disconnect e2e test
+  started a command, dropped the connection, slept 500ms, and asserted
+  nothing. It is replaced by a test that runs a two-level process tree
+  remotely, verifies both PIDs are alive, drops the client, and then requires
+  both the direct child *and* the grandchild to die (SIGTERM to the process
+  group, SIGKILL after 3s), plus a follow-up run that proves the cancelled
+  run released its concurrency permit. The test was validated by mutating the
+  daemon to kill only the direct child — it fails with the grandchild
+  surviving, which is exactly the orphan-process bug the invariant forbids.
+- **`fh exec` end-to-end coverage**: the ad-hoc command path (workspace
+  sync, streamed stdout, mirrored remote exit code) is now exercised through
+  the real binary, not just the protocol layer.
 - New `fhd` flag: `--max-connections`.
 
 ## [1.7.0] - 2026-09-22

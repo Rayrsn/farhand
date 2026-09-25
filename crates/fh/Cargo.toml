@@ -32,3 +32,6 @@ thiserror = { workspace = true }
 fhd = { path = "../fhd" }
 workspace = { path = "../workspace" }
 tempfile = { workspace = true }
+# Only for the process-liveness probe in the cancellation e2e test
+# (signal 0); already in the dependency graph via fhd/workspace.
+libc = { workspace = true }

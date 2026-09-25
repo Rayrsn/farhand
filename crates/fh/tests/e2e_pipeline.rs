@@ -1182,17 +1182,68 @@ async fn test_e2e_concurrency_global_semaphore_limit() {
     assert!(out2.contains("beta-done"));
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn test_e2e_client_disconnect_terminates_remote_process_group() {
-    let token = "disconnect-token".to_string();
-    let workdir = tempdir().unwrap();
-    let (server_addr, _server_handle) =
-        spawn_test_server(Some(token.clone()), workdir.path().to_path_buf()).await;
+/// Is `pid` still a live process?
+#[cfg(unix)]
+fn process_is_alive(pid: u32) -> bool {
+    // SAFETY: signal 0 is a pure liveness probe — it performs the
+    // existence/permission check but delivers nothing and cannot affect the
+    // target process. A pid of 0/negative is never passed (callers read pids
+    // from files the remote shell wrote).
+    let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    if rc == 0 {
+        return true;
+    }
+    // EPERM: the process exists but is owned by another user.
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
 
-    let mut stream = TcpStream::connect(&server_addr).await.unwrap();
+#[cfg(windows)]
+fn process_is_alive(pid: u32) -> bool {
+    std::process::Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()))
+        .unwrap_or(false)
+}
+
+/// Poll until `pid` is gone, or `timeout` elapses. Returns whether it died.
+async fn wait_until_process_gone(pid: u32, timeout: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if !process_is_alive(pid) {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+/// Wait for a pid file the remote command writes at startup, then parse it.
+async fn wait_for_pid_file(path: &Path) -> u32 {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        if let Ok(text) = fs::read_to_string(path) {
+            if let Ok(pid) = text.trim().parse::<u32>() {
+                return pid;
+            }
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for pid file {}",
+            path.display()
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+}
+
+/// Connect, authenticate, and sync an empty manifest for `project`.
+async fn connect_and_sync(addr: &str, token: &str, project: &str) -> TcpStream {
+    let mut stream = TcpStream::connect(addr).await.unwrap();
     let hello = HelloPayload {
-        token,
-        project: "disconnect-test".to_string(),
+        token: token.to_string(),
+        project: project.to_string(),
         protocol_version: CURRENT_PROTOCOL_VERSION,
         compressions: None,
     };
@@ -1211,18 +1262,12 @@ async fn test_e2e_client_disconnect_terminates_remote_process_group() {
     let (msg_type, _) = read_frame(&mut stream).await.unwrap();
     assert_eq!(msg_type, MsgType::Need);
     write_frame(&mut stream, MsgType::Files, &[]).await.unwrap();
+    stream
+}
 
-    // Start a command that sleeps in the background
-    let run = RunPayload {
-        argv: if cfg!(windows) {
-            vec![
-                "cmd.exe".into(),
-                "/C".into(),
-                "echo started & ping -n 30 127.0.0.1 > nul".into(),
-            ]
-        } else {
-            vec!["sh".into(), "-c".into(), "echo started && sleep 30".into()]
-        },
+fn empty_run(argv: Vec<String>) -> RunPayload {
+    RunPayload {
+        argv,
         outputs: None,
         cwd: None,
         template: None,
@@ -1233,22 +1278,246 @@ async fn test_e2e_client_disconnect_terminates_remote_process_group() {
         cols: None,
         rows: None,
         raw_stdio: None,
-    };
+    }
+}
+
+/// Read frames until the terminal `Result`, returning its exit code.
+async fn read_until_result(stream: &mut TcpStream) -> i32 {
+    loop {
+        let (msg_type, payload) = read_frame(stream).await.unwrap();
+        match msg_type {
+            MsgType::Log => {}
+            MsgType::Result => {
+                let res: ResultPayload = decode_json(&payload).unwrap();
+                return res.exit_code;
+            }
+            other => panic!("Unexpected frame: {:?}", other),
+        }
+    }
+}
+
+/// Proves the cancellation invariant (AGENTS.md §3.4) end-to-end rather than
+/// by inspection: when the client connection drops, the agent kills the
+/// remote command's **whole process group** — including a grandchild that
+/// was never a direct child of the daemon — and releases the run slot.
+#[cfg(unix)]
+#[tokio::test]
+async fn test_e2e_client_disconnect_kills_whole_process_group() {
+    let token = "disconnect-token".to_string();
+    let workdir = tempdir().unwrap();
+    let pid_dir = tempdir().unwrap();
+
+    // max_runs = 1: a cancelled run that leaks its permit would make the
+    // follow-up run at the end queue forever instead of executing.
+    let (server_addr, _server_handle) = spawn_test_server_with_concurrency(
+        Some(token.clone()),
+        workdir.path().to_path_buf(),
+        Some(1),
+    )
+    .await;
+
+    // The script records the pid of the shell the daemon spawns *and* of a
+    // grandchild it forks into the same process group, then blocks. A
+    // `child.kill()` on the direct child alone would leave the grandchild
+    // alive; only a process-group signal takes both down.
+    let script = pid_dir.path().join("tree.sh");
+    let parent_pid_file = pid_dir.path().join("parent.pid");
+    let grandchild_pid_file = pid_dir.path().join("grandchild.pid");
+    fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\necho $$ > \"{parent}\"\nsh -c 'echo $$ > \"{grandchild}\"; sleep 300' &\nsleep 300\n",
+            parent = parent_pid_file.display(),
+            grandchild = grandchild_pid_file.display(),
+        ),
+    )
+    .unwrap();
+
+    let mut stream = connect_and_sync(&server_addr, &token, "disconnect-test").await;
+
+    let run = empty_run(vec!["sh".into(), script.display().to_string()]);
     write_json_frame(&mut stream, MsgType::Run, &run)
         .await
         .unwrap();
 
-    // Read until we see "started"
+    // Both pids must exist and be alive *before* the disconnect, otherwise
+    // the test could pass without ever having run a command.
+    let parent_pid = wait_for_pid_file(&parent_pid_file).await;
+    let grandchild_pid = wait_for_pid_file(&grandchild_pid_file).await;
+    assert!(
+        process_is_alive(parent_pid),
+        "remote shell (pid {}) should be running",
+        parent_pid
+    );
+    assert!(
+        process_is_alive(grandchild_pid),
+        "remote grandchild (pid {}) should be running",
+        grandchild_pid
+    );
+
+    // Drop the connection abruptly (simulates Ctrl-C / network loss).
+    drop(stream);
+
+    // The agent sends SIGTERM to -pgid and escalates to SIGKILL after 3s.
+    // Allow headroom for slow CI machines, but fail if anything survives.
+    assert!(
+        wait_until_process_gone(parent_pid, std::time::Duration::from_secs(20)).await,
+        "remote shell (pid {}) survived the client disconnect",
+        parent_pid
+    );
+    assert!(
+        wait_until_process_gone(grandchild_pid, std::time::Duration::from_secs(20)).await,
+        "remote grandchild (pid {}) survived — the process-group kill did not \
+         reach the whole command tree",
+        grandchild_pid
+    );
+
+    // The cancelled run must release its slot and the active-build entry:
+    // a fresh connection's run completes instead of queueing behind a run
+    // that no longer exists.
+    let mut stream2 = connect_and_sync(&server_addr, &token, "disconnect-test").await;
+    let run2 = empty_run(vec![
+        "sh".into(),
+        "-c".into(),
+        "echo follow-up-ran; exit 0".into(),
+    ]);
+    write_json_frame(&mut stream2, MsgType::Run, &run2)
+        .await
+        .unwrap();
+    let exit_code = tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        read_until_result(&mut stream2),
+    )
+    .await
+    .expect("follow-up run timed out — the cancelled run leaked its concurrency permit");
+    assert_eq!(
+        exit_code, 0,
+        "follow-up run should succeed after cancellation"
+    );
+}
+
+/// `fh exec` (the ad-hoc command path) driven through the real binary: it
+/// syncs the workspace, streams remote output, skips artifact/dependency
+/// handling, and mirrors the remote exit code (AGENTS.md §3.7).
+#[tokio::test]
+async fn test_e2e_cli_exec_ad_hoc_command_end_to_end() {
+    let token = "exec-token".to_string();
+    let workdir = tempdir().unwrap();
+    let project_dir = tempdir().unwrap();
+    fs::write(project_dir.path().join("marker.txt"), "synced-content-42").unwrap();
+
+    let (server_addr, _server_handle) =
+        spawn_test_server(Some(token.clone()), workdir.path().to_path_buf()).await;
+
+    let (read_cmd, fail_cmd) = if cfg!(windows) {
+        ("type marker.txt & echo exec-ran", "exit 3")
+    } else {
+        ("cat marker.txt; echo; echo exec-ran", "exit 3")
+    };
+
+    // 1. The remote command sees synced files and its stdout reaches us.
+    let ok_run = tokio::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+        .current_dir(project_dir.path())
+        .args(["--host", &server_addr, "--token", &token, "exec"])
+        .arg(if cfg!(windows) { "cmd.exe" } else { "sh" })
+        .args(if cfg!(windows) {
+            vec!["/C", read_cmd]
+        } else {
+            vec!["-c", read_cmd]
+        })
+        .output()
+        .await
+        .unwrap();
+    assert_eq!(
+        ok_run.status.code(),
+        Some(0),
+        "fh exec failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&ok_run.stdout),
+        String::from_utf8_lossy(&ok_run.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&ok_run.stdout);
+    assert!(
+        stdout.contains("synced-content-42"),
+        "remote command did not see the synced workspace: {stdout}"
+    );
+    assert!(
+        stdout.contains("exec-ran"),
+        "remote stdout was not streamed to the client: {stdout}"
+    );
+
+    // 2. A remote failure is mirrored verbatim (3 stays 3 — it is not an
+    //    infrastructure error, which would be 125).
+    let fail_run = tokio::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+        .current_dir(project_dir.path())
+        .args(["--host", &server_addr, "--token", &token, "exec"])
+        .arg(if cfg!(windows) { "cmd.exe" } else { "sh" })
+        .args(if cfg!(windows) {
+            vec!["/C", fail_cmd]
+        } else {
+            vec!["-c", fail_cmd]
+        })
+        .output()
+        .await
+        .unwrap();
+    assert_eq!(
+        fail_run.status.code(),
+        Some(3),
+        "remote exit code should be mirrored, not remapped"
+    );
+}
+
+/// Windows has no POSIX process groups — the daemon terminates the tree with
+/// `taskkill /T` there — so this covers the portable half of the invariant:
+/// a disconnect releases the run slot and the agent keeps serving.
+#[cfg(windows)]
+#[tokio::test]
+async fn test_e2e_client_disconnect_releases_run_slot() {
+    let token = "disconnect-token".to_string();
+    let workdir = tempdir().unwrap();
+    let (server_addr, _server_handle) = spawn_test_server_with_concurrency(
+        Some(token.clone()),
+        workdir.path().to_path_buf(),
+        Some(1),
+    )
+    .await;
+
+    let mut stream = connect_and_sync(&server_addr, &token, "disconnect-test").await;
+    let run = empty_run(vec![
+        "cmd.exe".into(),
+        "/C".into(),
+        "echo started & ping -n 60 127.0.0.1 > nul".into(),
+    ]);
+    write_json_frame(&mut stream, MsgType::Run, &run)
+        .await
+        .unwrap();
+
     let (msg_type, payload) = read_frame(&mut stream).await.unwrap();
     assert_eq!(msg_type, MsgType::Log);
     let log: LogPayload = decode_json(&payload).unwrap();
     assert!(log.data.contains("started"));
 
-    // Drop the stream abruptly (simulating Ctrl-C on client)
     drop(stream);
-
-    // The agent detects EOF, kills the child process group, and exits the task
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    let mut stream2 = connect_and_sync(&server_addr, &token, "disconnect-test").await;
+    let run2 = empty_run(vec![
+        "cmd.exe".into(),
+        "/C".into(),
+        "echo follow-up-ran & exit 0".into(),
+    ]);
+    write_json_frame(&mut stream2, MsgType::Run, &run2)
+        .await
+        .unwrap();
+    let exit_code = tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        read_until_result(&mut stream2),
+    )
+    .await
+    .expect("follow-up run timed out — the cancelled run leaked its concurrency permit");
+    assert_eq!(
+        exit_code, 0,
+        "follow-up run should succeed after cancellation"
+    );
 }
 
 #[tokio::test]
