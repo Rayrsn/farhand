@@ -7,10 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Planned
-- Benchmark suite (criterion) with published numbers backing README performance claims
-- Content-defined chunking for sub-file delta sync
-- Opt-in Prometheus metrics endpoint on `fhd`
+### Security
+- **`fhd` now requires an authentication token by default** and refuses to start
+  without one unless `--allow-unauthenticated` is passed explicitly. Empty tokens
+  are rejected as a misconfiguration. Loud warnings are emitted for
+  non-loopback binds: unauthenticated mode, and cleartext tokens without TLS.
+- Tokens are now compared in **constant time** (SHA-256 digests,
+  `protocol::secure::ct_eq_tokens`), across HELLO/RUN, STATUS, HISTORY, and
+  CLEAN — no length or prefix leakage.
+- **Framing hardening**: payload memory grows only as bytes actually arrive
+  (64 KiB incremental reads) instead of trusting the header's claimed length;
+  a new 1 MiB pre-authentication frame cap (`MAX_PRE_AUTH_PAYLOAD`) rejects
+  oversized first frames before auth.
+- **Connection cap**: new `fhd --max-connections` (default 32, `0` = unlimited);
+  excess connections are closed immediately.
+- **Environment forwarding denylist expanded**: infrastructure credential
+  prefixes (`AWS_`, `AZURE_`, `GCP_`, `GITHUB_`, `GITLAB_`, `DOCKER_`, `NPM_`,
+  `PYPI_`, `DATABASE_`, `INFISICAL_`, …) and credential suffixes (`*_TOKEN`,
+  `*_SECRET`, `*_PASSWORD`, `*_API_KEY`, `*_ACCESS_KEY`, `*_PRIVATE_KEY`, …)
+  are never forwarded implicitly. New `fh --print-env` dry-run lists exactly
+  which variable names would be forwarded (values are never shown). Explicit
+  `-e VAR=value` overrides always win.
+- **CoW cloning is now pure Rust**: the `cp -c -R` / `cp --reflink=auto -a`
+  subprocesses are gone; the recursive clone preserves permission modes,
+  modification times, and symlinks; FICLONE clones now carry permission bits
+  over; and the hardlink fallback was removed — a hardlinked file modified in
+  place used to silently corrupt the shared CAS object or seed workspace
+  behind it (data-correctness fix).
+- **GC/CLEAN lock coordination**: background GC, emergency disk GC, and
+  `fh clean` never delete or trim workspaces that have an active run; `clean`
+  reports busy workspaces instead of racing them, and deletion failures are
+  logged instead of reported as success.
+- **mTLS e2e coverage**: end-to-end test proving a valid client certificate
+  completes a full run roundtrip and that clients without a client certificate
+  are rejected.
+- **Fuzz-lite property tests**: deterministic pseudo-random byte streams and
+  bit-flipped archives run through the frame reader, wire-path parser, and
+  tar unpacker — crash-safety and zip-slip invariants verified in CI on all
+  platforms (nightly cargo-fuzz targets planned as a follow-up).
+- New `fhd` flag: `--max-connections`.
 
 ## [1.7.0] - 2026-09-22
 

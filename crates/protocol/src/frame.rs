@@ -305,3 +305,61 @@ mod tests {
         assert_eq!(read_payload, payload);
     }
 }
+
+#[cfg(test)]
+mod fuzz_lite {
+    //! Deterministic property tests: pseudo-random byte streams run through
+    //! the frame reader must never panic and never produce oversized
+    //! payloads. (These are the nightly-free equivalent of a libFuzzer target;
+    //! cargo-fuzz targets can adopt the same generators later.)
+
+    use super::*;
+    use std::io::Cursor;
+
+    /// xorshift64* PRNG — deterministic across platforms and runs.
+    struct Lcg(u64);
+    impl Lcg {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+    }
+
+    #[tokio::test]
+    async fn fuzz_read_frame_never_panics_on_random_streams() {
+        let mut rng = Lcg(0x9E37_79B9_7F4A_7C15);
+        for case in 0..400 {
+            let stream_len = (rng.next() % 48) as usize;
+            let mut stream = Vec::with_capacity(stream_len);
+            if rng.next().is_multiple_of(4) {
+                // Start with a plausible header to force payload reading.
+                stream.push((rng.next() % 12) as u8);
+                let claimed = match rng.next() % 5 {
+                    0 => 0u32,
+                    1 => (rng.next() % 256) as u32,
+                    2 => 64 * 1024, // exactly one chunk
+                    3 => (MAX_PAYLOAD_SIZE as u32).saturating_add(1), // over cap
+                    _ => u32::MAX,
+                };
+                stream.extend_from_slice(&claimed.to_be_bytes());
+            }
+            while stream.len() < stream_len {
+                stream.push((rng.next() % 256) as u8);
+            }
+
+            let mut cursor = Cursor::new(stream);
+            let result = read_frame(&mut cursor).await;
+            match result {
+                Ok((_, payload)) => {
+                    assert!(
+                        payload.len() <= MAX_PAYLOAD_SIZE,
+                        "case {case}: reader accepted a payload over the cap"
+                    );
+                }
+                Err(_) => { /* any error is acceptable — the invariant is no panic */ }
+            }
+        }
+    }
+}

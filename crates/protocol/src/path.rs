@@ -102,3 +102,67 @@ mod tests {
         assert!(from_wire_path("   ").is_err());
     }
 }
+
+#[cfg(test)]
+mod fuzz_lite {
+    //! Deterministic property tests over hostile path inputs.
+
+    use super::*;
+
+    struct Lcg(u64);
+    impl Lcg {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+    }
+
+    #[test]
+    fn fuzz_wire_paths_reject_traversal_and_backslashes() {
+        let mut rng = Lcg(0xDEAD_BEEF_FEED_FACE);
+
+        for case in 0..600 {
+            // Build a random path-ish string from a hostile alphabet.
+            let parts = (rng.next() % 6) as usize;
+            let mut s = String::new();
+            for _ in 0..parts {
+                s.push_str(match rng.next() % 7 {
+                    0 => "..",
+                    1 => "/",
+                    2 => "\\",
+                    3 => "C:",
+                    4 => "..\\",
+                    5 => "x",
+                    _ => "y",
+                });
+            }
+
+            match from_wire_path(&s) {
+                Ok(path) => {
+                    let wire = path.to_string_lossy().to_string();
+                    // Any accepted path must be relative and safe.
+                    assert!(
+                        !path.is_absolute(),
+                        "case {case}: accepted absolute path {:?}",
+                        s
+                    );
+                    for component in path.components() {
+                        let comp = component.as_os_str().to_string_lossy().to_string();
+                        assert_ne!(
+                            comp, "..",
+                            "case {case}: '..' component accepted from {:?}",
+                            s
+                        );
+                        assert_ne!(comp, "\\", "case {case}: backslash component from {:?}", s);
+                    }
+                    // Roundtrip stability for accepted paths.
+                    assert_eq!(to_wire_path(&path), to_wire_path(&PathBuf::from(&s)));
+                    let _ = wire;
+                }
+                Err(_) => { /* rejection is fine — that is the point */ }
+            }
+        }
+    }
+}

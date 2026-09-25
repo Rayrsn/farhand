@@ -3368,3 +3368,132 @@ async fn test_connection_limit_closes_excess_connections() {
     assert!(kept_open.is_err(), "first connection should still be open");
     drop(first);
 }
+
+#[tokio::test]
+async fn test_e2e_mtls_client_cert_required_and_verified() {
+    let remote_workdir = tempdir().unwrap();
+    let server_cert =
+        protocol::generate_self_signed_cert(vec!["localhost".into(), "127.0.0.1".into()]).unwrap();
+    let client_identity = protocol::generate_client_identity().unwrap();
+
+    // Server requires and verifies client certificates signed by the client CA.
+    let server_cfg = protocol::create_server_config(
+        &server_cert.cert_pem,
+        &server_cert.key_pem,
+        Some(&client_identity.ca_pem),
+    )
+    .unwrap();
+    let acceptor = protocol::TlsAcceptor::from(server_cfg);
+
+    let (server_addr, _server_handle) = spawn_agent_tls(
+        remote_workdir.path().to_path_buf(),
+        Some("mtls-token".into()),
+        acceptor,
+    )
+    .await;
+
+    // Write the client certificate/key to disk for the client TLS config.
+    let cert_dir = tempdir().unwrap();
+    let client_cert_path = cert_dir.path().join("client.pem");
+    let client_key_path = cert_dir.path().join("client.key");
+    fs::write(&client_cert_path, &client_identity.cert_pem).unwrap();
+    fs::write(&client_key_path, &client_identity.key_pem).unwrap();
+
+    let mtls_config = config::TlsConfig {
+        enabled: true,
+        fingerprint: Some(server_cert.fingerprint.clone()),
+        cert: Some(client_cert_path.to_string_lossy().to_string()),
+        key: Some(client_key_path.to_string_lossy().to_string()),
+        ..Default::default()
+    };
+
+    // 1. Client WITH a valid client certificate: full roundtrip succeeds.
+    {
+        let mut stream = fh::connect_to_agent(&server_addr, Some(&mtls_config))
+            .await
+            .expect("mTLS handshake with a valid client certificate must succeed");
+
+        let hello = HelloPayload {
+            token: "mtls-token".into(),
+            project: "mtls-project".into(),
+            protocol_version: CURRENT_PROTOCOL_VERSION,
+            compressions: None,
+        };
+        write_json_frame(&mut stream, MsgType::Hello, &hello)
+            .await
+            .unwrap();
+
+        let (msg, ack_bytes) = read_frame(&mut stream).await.unwrap();
+        assert_eq!(msg, MsgType::HelloAck);
+        let ack: HelloAckPayload = serde_json::from_slice(&ack_bytes).unwrap();
+        assert!(
+            ack.ok,
+            "mutual-TLS handshake with a valid client cert should pass"
+        );
+
+        write_json_frame(
+            &mut stream,
+            MsgType::Manifest,
+            &ManifestPayload { files: Vec::new() },
+        )
+        .await
+        .unwrap();
+        let (msg, _) = read_frame(&mut stream).await.unwrap();
+        assert_eq!(msg, MsgType::Need);
+        write_frame(&mut stream, MsgType::Files, &[]).await.unwrap();
+
+        let run = RunPayload {
+            argv: vec!["echo".into(), "mtls works!".into()],
+            outputs: None,
+            cwd: None,
+            template: None,
+            no_cache: false,
+            env: None,
+            toolchain: None,
+            tty: false,
+            cols: None,
+            rows: None,
+            raw_stdio: None,
+        };
+        write_json_frame(&mut stream, MsgType::Run, &run)
+            .await
+            .unwrap();
+
+        loop {
+            let (msg, payload) = read_frame(&mut stream).await.unwrap();
+            if msg == MsgType::Result {
+                let res: ResultPayload = serde_json::from_slice(&payload).unwrap();
+                assert_eq!(res.exit_code, 0);
+                break;
+            }
+        }
+    }
+
+    // 2. Client WITHOUT a client certificate: the server aborts the handshake
+    // (NoCertificatesPresented alert). The client may observe it either at
+    // connect time or on the first frame exchange — both count as rejection.
+    let no_client_cert = config::TlsConfig {
+        enabled: true,
+        fingerprint: Some(server_cert.fingerprint.clone()),
+        ..Default::default()
+    };
+    let rejected = match fh::connect_to_agent(&server_addr, Some(&no_client_cert)).await {
+        Err(_) => true,
+        Ok(mut stream) => {
+            let hello = HelloPayload {
+                token: "mtls-token".into(),
+                project: "mtls-project".into(),
+                protocol_version: CURRENT_PROTOCOL_VERSION,
+                compressions: None,
+            };
+            match write_json_frame(&mut stream, MsgType::Hello, &hello).await {
+                Err(_) => true,
+                Ok(()) => read_frame(&mut stream).await.is_err(),
+            }
+        }
+    };
+    assert!(
+        rejected,
+        "server must reject clients without a client certificate in mTLS mode"
+    );
+}

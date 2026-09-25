@@ -29,19 +29,25 @@ When reporting, include:
 `fhd` is a daemon that **executes arbitrary commands** sent by an authenticated
 client. Treat it like you would treat `sshd` with password auth:
 
-- **Always set a token.** `fhd` refuses nothing by default if `--token` is
-  omitted — an unauthenticated listener is remote code execution by design.
+- **A token is required by default.** Since 1.8.0, `fhd` refuses to start
+  without a token unless `--allow-unauthenticated` is passed explicitly
+  (development only). Tokens are compared in constant time and never logged.
 - **Transport**: use `--tls` (with fingerprint pinning or mTLS), or front the
   port with a tunnel (`ssh -L`, `cloudflared access tcp`, Tailscale/WireGuard).
-  Without TLS, tokens and all traffic are transmitted in cleartext.
+  Without TLS, tokens and all traffic are transmitted in cleartext — the daemon
+  warns about this on non-loopback binds.
 - **Network**: bind `fhd` to a loopback/private interface and reach it via
   tunneling where possible. Do not expose port 9876 to the public internet.
+  Concurrent connections are capped (`--max-connections`, default 32).
 - **Shared hosts**: any client holding the token can access *every* project
   workspace on the agent. Do not share one daemon across mutually untrusting
   users.
-- **Environment**: `fh` forwards your local environment by default (with a
-  denylist of common secret variables). Prefer `--no-env` plus explicit
-  `-e VAR=...` when working with sensitive ambient credentials.
+- **Environment**: `fh` forwards your local environment by default. A denylist
+  excludes session/OS variables, infrastructure credential prefixes
+  (`AWS_`, `GITHUB_`, …) and credential suffixes (`*_TOKEN`, `*_SECRET`, …).
+  Run `fh --print-env` to see exactly which variable names would be forwarded;
+  use `--no-env` plus explicit `-e VAR=...` when working with sensitive ambient
+  credentials.
 
 ## Disclosure Policy
 

@@ -148,6 +148,50 @@ pub fn generate_self_signed_cert(
     })
 }
 
+/// A mutual-TLS client identity: a dedicated client CA plus a leaf client
+/// certificate signed by it.
+pub struct ClientIdentity {
+    /// PEM-encoded client CA certificate (register on the daemon via
+    /// `--tls-client-ca` / [`create_server_config`]).
+    pub ca_pem: String,
+    /// PEM-encoded leaf certificate the client presents (`--tls-cert`).
+    pub cert_pem: String,
+    /// PEM-encoded leaf private key (`--tls-key`).
+    pub key_pem: String,
+}
+
+/// Generate a minimal client PKI for mutual TLS: a self-signed client CA and
+/// a leaf certificate carrying the `clientAuth` extended key usage, signed by
+/// that CA.
+pub fn generate_client_identity() -> Result<ClientIdentity, TlsError> {
+    let mut ca_params = rcgen::CertificateParams::new(vec!["farhand-client-ca".to_string()])
+        .map_err(|e| TlsError::Config(format!("Failed to build CA params: {}", e)))?;
+    ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+
+    let ca_key = rcgen::KeyPair::generate()
+        .map_err(|e| TlsError::Config(format!("Failed to generate CA key: {}", e)))?;
+    let ca_cert = ca_params
+        .self_signed(&ca_key)
+        .map_err(|e| TlsError::Config(format!("Failed to generate CA cert: {}", e)))?;
+
+    let mut leaf_params = rcgen::CertificateParams::new(vec!["farhand-client".to_string()])
+        .map_err(|e| TlsError::Config(format!("Failed to build leaf params: {}", e)))?;
+    leaf_params.is_ca = rcgen::IsCa::ExplicitNoCa;
+    leaf_params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ClientAuth];
+
+    let leaf_key = rcgen::KeyPair::generate()
+        .map_err(|e| TlsError::Config(format!("Failed to generate key pair: {}", e)))?;
+    let leaf = leaf_params
+        .signed_by(&leaf_key, &ca_cert, &ca_key)
+        .map_err(|e| TlsError::Config(format!("Failed to sign client cert: {}", e)))?;
+
+    Ok(ClientIdentity {
+        ca_pem: ca_cert.pem(),
+        cert_pem: leaf.pem(),
+        key_pem: leaf_key.serialize_pem(),
+    })
+}
+
 /// Custom verifier that skips certificate validation (for --tls-insecure).
 #[derive(Debug)]
 pub struct InsecureServerCertVerifier;

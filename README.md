@@ -174,9 +174,16 @@ On your remote build machine or Mac Mini:
 # Generate a secret token
 export FARHAND_TOKEN="super-secret-token"
 
-# Run the daemon
+# Run the daemon (token required — fhd refuses to start unauthenticated by default)
 fhd --listen 0.0.0.0:9876 --token "${FARHAND_TOKEN}" --workdir /var/farhand/workspaces
+
+# Development only: allow unauthenticated local clients explicitly
+fhd --listen 127.0.0.1:9876 --allow-unauthenticated --workdir /tmp/farhand-dev
 ```
+
+> `fhd` warns on non-loopback binds: without `--tls`, tokens travel in
+> cleartext — use `--tls` / `--tls-auto` or a tunnel on untrusted networks.
+> Concurrent connections are capped via `--max-connections` (default 32).
 
 *(For production background services on macOS or Linux, see the [Apple Silicon Mac Mini Setup Guide](docs/mac-build-server-setup.md) or [systemd service units](dist/services/fhd.service)).*
 
