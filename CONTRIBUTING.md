@@ -51,6 +51,12 @@ House rules:
 - Wrap errors with `%w`-style context (`anyhow`/`thiserror` patterns), use
   `tracing` for structured logs, and avoid `unwrap()`/`expect()` outside tests.
 
+The local gate above is not the whole story: CI additionally type-checks the
+**musl** target, because that is what the release artifacts are built from and
+glibc does not agree with musl about libc types (`ioctl`'s request parameter is
+`c_ulong` on glibc, `c_int` on musl — a real bug that shipped green locally and
+on a glibc-only matrix). If you touch FFI, check both.
+
 ## Code layout
 
 Where things live, so you can find the right file before grepping:

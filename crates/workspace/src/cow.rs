@@ -6,10 +6,13 @@ use std::path::Path;
 ///
 /// The `libc` crate does not export this constant on every target we build
 /// for, so it is defined here once instead of being inlined as a magic
-/// number at the call site. Passed to `ioctl` on a destination file opened
-/// for writing, with the source fd as the argument (see `cow_clone_file`).
+/// number at the call site. It is typed as `libc::Ioctl` — *not*
+/// `libc::c_ulong` — because the request parameter of `ioctl(2)` is
+/// `c_ulong` under glibc but `c_int` under musl, and we ship both. Passed
+/// to `ioctl` on a destination file opened for writing, with the source
+/// fd as the argument (see `cow_clone_file`).
 #[cfg(target_os = "linux")]
-const FICLONE: libc::c_ulong = 0x4004_9409;
+const FICLONE: libc::Ioctl = 0x4004_9409;
 
 /// Perform a Copy-on-Write (CoW) directory clone from `src` to `dst`.
 ///

@@ -25,6 +25,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   platforms.
 
 ### Fixed
+- **Release artifacts build on every target again.** The Linux CoW ioctl
+  constant was typed `c_ulong`, but musl's `ioctl` takes its request as
+  `c_int` — so both musl artifacts (x86_64 and aarch64) failed to compile
+  while every glibc check stayed green. The Windows disk probe was also
+  missing the allowance the new crate-level `deny(unsafe_code)` requires.
+  Neither was visible to the previous CI matrix, which covered only glibc,
+  macOS, and Windows; CI now type-checks the musl release target on every PR.
 - **CAS housekeeping**: new `--cas-ttl-days` (default 30) / `--cas-max-gb`
   eviction for content-addressable objects (previously unbounded growth);
   hydration touches object mtimes so eviction is LRU-by-use; `put_file` tmp

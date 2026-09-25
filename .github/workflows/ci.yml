@@ -38,6 +38,34 @@ jobs:
       - name: Run Workspace Tests
         run: cargo test --workspace --verbose
 
+  # The release ships musl binaries, but the test matrix only covers glibc,
+  # macOS, and Windows. libc types differ between the two C libraries (e.g.
+  # ioctl's request parameter is c_ulong on glibc and c_int on musl), so a
+  # glibc-only check can be green while every musl artifact fails to build.
+  # This job type-checks the whole workspace for the musl target on every PR.
+  musl:
+    name: musl target (release artifact)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - name: Install musl-tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: musl
+
+      - name: Type-check workspace for musl
+        run: cargo check --workspace --all-targets --target x86_64-unknown-linux-musl
+
   msrv:
     name: MSRV (1.88.0)
     runs-on: ubuntu-latest

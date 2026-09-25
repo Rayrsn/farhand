@@ -68,6 +68,7 @@ pub fn get_disk_space(path: &Path) -> std::io::Result<DiskSpace> {
 }
 
 #[cfg(windows)]
+#[allow(unsafe_code)] // FFI: GetDiskFreeSpaceExW — SAFETY contract inside the body.
 pub fn get_disk_space(path: &Path) -> std::io::Result<DiskSpace> {
     use std::os::windows::ffi::OsStrExt;
 
@@ -99,6 +100,11 @@ pub fn get_disk_space(path: &Path) -> std::io::Result<DiskSpace> {
         ) -> i32;
     }
 
+    // SAFETY: `wide_path` is a NUL-terminated UTF-16 buffer (the trailing 0
+    // is pushed above) and outlives the call, so `lpDirectoryName` is a valid
+    // null-terminated wide string. The three output pointers address live,
+    // writable `u64` locals, and GetDiskFreeSpaceExW is documented to fill
+    // each of them (or fail without writing) — it never retains the pointers.
     let ret = unsafe {
         GetDiskFreeSpaceExW(
             wide_path.as_ptr(),
