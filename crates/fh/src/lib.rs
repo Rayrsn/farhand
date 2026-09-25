@@ -1,5 +1,6 @@
 pub mod clean;
 pub mod client;
+pub mod envfilter;
 pub mod history;
 pub mod init;
 pub mod lsp;

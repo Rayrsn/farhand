@@ -1889,33 +1889,70 @@ async fn test_e2e_env_vars_forwarding_default() {
         ("sh", "-c", "echo VAR=$INFISICAL_DATABASE_URL")
     };
 
-    // Execute fh with ambient INFISICAL_DATABASE_URL environment variable set
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_fh"))
-        .current_dir(project_dir.path())
-        .env(
-            "INFISICAL_DATABASE_URL",
-            "postgres://user:pass@remote:5432/app",
-        )
-        .args([
-            "--host",
-            &server_addr,
-            "--token",
-            &token,
-            "--verbose",
-            "--",
-            shell_cmd,
-            shell_arg,
-            echo_cmd,
-        ])
-        .output()
-        .await
-        .unwrap();
+    // Execute fh with ambient INFISICAL_DATABASE_URL environment variable set.
+    // INFISICAL_* is on the credential denylist: ambient secrets must NOT leak
+    // to the agent. An explicit -e override is the documented way to forward.
+    let (no_forward, forward) = tokio::join!(
+        async {
+            tokio::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+                .current_dir(project_dir.path())
+                .env(
+                    "INFISICAL_DATABASE_URL",
+                    "postgres://user:pass@remote:5432/app",
+                )
+                .args([
+                    "--host",
+                    &server_addr,
+                    "--token",
+                    &token,
+                    "--",
+                    shell_cmd,
+                    shell_arg,
+                    echo_cmd,
+                ])
+                .output()
+                .await
+                .unwrap()
+        },
+        async {
+            tokio::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+                .current_dir(project_dir.path())
+                .env(
+                    "INFISICAL_DATABASE_URL",
+                    "postgres://user:pass@remote:5432/app",
+                )
+                .args([
+                    "--host",
+                    &server_addr,
+                    "--token",
+                    &token,
+                    "--verbose",
+                    "-e",
+                    "INFISICAL_DATABASE_URL=postgres://user:pass@remote:5432/app",
+                    "--",
+                    shell_cmd,
+                    shell_arg,
+                    echo_cmd,
+                ])
+                .output()
+                .await
+                .unwrap()
+        }
+    );
 
-    assert_eq!(output.status.code(), Some(0));
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(no_forward.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&no_forward.stdout);
+    assert!(
+        stdout.contains("VAR=") && !stdout.contains("postgres://"),
+        "Ambient INFISICAL_DATABASE_URL must be denylisted (leak guard): {}",
+        stdout
+    );
+
+    assert_eq!(forward.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&forward.stdout);
     assert!(
         stdout.contains("VAR=postgres://user:pass@remote:5432/app"),
-        "Stdout should contain forwarded ambient environment variable: {}",
+        "Explicit -e override should forward the variable: {}",
         stdout
     );
 }

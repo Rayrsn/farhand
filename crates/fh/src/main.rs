@@ -20,91 +20,21 @@ use tokio::sync::Mutex;
 
 const EXIT_INFRA_ERROR: i32 = 125;
 
-const FILTERED_ENV_VARS: &[&str] = &[
-    // Core OS / User session
-    "PATH",
-    "HOME",
-    "USER",
-    "LOGNAME",
-    "SHELL",
-    "PWD",
-    "OLDPWD",
-    "TMPDIR",
-    "TEMP",
-    "TMP",
-    "TERM",
-    "TERMCAP",
-    "SHLVL",
-    "_",
-    // Farhand internals
-    "FARHAND_HOST",
-    "FARHAND_TOKEN",
-    "FARHAND_WORKDIR",
-    "FARHAND_LISTEN",
-    "FARHAND_MAX_DISK_GB",
-    "FARHAND_WORKSPACE_TTL_DAYS",
-    // SSH & Terminal session
-    "SSH_AUTH_SOCK",
-    "SSH_AGENT_PID",
-    "SSH_CONNECTION",
-    "SSH_CLIENT",
-    "SSH_TTY",
-    // GUI / Desktop environments
-    "DISPLAY",
-    "WAYLAND_DISPLAY",
-    "XAUTHORITY",
-    "XDG_RUNTIME_DIR",
-    "XDG_SESSION_ID",
-    "XDG_DATA_DIRS",
-    "XDG_CONFIG_DIRS",
-    "XDG_STATE_HOME",
-    "XDG_CACHE_HOME",
-    "XDG_CONFIG_HOME",
-    "XDG_DATA_HOME",
-    // Editor / IDE specifics
-    "VSCODE_INJECTION",
-    "TERM_PROGRAM",
-    "TERM_PROGRAM_VERSION",
-    "COLORTERM",
-    "ANTIGRAVITY_SOURCE_METADATA",
-];
-
+/// Compute the environment forwarded to the agent (see [`fh::envfilter`]).
+/// Explicit `-e KEY=VAL` overrides win over the denylist.
 fn collect_forward_env(
     no_env_flag: bool,
     config_forward_env: bool,
     config_env: &std::collections::HashMap<String, String>,
     cli_env: &[String],
 ) -> Option<std::collections::HashMap<String, String>> {
-    let mut map = std::collections::HashMap::new();
-
-    // 1. If ambient forwarding is enabled (default), collect non-filtered local env vars
-    if !no_env_flag && config_forward_env {
-        for (k, v) in std::env::vars() {
-            if !FILTERED_ENV_VARS.contains(&k.as_str()) && !k.starts_with("FARHAND_") {
-                map.insert(k, v);
-            }
-        }
-    }
-
-    // 2. Overlay environment variables defined in .farhand.yaml
-    for (k, v) in config_env {
-        map.insert(k.clone(), v.clone());
-    }
-
-    // 3. Overlay explicit CLI flags: -e KEY=VAL or -e KEY (takes value from current local env)
-    for entry in cli_env {
-        if let Some((k, v)) = entry.split_once('=') {
-            map.insert(k.to_string(), v.to_string());
-        } else if let Ok(v) = std::env::var(entry) {
-            map.insert(entry.clone(), v);
-        }
-    }
-
-    if map.is_empty() {
-        None
-    } else {
-        Some(map)
-    }
+    fh::envfilter::collect_forward_env(
+        std::env::vars(),
+        no_env_flag,
+        config_forward_env,
+        config_env,
+        cli_env,
+    )
 }
 
 fn collect_toolchain(
@@ -228,6 +158,13 @@ struct Cli {
         help = "Explicit environment variable to pass to remote command, in KEY=VALUE or KEY format (repeatable)"
     )]
     env: Vec<String>,
+
+    #[arg(
+        long = "print-env",
+        action = clap::ArgAction::SetTrue,
+        help = "List the environment variable NAMES that would be forwarded to the agent, then exit (values are never shown)"
+    )]
+    print_env: bool,
 
     #[arg(
         short = 't',
@@ -680,6 +617,19 @@ async fn run_build(
         println!("Connecting to agent at: {}", host);
         println!("Project: {} ({})", project_name, project_dir.display());
         println!("Remote command: {:?}", command);
+        if let Some(env_map) = &run_env {
+            let mut names: Vec<&str> = env_map.keys().map(String::as_str).collect();
+            names.sort_unstable();
+            println!(
+                "Env forwarding: {} variable(s) — use --print-env to list names (values are never shown)",
+                names.len()
+            );
+            if !names.is_empty() {
+                println!("  forwarded: {}", names.join(", "));
+            }
+        } else {
+            println!("Env forwarding: none (use -e KEY=VAL to pass specific variables)");
+        }
         if tty {
             println!("Terminal mode: PTY allocated");
         }
@@ -1299,6 +1249,35 @@ async fn main() {
     };
 
     let verbose = cli.verbose || cfg.verbose;
+
+    // --print-env is a dry-run: show exactly which variable NAMES would be
+    // forwarded under the current policy (flags + config), then exit.
+    if cli.print_env {
+        let names = fh::envfilter::forwarded_env_names(
+            std::env::vars(),
+            cli.no_env,
+            cfg.forward_env,
+            &cfg.env,
+            &cli.env,
+        );
+        if names.is_empty() {
+            println!("No environment variables would be forwarded.");
+        } else {
+            println!(
+                "{} environment variable(s) would be forwarded (names only):",
+                names.len()
+            );
+            for name in &names {
+                println!("  {name}");
+            }
+            println!(
+                "\nFiltered out: session/OS vars, FARHAND_*, infrastructure credential \
+                 prefixes (AWS_, GITHUB_, ...) and credential suffixes (*_TOKEN, *_SECRET, ...). \
+                 Use -e VAR=... to forward a specific variable explicitly."
+            );
+        }
+        exit(0);
+    }
 
     // Precedence: CLI Flags > Environment Variables > Multi-Agent Pool > Config Host > Defaults
     let (host, host_token, pool_tls) = if let Some(h) = cli.host {
