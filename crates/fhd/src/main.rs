@@ -193,6 +193,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Farhand daemon listening on {}", cli.listen);
     info!("Persistent workspaces root: {}", workdir.display());
 
+    // The workspace lock manager is shared between the CLI-created GC task
+    // and the connection handlers, so GC never races an active run.
+    let lock_manager = workspace::WorkspaceLockManager::new();
+
     // Spawn background garbage collection task if enabled
     if cli.gc_interval_secs > 0 {
         let gc_workdir = workdir.clone();
@@ -203,12 +207,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .workspace_ttl_days
             .map(|d| std::time::Duration::from_secs(d * 86400));
         let interval_dur = std::time::Duration::from_secs(cli.gc_interval_secs);
+        let gc_lock_manager = lock_manager.clone();
 
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(interval_dur);
             loop {
                 ticker.tick().await;
-                let report = workspace::run_garbage_collection(&gc_workdir, max_bytes, ttl);
+                // Snapshot locked projects (async), then run the blocking GC
+                // pass off the async runtime so directory sizing never stalls
+                // the executor.
+                let locked: std::collections::HashSet<String> = gc_lock_manager
+                    .locked_projects()
+                    .await
+                    .into_iter()
+                    .collect();
+                let dir = gc_workdir.clone();
+                let report = tokio::task::spawn_blocking(move || {
+                    workspace::run_garbage_collection(&dir, max_bytes, ttl, &|name: &str| {
+                        locked.contains(name)
+                    })
+                })
+                .await
+                .unwrap_or_default();
                 if report.workspaces_deleted > 0 || report.caches_trimmed_bytes > 0 {
                     info!(
                         "GC: Pruned {} workspaces ({} bytes), trimmed {} cache bytes. Total disk remaining: {} bytes",
@@ -284,6 +304,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cli.no_cas,
         tls_acceptor,
         cli.max_connections,
+        Some(lock_manager),
     )
     .await?;
     Ok(())

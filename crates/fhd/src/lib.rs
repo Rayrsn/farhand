@@ -131,6 +131,7 @@ pub async fn run_server(
     no_cas: bool,
     tls_acceptor: Option<protocol::TlsAcceptor>,
     max_connections: Option<usize>,
+    lock_manager: Option<workspace::WorkspaceLockManager>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let max_runs = max_concurrent_runs.unwrap_or_else(|| {
         std::thread::available_parallelism()
@@ -138,7 +139,7 @@ pub async fn run_server(
             .unwrap_or(4)
     });
     let semaphore = Arc::new(tokio::sync::Semaphore::new(max_runs));
-    let lock_manager = workspace::WorkspaceLockManager::new();
+    let lock_manager = lock_manager.unwrap_or_default();
     let queue_depth = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let connection_limiter = Arc::new(tokio::sync::Semaphore::new(match max_connections {
         Some(0) => UNLIMITED_CONNECTIONS,
@@ -358,20 +359,48 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
                 .unwrap_or(&clean_req.project);
             let workspaces = workspace::scan_workspaces(&ctx.workdir_root);
             let mut count = 0;
+            let mut skipped_busy = 0;
             for ws in workspaces {
                 if !ws.is_canonical && ws.name.starts_with(base_name) {
+                    // Never delete a workspace whose project is mid-run.
+                    if ctx.lock_manager.is_locked(&ws.name).await {
+                        skipped_busy += 1;
+                        continue;
+                    }
                     bytes_freed += ws.size_bytes;
-                    let _ = std::fs::remove_dir_all(&ws.path);
-                    count += 1;
+                    if let Err(e) = std::fs::remove_dir_all(&ws.path) {
+                        warn!("CLEAN: failed to remove {}: {}", ws.path.display(), e);
+                    } else {
+                        count += 1;
+                    }
                 }
             }
             msg = format!(
-                "Purged {} branch workspaces for project '{}'",
-                count, base_name
+                "Purged {} branch workspaces for project '{}'{}",
+                count,
+                base_name,
+                if skipped_busy > 0 {
+                    format!(" ({} skipped: active run)", skipped_busy)
+                } else {
+                    String::new()
+                }
             );
         } else {
             let ws_dir = workspace::resolve_workspace_dir(&ctx.workdir_root, &clean_req.project);
             if ws_dir.is_dir() {
+                if ctx.lock_manager.is_locked(&clean_req.project).await {
+                    msg = format!(
+                        "Workspace '{}' is busy (active run); try again after it finishes",
+                        clean_req.project
+                    );
+                    let resp = protocol::CleanResponsePayload {
+                        ok: false,
+                        message: msg,
+                        bytes_freed: 0,
+                    };
+                    write_json_frame(&mut stream, MsgType::CleanResp, &resp).await?;
+                    return Ok(());
+                }
                 if clean_req.caches_only {
                     bytes_freed = workspace::trim_workspace_caches(&ws_dir);
                     msg = format!(
@@ -380,7 +409,19 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
                     );
                 } else {
                     bytes_freed = workspace::calculate_dir_size(&ws_dir);
-                    let _ = std::fs::remove_dir_all(&ws_dir);
+                    if let Err(e) = std::fs::remove_dir_all(&ws_dir) {
+                        warn!("CLEAN: failed to remove {}: {}", ws_dir.display(), e);
+                        let resp = protocol::CleanResponsePayload {
+                            ok: false,
+                            message: format!(
+                                "Failed to remove workspace '{}': {}",
+                                clean_req.project, e
+                            ),
+                            bytes_freed: 0,
+                        };
+                        write_json_frame(&mut stream, MsgType::CleanResp, &resp).await?;
+                        return Ok(());
+                    }
                     msg = format!("Removed workspace '{}'", clean_req.project);
                 }
             } else {
@@ -443,7 +484,22 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
                     "Available disk space ({} bytes) is below minimum threshold ({} bytes). Running emergency GC...",
                     space.available_bytes, ctx.min_disk_bytes
                 );
-                let gc_report = workspace::run_emergency_disk_gc(&ctx.workdir_root, needed);
+                // Snapshot locked projects so emergency GC never deletes
+                // workspaces with active runs.
+                let locked: std::collections::HashSet<String> = ctx
+                    .lock_manager
+                    .locked_projects()
+                    .await
+                    .into_iter()
+                    .collect();
+                let root = ctx.workdir_root.clone();
+                let gc_report = tokio::task::spawn_blocking(move || {
+                    workspace::run_emergency_disk_gc(&root, needed, &|name: &str| {
+                        locked.contains(name)
+                    })
+                })
+                .await
+                .unwrap_or_default();
                 info!(
                     "Emergency GC pruned {} workspaces, trimmed {} bytes.",
                     gc_report.workspaces_deleted, gc_report.caches_trimmed_bytes

@@ -47,6 +47,7 @@ async fn spawn_test_server_full(
             false,
             None,
             None,
+            None,
         )
         .await;
     });
@@ -74,6 +75,7 @@ async fn spawn_agent_tls(
             None,
             false,
             Some(tls_acceptor),
+            None,
             None,
         )
         .await;
@@ -3334,6 +3336,7 @@ async fn test_connection_limit_closes_excess_connections() {
             false,
             None,
             Some(1),
+            None,
         )
         .await;
     });

@@ -21,6 +21,28 @@ impl WorkspaceLockManager {
             .or_insert_with(|| Arc::new(Mutex::new(())))
             .clone()
     }
+
+    /// Whether a run currently holds this project's lock.
+    ///
+    /// Non-inserting: projects with no lock entry are never locked. Used by
+    /// GC and CLEAN paths to avoid deleting workspaces that are in use.
+    pub async fn is_locked(&self, project: &str) -> bool {
+        let map = self.locks.lock().await;
+        map.get(project)
+            .map(|m| m.try_lock().is_err())
+            .unwrap_or(false)
+    }
+
+    /// Snapshot of project names whose locks are currently held. Callers
+    /// building synchronous predicates (e.g. GC filters) use this to avoid
+    /// holding the manager's map across blocking work.
+    pub async fn locked_projects(&self) -> Vec<String> {
+        let map = self.locks.lock().await;
+        map.iter()
+            .filter(|(_, mutex)| mutex.try_lock().is_err())
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -58,5 +80,25 @@ mod tests {
 
         assert!(guard1.is_ok());
         assert!(guard2.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_is_locked_reflects_held_locks_without_inserting() {
+        let manager = WorkspaceLockManager::new();
+
+        // Unknown projects are never locked.
+        assert!(!manager.is_locked("ghost-project").await);
+
+        let lock = manager.get_lock("busy-project").await;
+        let guard = lock.try_lock().unwrap();
+        assert!(manager.is_locked("busy-project").await);
+
+        // GC snapshots must see the held lock and nothing else.
+        let locked = manager.locked_projects().await;
+        assert_eq!(locked, vec!["busy-project".to_string()]);
+
+        drop(guard);
+        assert!(!manager.is_locked("busy-project").await);
+        assert!(manager.locked_projects().await.is_empty());
     }
 }

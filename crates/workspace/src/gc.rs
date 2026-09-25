@@ -3,7 +3,7 @@ use crate::state::{read_state, write_state};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
-use tracing::info;
+use tracing::{debug, info};
 
 #[derive(Debug, Clone, Default)]
 pub struct GcReport {
@@ -149,10 +149,15 @@ pub fn scan_workspaces(workspaces_root: &Path) -> Vec<WorkspaceMetadata> {
 }
 
 /// Execute automated Garbage Collection across `workspaces_root`.
+///
+/// `skip_locked` decides whether a workspace (by project name) may be
+/// deleted or cache-trimmed — the daemon passes its workspace-lock check so
+/// active runs are never destroyed underneath themselves.
 pub fn run_garbage_collection(
     workspaces_root: &Path,
     max_disk_bytes: Option<u64>,
     ttl: Option<Duration>,
+    skip_locked: &dyn Fn(&str) -> bool,
 ) -> GcReport {
     let mut report = GcReport::default();
     let mut workspaces = scan_workspaces(workspaces_root);
@@ -164,6 +169,10 @@ pub fn run_garbage_collection(
     if let Some(ttl_dur) = ttl {
         workspaces.retain(|ws| {
             if !ws.is_canonical {
+                if skip_locked(&ws.name) {
+                    debug!("GC: skipping locked workspace {} (active run)", ws.name);
+                    return true;
+                }
                 if let Ok(age) = now.duration_since(ws.last_used_at) {
                     if age > ttl_dur {
                         info!(
@@ -197,7 +206,7 @@ pub fn run_garbage_collection(
                 if current_usage <= max_bytes {
                     break;
                 }
-                if !ws.is_canonical {
+                if !ws.is_canonical && !skip_locked(&ws.name) {
                     let trimmed = trim_workspace_caches(&ws.path);
                     report.caches_trimmed_bytes += trimmed;
                     current_usage = current_usage.saturating_sub(trimmed);
@@ -210,7 +219,7 @@ pub fn run_garbage_collection(
                 if current_usage <= max_bytes {
                     break;
                 }
-                if !ws.is_canonical {
+                if !ws.is_canonical && !skip_locked(&ws.name) {
                     info!(
                         "Quota exceeded. Purging LRU workspace {} (size {} bytes)...",
                         ws.path.display(),
@@ -231,7 +240,14 @@ pub fn run_garbage_collection(
 
 /// Emergency disk cleanup pass: trims caches in non-canonical workspaces,
 /// and if needed, evicts oldest non-canonical workspaces until target_bytes_to_free is reached.
-pub fn run_emergency_disk_gc(workspaces_root: &Path, target_bytes_to_free: u64) -> GcReport {
+///
+/// `skip_locked` protects workspaces with active runs (same contract as
+/// [`run_garbage_collection`]).
+pub fn run_emergency_disk_gc(
+    workspaces_root: &Path,
+    target_bytes_to_free: u64,
+    skip_locked: &dyn Fn(&str) -> bool,
+) -> GcReport {
     let mut report = GcReport::default();
     let mut workspaces = scan_workspaces(workspaces_root);
     report.total_workspaces_scanned = workspaces.len();
@@ -246,7 +262,7 @@ pub fn run_emergency_disk_gc(workspaces_root: &Path, target_bytes_to_free: u64) 
         if freed_bytes >= target_bytes_to_free {
             break;
         }
-        if !ws.is_canonical {
+        if !ws.is_canonical && !skip_locked(&ws.name) {
             let trimmed = trim_workspace_caches(&ws.path);
             report.caches_trimmed_bytes += trimmed;
             freed_bytes += trimmed;
@@ -259,7 +275,7 @@ pub fn run_emergency_disk_gc(workspaces_root: &Path, target_bytes_to_free: u64) 
         if freed_bytes >= target_bytes_to_free {
             break;
         }
-        if !ws.is_canonical {
+        if !ws.is_canonical && !skip_locked(&ws.name) {
             info!(
                 "Emergency GC: Purging LRU workspace {} (size {} bytes)...",
                 ws.path.display(),
@@ -316,11 +332,30 @@ mod tests {
         fs::write(feat_ws.join("data.bin"), vec![0u8; 1000]).unwrap();
 
         // Quota is 1200 bytes, total is ~2000 bytes
-        let report = run_garbage_collection(root, Some(1200), None);
+        let report = run_garbage_collection(root, Some(1200), None, &|_| false);
 
         assert_eq!(report.workspaces_deleted, 1);
         assert!(!feat_ws.exists());
         assert!(main_ws.exists(), "Canonical workspace must be preserved");
+    }
+
+    #[test]
+    fn test_run_garbage_collection_skips_locked_workspaces() {
+        let temp = tempdir().unwrap();
+        let root = temp.path();
+
+        let feat_ws = root.join("my-repo__feat1-87654321");
+        fs::create_dir_all(&feat_ws).unwrap();
+        fs::write(feat_ws.join("data.bin"), vec![0u8; 1000]).unwrap();
+
+        // Quota forces eviction, but the workspace's project is locked
+        // (an active run holds it) — GC must leave it alone.
+        let report = run_garbage_collection(root, Some(500), None, &|name| {
+            name.starts_with("my-repo__feat1")
+        });
+
+        assert_eq!(report.workspaces_deleted, 0);
+        assert!(feat_ws.exists(), "locked workspace must survive GC");
     }
 
     #[test]
@@ -332,8 +367,22 @@ mod tests {
         fs::create_dir_all(&feat_ws).unwrap();
         fs::write(feat_ws.join("data.bin"), vec![0u8; 2000]).unwrap();
 
-        let report = run_emergency_disk_gc(root, 1000);
+        let report = run_emergency_disk_gc(root, 1000, &|_| false);
         assert_eq!(report.workspaces_deleted, 1);
         assert!(!feat_ws.exists());
+    }
+
+    #[test]
+    fn test_run_emergency_disk_gc_skips_locked() {
+        let temp = tempdir().unwrap();
+        let root = temp.path();
+
+        let feat_ws = root.join("my-repo__feat1-87654321");
+        fs::create_dir_all(&feat_ws).unwrap();
+        fs::write(feat_ws.join("data.bin"), vec![0u8; 2000]).unwrap();
+
+        let report = run_emergency_disk_gc(root, 1000, &|_| true);
+        assert_eq!(report.workspaces_deleted, 0);
+        assert!(feat_ws.exists());
     }
 }
