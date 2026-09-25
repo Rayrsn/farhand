@@ -9,3 +9,10 @@ dist/releases/
 plan/
 AGENTS.md
 agent.md
+
+# cargo-fuzz: keep committed seed corpora, ignore libFuzzer's generated
+# coverage corpus and crash artifacts (crashes are triaged, not committed).
+fuzz/target/
+fuzz/artifacts/
+fuzz/corpus/*/*
+!fuzz/corpus/*/seed_*

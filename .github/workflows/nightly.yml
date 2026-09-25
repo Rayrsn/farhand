@@ -34,6 +34,39 @@ jobs:
           cargo +nightly test -Zbuild-std --target x86_64-unknown-linux-gnu \
             --workspace --lib
 
+  fuzz:
+    name: Fuzz (deep run)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@be39649afda95dbf70f87cce95f68b8d5797b296 # nightly
+        with:
+          toolchain: nightly
+
+      - name: Install cargo-fuzz
+        uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2
+        with:
+          tool: cargo-fuzz
+
+      - name: Deep fuzz each target (10 min)
+        run: |
+          for target in fuzz_read_frame fuzz_unpack_tar fuzz_wire_paths; do
+            echo "::group::$target"
+            cargo +nightly fuzz run "$target" -- -max_total_time=600
+            echo "::endgroup::"
+          done
+
+      - name: Upload crash artifacts (if any)
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fuzz-crashes-nightly
+          path: fuzz/artifacts
+          if-no-files-found: ignore
+
   benchmarks:
     name: Benchmarks (trend artifact)
     runs-on: ubuntu-latest

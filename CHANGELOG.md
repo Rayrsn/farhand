@@ -91,7 +91,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Fuzz-lite property tests**: deterministic pseudo-random byte streams and
   bit-flipped archives run through the frame reader, wire-path parser, and
   tar unpacker — crash-safety and zip-slip invariants verified in CI on all
-  platforms (nightly cargo-fuzz targets planned as a follow-up).
+  platforms.
+- **Real libFuzzer targets** (`fuzz/`): `fuzz_read_frame`, `fuzz_unpack_tar`,
+  `fuzz_wire_paths` assert protocol invariants (payload-cap respect, incremental
+  allocation, zip-slip containment, traversal rejection). A 60-second smoke pass
+  per target runs on every PR; a 10-minute pass runs nightly. Committed seed
+  corpora capture known attack vectors (traversal tar, absolute-path tar, lying
+  frame header).
 - New `fhd` flag: `--max-connections`.
 
 ## [1.7.0] - 2026-09-22

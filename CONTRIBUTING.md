@@ -60,6 +60,33 @@ House rules:
 - Bump `[workspace.package].version` in `Cargo.toml` for feature releases
   (minor) or fixes (patch) — the release workflow publishes on `v*` tags.
 
+## Fuzzing
+
+The wire protocol parsers are fuzzed with libFuzzer (requires a nightly
+toolchain and `cargo-fuzz`):
+
+```bash
+rustup toolchain install nightly
+cargo install --locked cargo-fuzz
+
+cargo +nightly fuzz list                       # available targets
+cargo +nightly fuzz run fuzz_read_frame        # frame reader
+cargo +nightly fuzz run fuzz_unpack_tar        # tar unpacker (zip-slip)
+cargo +nightly fuzz run fuzz_wire_paths        # wire-path parser
+
+# Reproduce a crash from CI artifacts:
+cargo +nightly fuzz run fuzz_read_frame fuzz/artifacts/fuzz_read_frame/crash-*
+```
+
+Targets live in `fuzz/fuzz_targets/` and assert *invariants*, not just
+"no panic": the frame reader never exceeds its payload cap and allocates only
+as bytes arrive; the unpacker never writes outside the destination; the
+wire-path parser never accepts traversal, backslashes, or absolute paths.
+Committed seed corpora (`fuzz/corpus/*/seed_*`) encode known attack vectors
+(traversal tar, absolute-path tar, lying frame header); generated coverage
+corpora are gitignored. CI runs a 60-second smoke pass per target on every PR
+and a 10-minute pass nightly.
+
 ## Testing Expectations
 
 - **Unit tests**: every library crate has table-driven tests next to the code.

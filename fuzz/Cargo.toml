@@ -1,0 +1,44 @@
+[package]
+name = "farhand-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+# Detach from the workspace: fuzz targets build with nightly + libFuzzer and
+# must never be built by `cargo build --workspace`.
+[workspace]
+members = ["."]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+futures = "0.3"
+
+[dependencies.fileset]
+path = "../crates/fileset"
+
+[dependencies.protocol]
+path = "../crates/protocol"
+
+[[bin]]
+name = "fuzz_read_frame"
+path = "fuzz_targets/fuzz_read_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_unpack_tar"
+path = "fuzz_targets/fuzz_unpack_tar.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_wire_paths"
+path = "fuzz_targets/fuzz_wire_paths.rs"
+test = false
+doc = false
+bench = false
