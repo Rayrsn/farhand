@@ -14,7 +14,7 @@ use std::process::exit;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 
@@ -598,25 +598,127 @@ async fn start_port_forward<W: AsyncWrite + Unpin + Send + 'static>(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn run_build(
-    host: &str,
-    token: &str,
-    project_name: &str,
-    project_dir: &Path,
-    command: &[String],
+/// Everything one remote invocation needs.
+///
+/// This replaces an 18-positional-argument signature: call sites now read as
+/// a labelled struct literal, so it is obvious which knob is which, and
+/// adding a flag no longer means touching three call sites and a signature.
+/// The body destructures it immediately, so the implementation below still
+/// refers to plain local names.
+struct RunParams<'a> {
+    host: &'a str,
+    token: &'a str,
+    project_name: &'a str,
+    project_dir: &'a Path,
+    command: &'a [String],
     outputs: Option<Vec<String>>,
-    out_dir: &Path,
+    out_dir: &'a Path,
     template: Option<String>,
     no_cache: bool,
     run_env: Option<HashMap<String, String>>,
     run_toolchain: Option<HashMap<String, String>>,
     tty: bool,
-    forwards: &[String],
+    forwards: &'a [String],
     compression: Option<String>,
     verbose: bool,
-    tls_config: Option<&config::TlsConfig>,
-    telemetry: &mut Telemetry,
-) -> Result<i32, Box<dyn std::error::Error + Send + Sync>> {
+    tls_config: Option<&'a config::TlsConfig>,
+    telemetry: &'a mut Telemetry,
+}
+
+/// Run the HELLO / HELLO_ACK handshake on an established stream.
+///
+/// Shared by the build path and the one-shot command paths so the wire
+/// sequence, the diagnostics, and the exit code stay identical: any
+/// handshake problem is an infrastructure failure (125), never a build
+/// failure. `compressions` is the client's offer (`None` = none offered).
+/// `wait_queued` lets the caller tolerate the agent's QUEUED frames — sent
+/// while it waits on a project lock or the global run queue — before the
+/// acknowledgement arrives.
+async fn perform_handshake<S>(
+    stream: &mut S,
+    token: &str,
+    project: &str,
+    compressions: Option<Vec<String>>,
+    wait_queued: bool,
+) -> HelloAckPayload
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let hello = HelloPayload {
+        token: token.to_string(),
+        project: project.to_string(),
+        protocol_version: CURRENT_PROTOCOL_VERSION,
+        compressions,
+    };
+    if let Err(e) = write_json_frame(stream, MsgType::Hello, &hello).await {
+        eprintln!("Error: failed to send HELLO handshake: {}", e);
+        exit(EXIT_INFRA_ERROR);
+    }
+
+    let ack: HelloAckPayload = loop {
+        let (msg_type, payload) = match read_frame(stream).await {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("Error: failed to read HELLO_ACK: {}", e);
+                exit(EXIT_INFRA_ERROR);
+            }
+        };
+        match msg_type {
+            MsgType::Queued if wait_queued => {
+                if let Ok(q) = decode_json::<protocol::QueuedPayload>(&payload) {
+                    println!(
+                        "[queued] Agent busy ({}), position in queue: {}. Waiting for lock...",
+                        q.reason, q.position
+                    );
+                }
+            }
+            MsgType::HelloAck => {
+                let parsed: HelloAckPayload = match decode_json(&payload) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        eprintln!("Error: invalid HELLO_ACK payload: {}", e);
+                        exit(EXIT_INFRA_ERROR);
+                    }
+                };
+                break parsed;
+            }
+            other => {
+                eprintln!("Protocol error: expected HELLO_ACK, received {:?}", other);
+                exit(EXIT_INFRA_ERROR);
+            }
+        }
+    };
+
+    if !ack.ok {
+        eprintln!(
+            "Authentication failed: {}",
+            ack.error.as_deref().unwrap_or("rejected by agent")
+        );
+        exit(EXIT_INFRA_ERROR);
+    }
+    ack
+}
+
+async fn run_build(p: RunParams<'_>) -> Result<i32, Box<dyn std::error::Error + Send + Sync>> {
+    let RunParams {
+        host,
+        token,
+        project_name,
+        project_dir,
+        command,
+        outputs,
+        out_dir,
+        template,
+        no_cache,
+        run_env,
+        run_toolchain,
+        tty,
+        forwards,
+        compression,
+        verbose,
+        tls_config,
+        telemetry,
+    } = p;
     if verbose {
         println!("=== Farhand Remote Runner ===");
         println!("Connecting to agent at: {}", host);
@@ -655,68 +757,20 @@ async fn run_build(
         }
     };
 
-    // 2. Handshake: Send HELLO
+    // 2. Handshake: send HELLO, wait out any QUEUED frames, read HELLO_ACK
     let client_compressions = if let Some(c) = &compression {
         vec![c.to_string()]
     } else {
         vec!["zstd".to_string(), "gzip".to_string(), "none".to_string()]
     };
-
-    let hello = HelloPayload {
-        token: token.to_string(),
-        project: project_name.to_string(),
-        protocol_version: CURRENT_PROTOCOL_VERSION,
-        compressions: Some(client_compressions),
-    };
-
-    if let Err(e) = write_json_frame(&mut stream, MsgType::Hello, &hello).await {
-        eprintln!("Error: failed to send HELLO handshake: {}", e);
-        exit(EXIT_INFRA_ERROR);
-    }
-
-    // Read HELLO_ACK or QUEUED
-    let ack: HelloAckPayload = loop {
-        let (msg_type, payload) = match read_frame(&mut stream).await {
-            Ok(f) => f,
-            Err(e) => {
-                eprintln!("Error: failed to read HELLO_ACK: {}", e);
-                exit(EXIT_INFRA_ERROR);
-            }
-        };
-
-        match msg_type {
-            MsgType::Queued => {
-                if let Ok(q) = decode_json::<protocol::QueuedPayload>(&payload) {
-                    println!(
-                        "[queued] Agent busy ({}), position in queue: {}. Waiting for lock...",
-                        q.reason, q.position
-                    );
-                }
-            }
-            MsgType::HelloAck => {
-                let parsed: HelloAckPayload = match decode_json(&payload) {
-                    Ok(a) => a,
-                    Err(e) => {
-                        eprintln!("Error: invalid HELLO_ACK payload: {}", e);
-                        exit(EXIT_INFRA_ERROR);
-                    }
-                };
-                break parsed;
-            }
-            other => {
-                eprintln!("Protocol error: expected HELLO_ACK, received {:?}", other);
-                exit(EXIT_INFRA_ERROR);
-            }
-        }
-    };
-
-    if !ack.ok {
-        eprintln!(
-            "Authentication failed: {}",
-            ack.error.as_deref().unwrap_or("rejected by agent")
-        );
-        exit(EXIT_INFRA_ERROR);
-    }
+    let ack = perform_handshake(
+        &mut stream,
+        token,
+        project_name,
+        Some(client_compressions),
+        true,
+    )
+    .await;
 
     let negotiated_compression = ack
         .compression
@@ -1528,41 +1582,9 @@ async fn main() {
             }
         };
 
-        let hello = HelloPayload {
-            token,
-            project: project_name,
-            protocol_version: CURRENT_PROTOCOL_VERSION,
-            compressions: None,
-        };
-        if let Err(e) = write_json_frame(&mut stream, MsgType::Hello, &hello).await {
-            eprintln!("Error: failed to send HELLO: {}", e);
-            exit(EXIT_INFRA_ERROR);
-        }
-        let (msg_type, payload) = match read_frame(&mut stream).await {
-            Ok(f) => f,
-            Err(e) => {
-                eprintln!("Error: failed to read HELLO_ACK: {}", e);
-                exit(EXIT_INFRA_ERROR);
-            }
-        };
-        if msg_type != MsgType::HelloAck {
-            eprintln!("Protocol error: expected HELLO_ACK, got {:?}", msg_type);
-            exit(EXIT_INFRA_ERROR);
-        }
-        let ack: HelloAckPayload = match decode_json(&payload) {
-            Ok(a) => a,
-            Err(e) => {
-                eprintln!("Error: invalid HELLO_ACK: {}", e);
-                exit(EXIT_INFRA_ERROR);
-            }
-        };
-        if !ack.ok {
-            eprintln!(
-                "Authentication failed: {}",
-                ack.error.as_deref().unwrap_or("rejected")
-            );
-            exit(EXIT_INFRA_ERROR);
-        }
+        // No compression offer and no queue wait: one-shot admin frames must
+        // be answered immediately by the agent.
+        perform_handshake(&mut stream, &token, &project_name, None, false).await;
 
         let put = PutTemplatePayload {
             name: name.clone(),
@@ -1696,25 +1718,25 @@ async fn main() {
         println!("   Command: {:?}", effective_command);
         println!("   Press Ctrl+C to exit.\n");
 
-        let initial_code = run_build(
-            &host,
-            &token,
-            &project_name,
-            &project_dir,
-            &effective_command,
-            outputs.clone(),
-            &out_dir,
-            template.clone(),
+        let initial_code = run_build(RunParams {
+            host: &host,
+            token: &token,
+            project_name: &project_name,
+            project_dir: &project_dir,
+            command: &effective_command,
+            outputs: outputs.clone(),
+            out_dir: &out_dir,
+            template: template.clone(),
             no_cache,
-            run_env.clone(),
-            run_toolchain.clone(),
-            effective_tty,
-            &effective_forwards,
-            effective_compression.clone(),
+            run_env: run_env.clone(),
+            run_toolchain: run_toolchain.clone(),
+            tty: effective_tty,
+            forwards: &effective_forwards,
+            compression: effective_compression.clone(),
             verbose,
-            tls_config.as_ref(),
-            &mut telemetry,
-        )
+            tls_config: tls_config.as_ref(),
+            telemetry: &mut telemetry,
+        })
         .await;
 
         if let Ok(130) = initial_code {
@@ -1811,25 +1833,25 @@ async fn main() {
                 while rx.try_recv().is_ok() {}
 
                 println!("\n🔄 Change detected, syncing and rebuilding...");
-                let code = run_build(
-                    &host,
-                    &token,
-                    &project_name,
-                    &project_dir,
-                    &effective_command,
-                    outputs.clone(),
-                    &out_dir,
-                    template.clone(),
+                let code = run_build(RunParams {
+                    host: &host,
+                    token: &token,
+                    project_name: &project_name,
+                    project_dir: &project_dir,
+                    command: &effective_command,
+                    outputs: outputs.clone(),
+                    out_dir: &out_dir,
+                    template: template.clone(),
                     no_cache,
-                    run_env.clone(),
-                    run_toolchain.clone(),
-                    effective_tty,
-                    &effective_forwards,
-                    effective_compression.clone(),
+                    run_env: run_env.clone(),
+                    run_toolchain: run_toolchain.clone(),
+                    tty: effective_tty,
+                    forwards: &effective_forwards,
+                    compression: effective_compression.clone(),
                     verbose,
-                    tls_config.as_ref(),
-                    &mut telemetry,
-                )
+                    tls_config: tls_config.as_ref(),
+                    telemetry: &mut telemetry,
+                })
                 .await;
 
                 if let Ok(130) = code {
@@ -1847,25 +1869,25 @@ async fn main() {
         exit(0);
     }
 
-    let exit_code = match run_build(
-        &host,
-        &token,
-        &project_name,
-        &project_dir,
-        &effective_command,
+    let exit_code = match run_build(RunParams {
+        host: &host,
+        token: &token,
+        project_name: &project_name,
+        project_dir: &project_dir,
+        command: &effective_command,
         outputs,
-        &out_dir,
+        out_dir: &out_dir,
         template,
         no_cache,
         run_env,
         run_toolchain,
-        effective_tty,
-        &effective_forwards,
-        effective_compression,
+        tty: effective_tty,
+        forwards: &effective_forwards,
+        compression: effective_compression,
         verbose,
-        tls_config.as_ref(),
-        &mut telemetry,
-    )
+        tls_config: tls_config.as_ref(),
+        telemetry: &mut telemetry,
+    })
     .await
     {
         Ok(code) => code,
