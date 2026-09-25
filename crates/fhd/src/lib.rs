@@ -53,6 +53,62 @@ pub struct ServerContext {
     pub active_builds: ActiveBuildMap,
 }
 
+impl ServerContext {
+    /// Constant-time authorization check for a client-provided token.
+    ///
+    /// - No token configured (unauthenticated mode): every caller is authorized.
+    /// - Token configured: the provided token must match in constant time
+    ///   (see [`protocol::ct_eq_tokens`]). Empty configured tokens are treated
+    ///   as "no authentication" for compatibility with direct `run_server`
+    ///   callers; the CLI rejects them at startup.
+    pub fn authorize(&self, provided: Option<&str>) -> bool {
+        match self.expected_token.as_deref() {
+            None => true,
+            // Direct run_server callers only; the CLI rejects empty tokens.
+            Some("") => true,
+            Some(expected) => protocol::ct_eq_tokens(provided, Some(expected)),
+        }
+    }
+}
+
+/// Validate daemon startup authentication configuration.
+///
+/// The daemon refuses to start without a token unless unauthenticated mode is
+/// explicitly requested: an unauthenticated `fhd` is remote code execution by
+/// design. An empty token string is also rejected as a misconfiguration.
+pub fn validate_start_config(
+    token: Option<&str>,
+    allow_unauthenticated: bool,
+) -> Result<(), String> {
+    match token {
+        Some(t) if t.trim().is_empty() => Err(
+            "--token was set to an empty string. Set a real token via --token or the \
+             FARHAND_TOKEN environment variable, or pass --allow-unauthenticated to \
+             intentionally disable authentication."
+                .to_string(),
+        ),
+        Some(_) => Ok(()),
+        None if allow_unauthenticated => Ok(()),
+        None => Err(
+            "No authentication token configured. fhd executes commands sent by \
+             authenticated clients, so it refuses to start without a token.\n  \
+             Set one:    --token <secret>   (or FARHAND_TOKEN env var)\n  \
+             Dev only:   --allow-unauthenticated  (NEVER expose to untrusted networks)"
+                .to_string(),
+        ),
+    }
+}
+
+/// Whether a listen address is exposed (unspecified address or any
+/// non-loopback IP). Unparseable addresses are treated conservatively as
+/// exposed.
+pub fn is_exposed_bind(listen: &str) -> bool {
+    match listen.parse::<std::net::SocketAddr>() {
+        Ok(addr) => !addr.ip().is_loopback(),
+        Err(_) => true,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn run_server(
     listener: TcpListener,
@@ -166,17 +222,15 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
 
     if msg_type == MsgType::Status {
         let status_req: protocol::StatusRequestPayload = decode_json(&payload)?;
-        if let Some(expected) = ctx.expected_token.as_deref() {
-            if !expected.is_empty() && status_req.token != expected {
-                let ack = HelloAckPayload {
-                    ok: false,
-                    error: Some("Unauthorized STATUS request".into()),
-                    compression: None,
-                    remote_workdir: None,
-                };
-                write_json_frame(&mut stream, MsgType::HelloAck, &ack).await?;
-                return Err("Unauthorized STATUS request".into());
-            }
+        if !ctx.authorize(Some(status_req.token.as_str())) {
+            let ack = HelloAckPayload {
+                ok: false,
+                error: Some("Unauthorized STATUS request".into()),
+                compression: None,
+                remote_workdir: None,
+            };
+            write_json_frame(&mut stream, MsgType::HelloAck, &ack).await?;
+            return Err("Unauthorized STATUS request".into());
         }
         let active_runs = ctx
             .max_runs
@@ -230,17 +284,15 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
 
     if msg_type == MsgType::History {
         let history_req: protocol::HistoryRequestPayload = decode_json(&payload)?;
-        if let Some(expected) = ctx.expected_token.as_deref() {
-            if !expected.is_empty() && history_req.token != expected {
-                let ack = HelloAckPayload {
-                    ok: false,
-                    error: Some("Unauthorized HISTORY request".into()),
-                    compression: None,
-                    remote_workdir: None,
-                };
-                write_json_frame(&mut stream, MsgType::HelloAck, &ack).await?;
-                return Err("Unauthorized HISTORY request".into());
-            }
+        if !ctx.authorize(Some(history_req.token.as_str())) {
+            let ack = HelloAckPayload {
+                ok: false,
+                error: Some("Unauthorized HISTORY request".into()),
+                compression: None,
+                remote_workdir: None,
+            };
+            write_json_frame(&mut stream, MsgType::HelloAck, &ack).await?;
+            return Err("Unauthorized HISTORY request".into());
         }
         let workspace_dir =
             workspace::resolve_workspace_dir(&ctx.workdir_root, &history_req.project);
@@ -256,17 +308,15 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
 
     if msg_type == MsgType::Clean {
         let clean_req: protocol::CleanRequestPayload = decode_json(&payload)?;
-        if let Some(expected) = ctx.expected_token.as_deref() {
-            if !expected.is_empty() && clean_req.token != expected {
-                let ack = HelloAckPayload {
-                    ok: false,
-                    error: Some("Unauthorized CLEAN request".into()),
-                    compression: None,
-                    remote_workdir: None,
-                };
-                write_json_frame(&mut stream, MsgType::HelloAck, &ack).await?;
-                return Err("Unauthorized CLEAN request".into());
-            }
+        if !ctx.authorize(Some(clean_req.token.as_str())) {
+            let ack = HelloAckPayload {
+                ok: false,
+                error: Some("Unauthorized CLEAN request".into()),
+                compression: None,
+                remote_workdir: None,
+            };
+            write_json_frame(&mut stream, MsgType::HelloAck, &ack).await?;
+            return Err("Unauthorized CLEAN request".into());
         }
 
         let mut bytes_freed = 0u64;
@@ -342,17 +392,15 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
         return Err("Protocol version mismatch".into());
     }
 
-    if let Some(token) = ctx.expected_token.as_deref() {
-        if hello.token != token {
-            let ack = HelloAckPayload {
-                ok: false,
-                error: Some("Unauthorized: invalid auth token".into()),
-                compression: None,
-                remote_workdir: None,
-            };
-            write_json_frame(&mut stream, MsgType::HelloAck, &ack).await?;
-            return Err("Unauthorized".into());
-        }
+    if !ctx.authorize(Some(hello.token.as_str())) {
+        let ack = HelloAckPayload {
+            ok: false,
+            error: Some("Unauthorized: invalid auth token".into()),
+            compression: None,
+            remote_workdir: None,
+        };
+        write_json_frame(&mut stream, MsgType::HelloAck, &ack).await?;
+        return Err("Unauthorized".into());
     }
 
     // Pre-flight disk space guard: verify host volume has sufficient free space
@@ -1690,5 +1738,93 @@ pub async fn execute_and_stream<
         }
         apply_toolchain_env(&mut cmd, toolchain);
         run_child_and_stream(writer, reader, cmd, raw_stdio).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ctx_with(token: Option<&str>) -> ServerContext {
+        ServerContext {
+            expected_token: token.map(str::to_string),
+            workdir_root: std::env::temp_dir(),
+            custom_shell: None,
+            semaphore: Arc::new(tokio::sync::Semaphore::new(1)),
+            lock_manager: workspace::WorkspaceLockManager::new(),
+            tags: vec![],
+            queue_depth: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            max_runs: 1,
+            min_disk_bytes: 0,
+            cas_store: None,
+            start_time: std::time::Instant::now(),
+            active_builds: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        }
+    }
+
+    #[test]
+    fn authorize_accepts_matching_token() {
+        let ctx = ctx_with(Some("s3cret"));
+        assert!(ctx.authorize(Some("s3cret")));
+    }
+
+    #[test]
+    fn authorize_rejects_wrong_and_missing_tokens() {
+        let ctx = ctx_with(Some("s3cret"));
+        assert!(!ctx.authorize(Some("wrong")));
+        assert!(!ctx.authorize(Some("")));
+        assert!(!ctx.authorize(None));
+        // Every single-byte mutation must be rejected.
+        for i in 0.."s3cret".len() {
+            let mut tampered = "s3cret".to_string();
+            let replacement = if i % 2 == 0 { "x" } else { "y" };
+            tampered.replace_range(i..i + 1, replacement);
+            assert!(
+                !ctx.authorize(Some(&tampered)),
+                "mutation at byte {i} leaked"
+            );
+        }
+    }
+
+    #[test]
+    fn authorize_unauthenticated_mode_allows_all_callers() {
+        let ctx = ctx_with(None);
+        assert!(ctx.authorize(None));
+        assert!(ctx.authorize(Some("anything")));
+    }
+
+    #[test]
+    fn authorize_treats_empty_configured_token_as_legacy_open() {
+        // Direct run_server callers only; the CLI rejects empty tokens.
+        let ctx = ctx_with(Some(""));
+        assert!(ctx.authorize(Some("any")));
+        assert!(ctx.authorize(None));
+    }
+
+    #[test]
+    fn validate_start_config_requires_token_or_opt_in() {
+        assert!(validate_start_config(Some("tok"), false).is_ok());
+        assert!(validate_start_config(Some("tok"), true).is_ok());
+
+        let no_token = validate_start_config(None, false).unwrap_err();
+        assert!(no_token.contains("--token"));
+        assert!(no_token.contains("--allow-unauthenticated"));
+
+        assert!(validate_start_config(None, true).is_ok());
+
+        let empty = validate_start_config(Some("   "), false).unwrap_err();
+        assert!(empty.contains("empty string"));
+    }
+
+    #[test]
+    fn is_exposed_bind_classifies_addresses() {
+        assert!(is_exposed_bind("0.0.0.0:9876"));
+        assert!(is_exposed_bind("[::]:9876"));
+        assert!(is_exposed_bind("10.1.2.3:9876"));
+        assert!(is_exposed_bind("192.168.1.10:9876"));
+        assert!(!is_exposed_bind("127.0.0.1:9876"));
+        assert!(!is_exposed_bind("[::1]:9876"));
+        // Unparseable input is treated conservatively as exposed.
+        assert!(is_exposed_bind("not-an-address"));
     }
 }

@@ -1,7 +1,7 @@
 use clap::Parser;
 use std::path::PathBuf;
 use tokio::net::TcpListener;
-use tracing::info;
+use tracing::{info, warn};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -15,6 +15,13 @@ struct Cli {
 
     #[arg(long, env = "FARHAND_TOKEN", help = "Shared authentication token")]
     token: Option<String>,
+
+    #[arg(
+        long = "allow-unauthenticated",
+        action = clap::ArgAction::SetTrue,
+        help = "Accept connections without a token (NEVER expose to untrusted networks)"
+    )]
+    allow_unauthenticated: bool,
 
     #[arg(long, help = "Root directory for persistent workspaces")]
     workdir: Option<PathBuf>,
@@ -146,6 +153,32 @@ fn setup_tracing(level_str: &str, format_str: &str) {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     setup_tracing(&cli.log_level, &cli.log_format);
+
+    // Fail fast on authentication misconfiguration before binding a socket.
+    if let Err(msg) = fhd::validate_start_config(cli.token.as_deref(), cli.allow_unauthenticated) {
+        eprintln!("error: {msg}");
+        std::process::exit(2);
+    }
+
+    let tls_enabled = cli.tls || cli.tls_auto || cli.tls_cert.is_some();
+    if cli.allow_unauthenticated {
+        warn!(
+            "AUTHENTICATION DISABLED (--allow-unauthenticated): any client that can \
+             reach {} can execute arbitrary commands on this host. Intended for \
+             development only.",
+            cli.listen
+        );
+        if fhd::is_exposed_bind(&cli.listen) {
+            warn!("Listening on a non-loopback address without authentication.");
+        }
+    }
+    if cli.token.is_some() && !tls_enabled && fhd::is_exposed_bind(&cli.listen) {
+        warn!(
+            "Tokens travel in cleartext over raw TCP. Use --tls / --tls-auto, or \
+             front the port with a tunnel (ssh -L, cloudflared) on untrusted networks."
+        );
+    }
+
     let listener = TcpListener::bind(&cli.listen).await?;
     let workdir = cli
         .workdir
@@ -185,7 +218,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let min_disk_bytes = (cli.min_disk_gb * 1024.0 * 1024.0 * 1024.0) as u64;
 
-    let tls_acceptor = if cli.tls || cli.tls_auto || cli.tls_cert.is_some() {
+    let tls_acceptor = if tls_enabled {
         let (cert_pem, key_pem) =
             if cli.tls_auto || (cli.tls_cert.is_none() && cli.tls_key.is_none()) {
                 info!("Generating self-signed TLS certificate (ephemeral)...");

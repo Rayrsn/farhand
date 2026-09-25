@@ -1,6 +1,7 @@
 pub mod frame;
 pub mod messages;
 pub mod path;
+pub mod secure;
 pub mod tls;
 
 pub use frame::{
@@ -8,4 +9,5 @@ pub use frame::{
 };
 pub use messages::*;
 pub use path::{from_wire_path, to_wire_path};
+pub use secure::{ct_eq_bytes, ct_eq_tokens};
 pub use tls::*;
