@@ -809,6 +809,202 @@ async fn run_build(p: RunParams<'_>) -> Result<i32, Box<dyn std::error::Error + 
     Ok(exit_code)
 }
 
+/// Watch mode: run the build once, then rebuild on every local change.
+///
+/// Extracted from `main`, where the debounce and watcher plumbing buried the
+/// behavior itself. It takes the same `RunParams` as a one-shot build, so
+/// watch mode and `fh <build>` cannot drift apart in what they send. It does
+/// not return: it loops until the user interrupts a run, then exits.
+async fn run_watch(p: RunParams<'_>) -> ! {
+    let RunParams {
+        host,
+        token,
+        project_name,
+        project_dir,
+        command,
+        outputs,
+        out_dir,
+        template,
+        no_cache,
+        run_env,
+        run_toolchain,
+        tty,
+        forwards,
+        compression,
+        verbose,
+        tls_config,
+        telemetry,
+    } = p;
+
+    fn is_mutation_event(event: &notify::Event) -> bool {
+        matches!(
+            event.kind,
+            notify::EventKind::Create(_)
+                | notify::EventKind::Modify(notify::event::ModifyKind::Data(_))
+                | notify::EventKind::Modify(notify::event::ModifyKind::Name(_))
+                | notify::EventKind::Modify(notify::event::ModifyKind::Any)
+                | notify::EventKind::Remove(_)
+        )
+    }
+
+    println!(
+        "👁️  farhand watch mode active for: {}",
+        project_dir.display()
+    );
+    println!("   Command: {:?}", command);
+    println!("   Press Ctrl+C to exit.\n");
+
+    let initial_code = run_build(RunParams {
+        host,
+        token,
+        project_name,
+        project_dir,
+        command,
+        outputs: outputs.clone(),
+        out_dir,
+        template: template.clone(),
+        no_cache,
+        run_env: run_env.clone(),
+        run_toolchain: run_toolchain.clone(),
+        tty,
+        forwards,
+        compression: compression.clone(),
+        verbose,
+        tls_config,
+        telemetry,
+    })
+    .await;
+
+    if let Ok(130) = initial_code {
+        println!("\n👋 Watch mode stopped by user.");
+        exit(0);
+    }
+
+    println!("\n👁️  Watching for changes... (debounce: 150ms)");
+
+    // Bounded channel: an editor firing thousands of events fills at most
+    // 256 slots (older events are dropped — the debounce tick coalesces
+    // what matters into a single rebuild).
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<notify::Event>(256);
+    let mut watcher = match RecommendedWatcher::new(
+        move |res: notify::Result<notify::Event>| {
+            if let Ok(event) = res {
+                // Drop-on-full: coalescing happens at the debounce tick.
+                let _ = tx.try_send(event);
+            }
+        },
+        NotifyConfig::default(),
+    ) {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("Error initializing file watcher: {}", e);
+            exit(EXIT_INFRA_ERROR);
+        }
+    };
+
+    if let Err(e) = watcher.watch(project_dir, RecursiveMode::Recursive) {
+        eprintln!("Error watching directory {}: {}", project_dir.display(), e);
+        exit(EXIT_INFRA_ERROR);
+    }
+
+    // Drain any filesystem events generated during initial scan/build
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    while rx.try_recv().is_ok() {}
+
+    loop {
+        let first_event = tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                println!("\n👋 Watch mode stopped by user.");
+                break;
+            }
+            evt = rx.recv() => {
+                match evt {
+                    Some(e) => e,
+                    None => break,
+                }
+            }
+        };
+
+        if !is_mutation_event(&first_event) {
+            continue;
+        }
+
+        let mut relevant = first_event
+            .paths
+            .iter()
+            .any(|p| !should_ignore_path(p, project_dir));
+
+        let debounce_dur = std::time::Duration::from_millis(150);
+        let deadline = tokio::time::Instant::now() + debounce_dur;
+
+        let mut interrupted = false;
+        loop {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {
+                    println!("\n👋 Watch mode stopped by user.");
+                    interrupted = true;
+                    break;
+                }
+                next = rx.recv() => {
+                    if let Some(event) = next {
+                        if is_mutation_event(&event) && event.paths.iter().any(|p| !should_ignore_path(p, project_dir)) {
+                            relevant = true;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+                _ = tokio::time::sleep_until(deadline) => {
+                    break;
+                }
+            }
+        }
+
+        if interrupted {
+            break;
+        }
+
+        if relevant {
+            // Drain any extra pending events before rebuilding
+            while rx.try_recv().is_ok() {}
+
+            println!("\n🔄 Change detected, syncing and rebuilding...");
+            let code = run_build(RunParams {
+                host,
+                token,
+                project_name,
+                project_dir,
+                command,
+                outputs: outputs.clone(),
+                out_dir,
+                template: template.clone(),
+                no_cache,
+                run_env: run_env.clone(),
+                run_toolchain: run_toolchain.clone(),
+                tty,
+                forwards,
+                compression: compression.clone(),
+                verbose,
+                tls_config,
+                telemetry,
+            })
+            .await;
+
+            if let Ok(130) = code {
+                println!("\n👋 Watch mode stopped by user.");
+                break;
+            }
+
+            // Settle and drain events triggered by local artifact extraction or touch
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            while rx.try_recv().is_ok() {}
+
+            println!("\n👁️  Watching for changes...");
+        }
+    }
+    exit(0);
+}
+
 #[tokio::main]
 async fn main() {
     let raw_args: Vec<String> = std::env::args().collect();
@@ -1343,17 +1539,6 @@ async fn main() {
     } else {
         cfg.forward
     };
-    fn is_mutation_event(event: &notify::Event) -> bool {
-        matches!(
-            event.kind,
-            notify::EventKind::Create(_)
-                | notify::EventKind::Modify(notify::event::ModifyKind::Data(_))
-                | notify::EventKind::Modify(notify::event::ModifyKind::Name(_))
-                | notify::EventKind::Modify(notify::event::ModifyKind::Any)
-                | notify::EventKind::Remove(_)
-        )
-    }
-
     let mut run_env = collect_forward_env(cli.no_env, cfg.forward_env, &cfg.env, &cli.env);
     if effective_tty {
         let env_map = run_env.get_or_insert_with(std::collections::HashMap::new);
@@ -1366,14 +1551,7 @@ async fn main() {
     let effective_compression = cli.compression.or(cfg.compression);
 
     if is_watch {
-        println!(
-            "👁️  farhand watch mode active for: {}",
-            project_dir.display()
-        );
-        println!("   Command: {:?}", effective_command);
-        println!("   Press Ctrl+C to exit.\n");
-
-        let initial_code = run_build(RunParams {
+        run_watch(RunParams {
             host: &host,
             token: &token,
             project_name: &project_name,
@@ -1393,135 +1571,6 @@ async fn main() {
             telemetry: &mut telemetry,
         })
         .await;
-
-        if let Ok(130) = initial_code {
-            println!("\n👋 Watch mode stopped by user.");
-            exit(0);
-        }
-
-        println!("\n👁️  Watching for changes... (debounce: 150ms)");
-
-        // Bounded channel: an editor firing thousands of events fills at most
-        // 256 slots (older events are dropped — the debounce tick coalesces
-        // what matters into a single rebuild).
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<notify::Event>(256);
-        let mut watcher = match RecommendedWatcher::new(
-            move |res: notify::Result<notify::Event>| {
-                if let Ok(event) = res {
-                    // Drop-on-full: coalescing happens at the debounce tick.
-                    let _ = tx.try_send(event);
-                }
-            },
-            NotifyConfig::default(),
-        ) {
-            Ok(w) => w,
-            Err(e) => {
-                eprintln!("Error initializing file watcher: {}", e);
-                exit(EXIT_INFRA_ERROR);
-            }
-        };
-
-        if let Err(e) = watcher.watch(&project_dir, RecursiveMode::Recursive) {
-            eprintln!("Error watching directory {}: {}", project_dir.display(), e);
-            exit(EXIT_INFRA_ERROR);
-        }
-
-        // Drain any filesystem events generated during initial scan/build
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        while rx.try_recv().is_ok() {}
-
-        loop {
-            let first_event = tokio::select! {
-                _ = tokio::signal::ctrl_c() => {
-                    println!("\n👋 Watch mode stopped by user.");
-                    break;
-                }
-                evt = rx.recv() => {
-                    match evt {
-                        Some(e) => e,
-                        None => break,
-                    }
-                }
-            };
-
-            if !is_mutation_event(&first_event) {
-                continue;
-            }
-
-            let mut relevant = first_event
-                .paths
-                .iter()
-                .any(|p| !should_ignore_path(p, &project_dir));
-
-            let debounce_dur = std::time::Duration::from_millis(150);
-            let deadline = tokio::time::Instant::now() + debounce_dur;
-
-            let mut interrupted = false;
-            loop {
-                tokio::select! {
-                    _ = tokio::signal::ctrl_c() => {
-                        println!("\n👋 Watch mode stopped by user.");
-                        interrupted = true;
-                        break;
-                    }
-                    next = rx.recv() => {
-                        if let Some(event) = next {
-                            if is_mutation_event(&event) && event.paths.iter().any(|p| !should_ignore_path(p, &project_dir)) {
-                                relevant = true;
-                            }
-                        } else {
-                            break;
-                        }
-                    }
-                    _ = tokio::time::sleep_until(deadline) => {
-                        break;
-                    }
-                }
-            }
-
-            if interrupted {
-                break;
-            }
-
-            if relevant {
-                // Drain any extra pending events before rebuilding
-                while rx.try_recv().is_ok() {}
-
-                println!("\n🔄 Change detected, syncing and rebuilding...");
-                let code = run_build(RunParams {
-                    host: &host,
-                    token: &token,
-                    project_name: &project_name,
-                    project_dir: &project_dir,
-                    command: &effective_command,
-                    outputs: outputs.clone(),
-                    out_dir: &out_dir,
-                    template: template.clone(),
-                    no_cache,
-                    run_env: run_env.clone(),
-                    run_toolchain: run_toolchain.clone(),
-                    tty: effective_tty,
-                    forwards: &effective_forwards,
-                    compression: effective_compression.clone(),
-                    verbose,
-                    tls_config: tls_config.as_ref(),
-                    telemetry: &mut telemetry,
-                })
-                .await;
-
-                if let Ok(130) = code {
-                    println!("\n👋 Watch mode stopped by user.");
-                    break;
-                }
-
-                // Settle and drain events triggered by local artifact extraction or touch
-                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-                while rx.try_recv().is_ok() {}
-
-                println!("\n👁️  Watching for changes...");
-            }
-        }
-        exit(0);
     }
 
     let exit_code = match run_build(RunParams {
