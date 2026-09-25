@@ -173,7 +173,17 @@ cloudflared tunnel route dns farhand-build mac.yourdomain.com
 ```
 
 ### Step 4.3: Configure `~/.ssh/config` on Your Local Machine
-Add the following block to your local `~/.ssh/config`:
+
+> [!TIP]
+> **Automated One-Step Setup Script**:
+> You can install all prerequisites (`cloudflared`, OpenSSH, `fh`) and configure your `~/.ssh/config` plus a convenient `fh-tunnel` background helper script automatically by running:
+> ```bash
+> ./scripts/setup_remote_ssh.sh
+> # Or non-interactively:
+> ./scripts/setup_remote_ssh.sh --hostname mac.yourdomain.com --alias mac-mini --user builder --yes
+> ```
+
+Alternatively, you can manually add the following block to your local `~/.ssh/config`:
 
 ```ssh-config
 Host mac-mini
