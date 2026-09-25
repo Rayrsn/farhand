@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Engineering
+- **MSRV corrected to 1.88.0 and now enforced by CI.** The previous `1.75`
+  claim was never true: the dependency graph requires 1.88 (`time`), and our
+  own code uses `is_multiple_of` (stabilized in 1.87). Verified with
+  `cargo +1.88.0 check --workspace --all-targets` + library tests on 1.88.0.
+- **CI credibility suite**: coverage via `cargo-llvm-cov` + Codecov badge,
+  cargo-deny policy (`deny.toml`: advisories/bans/licenses/sources — currently
+  green with zero exceptions), RustSec audit, an MSRV job, nightly
+  ThreadSanitizer and benchmark-trend jobs, Dependabot, and all third-party
+  GitHub Actions pinned by commit SHA.
+- Fuzz-lite property tests (nightly-free cargo-fuzz equivalent): deterministic
+  pseudo-random byte streams and bit-flipped archives run through the frame
+  reader, wire-path parser, and tar unpacker — crash-safety and zip-slip
+  invariants verified in CI on all platforms (nightly cargo-fuzz targets
+  planned as a follow-up).
+
 ### Fixed
 - **CAS housekeeping**: new `--cas-ttl-days` (default 30) / `--cas-max-gb`
   eviction for content-addressable objects (previously unbounded growth);

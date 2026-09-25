@@ -1,0 +1,77 @@
+# cargo-deny policy for the Farhand workspace.
+# Enforced in CI: .github/workflows/ci.yml (dependency-policy job).
+# Docs: https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+all-features = true
+
+# -----------------------------------------------------------------------------
+# Licenses: permissive only. Farhand is dual-licensed MIT OR Apache-2.0 and
+# pulls in crypto (ring/rustls, ISC), Unicode data (Unicode-3.0), and a few
+# permissive ecosystem crates.
+# -----------------------------------------------------------------------------
+[licenses]
+version = 2
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "ISC",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "0BSD",
+    "Zlib",
+    "Unlicense",
+    "CC0-1.0",
+    "BSL-1.0",
+    "Unicode-3.0",
+    "CDLA-Permissive-2.0",
+    # Only ever appears as one option of an OR expression (dual-licensed deps).
+    "LGPL-2.1-or-later",
+]
+confidence-threshold = 0.9
+
+# -----------------------------------------------------------------------------
+# Bans: duplicate versions are a maintenance smell, not a hard failure. Every
+# current duplicate is a transitive constraint we don't control (windows-sys
+# from two major versions, thiserror 1.x/2.x, …). New duplicates should be
+# avoided; the list below is the accepted status quo.
+# -----------------------------------------------------------------------------
+[bans]
+multiple-versions = "warn"
+allow-wildcard-paths = true
+deny = [
+    # We will never take a GPL/AGPL dependency.
+    { name = "GPL-2.0" },
+    { name = "GPL-3.0" },
+    { name = "AGPL-3.0" },
+]
+skip = [
+    { name = "bitflags" },
+    { name = "getrandom" },
+    { name = "syn" },
+    { name = "thiserror" },
+    { name = "thiserror-impl" },
+    { name = "webpki-roots" },
+    { name = "windows-sys" },
+    { name = "windows-targets" },
+    { name = "windows_*" },
+]
+skip-tree = []
+
+# -----------------------------------------------------------------------------
+# Advisories: no exceptions. A new advisory fails CI and gets triaged
+# immediately (see SECURITY.md).
+# -----------------------------------------------------------------------------
+[advisories]
+version = 2
+ignore = []
+yanked = "deny"
+
+# -----------------------------------------------------------------------------
+# Sources: crates.io only. No git dependencies, no alternative registries.
+# -----------------------------------------------------------------------------
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

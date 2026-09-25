@@ -13,7 +13,7 @@ members = [
 [workspace.package]
 version = "1.8.0"
 edition = "2021"
-rust-version = "1.75"
+rust-version = "1.88"
 authors = ["https://github.com/Rayrsn"]
 description = "Remote build and test offloader with zero external system binaries, for weak or battery-constrained machines"
 license = "MIT OR Apache-2.0"

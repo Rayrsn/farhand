@@ -1,0 +1,55 @@
+name: Nightly
+
+on:
+  schedule:
+    # 03:17 UTC daily — heavy verification that doesn't gate PRs.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tsan:
+    name: Thread sanitizer (library tests)
+    runs-on: ubuntu-latest
+    # Advisory during the first two weeks of running: TSan on hosted runners
+    # is the most likely flake source in this repo. Once it has been green for
+    # two consecutive weeks, flip this to `false` (blocking). The job is never
+    # deleted — a sanitizer that is silently dropped is worse than a flaky one.
+    continue-on-error: true
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Rust nightly (with rust-src for -Zbuild-std)
+        uses: dtolnay/rust-toolchain@be39649afda95dbf70f87cce95f68b8d5797b296 # nightly
+        with:
+          toolchain: nightly
+          components: rust-src
+
+      - name: Library tests under ThreadSanitizer
+        run: |
+          RUSTFLAGS="-Zsanitizer=thread" \
+          cargo +nightly test -Zbuild-std --target x86_64-unknown-linux-gnu \
+            --workspace --lib
+
+  benchmarks:
+    name: Benchmarks (trend artifact)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+
+      - name: Run criterion benchmarks
+        run: cargo bench --workspace
+
+      - name: Archive criterion results
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: criterion-$(github.run_number)
+          path: target/criterion
+          retention-days: 30

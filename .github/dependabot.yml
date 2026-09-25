@@ -1,0 +1,21 @@
+version: 2
+
+updates:
+  # Rust dependencies (Cargo.lock)
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+
+  # GitHub Actions, pinned by commit SHA in our workflows — Dependabot updates
+  # the SHAs (with the version comment) automatically.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
