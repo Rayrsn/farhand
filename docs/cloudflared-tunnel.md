@@ -177,11 +177,18 @@ cloudflared tunnel route dns farhand-build mac.yourdomain.com
 > [!TIP]
 > **Automated One-Step Setup Script**:
 > You can install all prerequisites (`cloudflared`, OpenSSH, `fh`) and configure your `~/.ssh/config` plus a convenient `fh-tunnel` background helper script automatically by running:
-> ```bash
-> ./scripts/setup_remote_ssh.sh
-> # Or non-interactively:
-> ./scripts/setup_remote_ssh.sh --hostname mac.yourdomain.com --alias mac-mini --user builder --yes
-> ```
+> - **Linux & macOS**:
+>   ```bash
+>   ./scripts/setup_remote_ssh.sh
+>   # Or non-interactively:
+>   ./scripts/setup_remote_ssh.sh --hostname mac.yourdomain.com --alias mac-mini --user builder --yes
+>   ```
+> - **Windows (PowerShell)**:
+>   ```powershell
+>   .\scripts\setup_remote_ssh.ps1
+>   # Or non-interactively:
+>   .\scripts\setup_remote_ssh.ps1 -Hostname mac.yourdomain.com -HostAlias mac-mini -RemoteUser builder -NonInteractive
+>   ```
 
 Alternatively, you can manually add the following block to your local `~/.ssh/config`:
 
