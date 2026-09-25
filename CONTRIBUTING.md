@@ -33,7 +33,7 @@ git config core.hooksPath .githooks
 
 # Manual equivalents
 cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --workspace --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks
 cargo test --workspace
 ```
 
@@ -50,6 +50,31 @@ House rules:
   `crates/workspace/src/lib.rs`.
 - Wrap errors with `%w`-style context (`anyhow`/`thiserror` patterns), use
   `tracing` for structured logs, and avoid `unwrap()`/`expect()` outside tests.
+
+## Code layout
+
+Where things live, so you can find the right file before grepping:
+
+**`fhd` (agent daemon)** — `src/lib.rs` holds the accept loop, TLS dispatch,
+and the per-connection run pipeline. The rest is split by responsibility:
+`active.rs` (active-build registry; entries are removed by a guard so a
+cancelled run cannot leak a slot), `exec.rs` (argv → OS process: shell
+selection, escaping, toolchain wiring, process-group kill), `stream.rs`
+(stdout/stderr streaming, PTY sessions, reverse port forwarding), and
+`session.rs` (server configuration, startup validation, agent identity).
+
+**`fh` (client)** — `src/cli.rs` is the entire CLI contract (every flag and
+subcommand, as clap derives). `src/main.rs` holds the runtime: `run_build`
+(one remote invocation, taking a `RunParams` struct), `run_watch` (the
+change → rebuild loop), `perform_handshake` (HELLO/HELLO_ACK), and subcommand
+dispatch. Shared client logic lives in the library modules beside it
+(`client.rs`, `pool.rs`, `history.rs`, `init.rs`, …) so the binary stays a
+thin coordinator.
+
+**Libraries** — `protocol` is the pure wire layer and imports nothing from
+the other crates; `fileset` is filesystem/archiving only; `workspace` owns
+agent-side storage (CAS/CoW, locks, GC, history). Cross-imports between
+those three are a bug, not a style question.
 
 ## Commit & PR Style
 

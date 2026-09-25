@@ -119,6 +119,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`fh exec` end-to-end coverage**: the ad-hoc command path (workspace
   sync, streamed stdout, mirrored remote exit code) is now exercised through
   the real binary, not just the protocol layer.
+- **Architecture: the two monoliths are decomposed.** `fhd/src/lib.rs` was
+  2,200+ lines containing the accept loop, a 950-line connection handler,
+  command construction, PTY handling, port forwarding, and state
+  management; it is now `lib.rs` (accept loop + run pipeline) plus `active`,
+  `exec`, `stream`, and `session` modules. `fh/src/main.rs` was 1,883 lines
+  mixing the entire CLI surface with the runtime; the clap definitions moved
+  to `cli.rs`, `run_build`'s 18 positional arguments became a `RunParams`
+  struct, the duplicated HELLO handshake became one `perform_handshake`, and
+  watch mode became its own `run_watch`. All code moved verbatim — no logic
+  changes — and the per-suite test counts were verified after every step,
+  which caught an orphaned `#[cfg(windows)]` that had silently skipped all
+  nine `fhd` unit tests on Linux while the build stayed green.
 - New `fhd` flag: `--max-connections`.
 
 ## [1.7.0] - 2026-09-22
