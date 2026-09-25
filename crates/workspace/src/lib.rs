@@ -25,8 +25,9 @@ pub use cas::CasStore;
 
 pub mod gc;
 pub use gc::{
-    calculate_dir_size, get_workspace_last_used, run_emergency_disk_gc, run_garbage_collection,
-    scan_workspaces, touch_workspace, trim_workspace_caches, GcReport, WorkspaceMetadata,
+    calculate_dir_size, gc_cas, get_workspace_last_used, run_emergency_disk_gc,
+    run_garbage_collection, scan_workspaces, touch_workspace, trim_workspace_caches, CasGcReport,
+    GcReport, WorkspaceMetadata,
 };
 
 pub mod disk;

@@ -2,7 +2,12 @@ use crate::cow::cow_clone_file;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::SystemTime;
 use tracing::debug;
+
+/// Process-local counter ensuring unique tmp names for concurrent stores.
+static CAS_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Global Content-Addressable Storage (CAS) for cross-project and cross-branch deduplication.
 ///
@@ -62,7 +67,22 @@ impl CasStore {
             fs::create_dir_all(parent)?;
         }
 
-        let tmp_path = dst_path.with_extension(format!("tmp.{}", std::process::id()));
+        // Unique tmp name per call: two concurrent stores of the same hash must
+        // not race on a shared tmp path (a process-constant tmp.{pid} used to
+        // collide).
+        let nanos = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let counter = CAS_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let tmp_name = format!(
+            "{}.tmp.{}.{}.{}",
+            sha256,
+            std::process::id(),
+            nanos,
+            counter
+        );
+        let tmp_path = dst_path.with_file_name(tmp_name);
         cow_clone_file(src_path, &tmp_path)?;
         if let Err(e) = fs::rename(&tmp_path, &dst_path) {
             let _ = fs::remove_file(&tmp_path);
@@ -79,8 +99,11 @@ impl CasStore {
         Ok(dst_path)
     }
 
-    /// Materialize an object from CAS into `dest_path` via CoW reflink or hardlink.
-    /// Returns `Ok(true)` if materialized, or `Ok(false)` if the object is missing from CAS.
+    /// Materialize an object from CAS into `dest_path` via CoW reflink or copy.
+    ///
+    /// Returns `Ok(true)` if materialized, or `Ok(false)` if the object is
+    /// missing from CAS. A successful hydration **touches the object's mtime**
+    /// so CAS GC evicts by "unused since" age rather than ingestion age.
     pub fn materialize_to(&self, sha256: &str, dest_path: &Path) -> io::Result<bool> {
         let cas_path = self.object_path(sha256);
         if !cas_path.is_file() {
@@ -92,6 +115,13 @@ impl CasStore {
         }
 
         cow_clone_file(&cas_path, dest_path)?;
+
+        // Touch: keep LRU accounting accurate for GC. Best-effort — a failed
+        // touch must not fail hydration.
+        if let Ok(f) = fs::File::options().write(true).open(&cas_path) {
+            let _ = f.set_modified(SystemTime::now());
+        }
+
         Ok(true)
     }
 }
@@ -130,5 +160,83 @@ mod tests {
         assert!(!cas
             .materialize_to("nonexistenthash", &dest_dir.path().join("missing.rs"))
             .unwrap());
+    }
+}
+
+#[cfg(test)]
+mod concurrency_tests {
+    use super::*;
+    use std::sync::Arc;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_concurrent_put_file_same_hash_never_clobbers() {
+        // Regression: the old process-constant tmp.{pid} name made two
+        // concurrent stores of the same hash race on one tmp file.
+        let workdir = tempdir().unwrap();
+        let cas = Arc::new(CasStore::new(workdir.path()));
+        let src = tempdir().unwrap();
+        let src_file = src.path().join("data.bin");
+        fs::write(&src_file, vec![42u8; 8192]).unwrap();
+        let hash = "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234";
+
+        let mut handles = Vec::new();
+        for _ in 0..32 {
+            let cas = Arc::clone(&cas);
+            let src_file = src_file.clone();
+            let hash = hash.to_string();
+            handles.push(std::thread::spawn(move || {
+                cas.put_file(&hash, &src_file).expect("concurrent put_file")
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let stored = fs::read(cas.object_path(hash)).unwrap();
+        assert_eq!(
+            stored,
+            vec![42u8; 8192],
+            "object must be intact after the race"
+        );
+    }
+
+    #[test]
+    fn test_materialize_touches_object_mtime() {
+        let workdir = tempdir().unwrap();
+        let cas = CasStore::new(workdir.path());
+        let src = tempdir().unwrap();
+        let src_file = src.path().join("f.bin");
+        fs::write(&src_file, b"touch-me").unwrap();
+        let hash = "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234";
+        cas.put_file(hash, &src_file).unwrap();
+
+        let before = fs::metadata(cas.object_path(hash))
+            .unwrap()
+            .modified()
+            .unwrap();
+        // Age the object artificially so a touch is observable.
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(600);
+        {
+            let f = fs::File::options()
+                .write(true)
+                .open(cas.object_path(hash))
+                .unwrap();
+            f.set_modified(old).unwrap();
+        }
+
+        let dest = tempdir().unwrap();
+        cas.materialize_to(hash, &dest.path().join("out.bin"))
+            .unwrap();
+
+        let after = fs::metadata(cas.object_path(hash))
+            .unwrap()
+            .modified()
+            .unwrap();
+        assert!(
+            after > old,
+            "materialize_to must touch the object mtime for LRU accounting"
+        );
+        let _ = before;
     }
 }

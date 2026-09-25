@@ -14,6 +14,14 @@ pub struct GcReport {
     pub remaining_disk_bytes: u64,
 }
 
+/// Result of a CAS garbage-collection pass.
+#[derive(Debug, Clone, Default)]
+pub struct CasGcReport {
+    pub objects_deleted: usize,
+    pub bytes_freed: u64,
+    pub remaining_bytes: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct WorkspaceMetadata {
     pub path: PathBuf,
@@ -123,6 +131,11 @@ pub fn scan_workspaces(workspaces_root: &Path) -> Vec<WorkspaceMetadata> {
                 .and_then(|s| s.to_str())
                 .unwrap_or("")
                 .to_string();
+
+            // Skip non-workspace infrastructure dirs (CAS storage, state).
+            if file_name == "cas" || file_name.starts_with('.') {
+                continue;
+            }
 
             let last_used = get_workspace_last_used(&path);
             let size = calculate_dir_size(&path);
@@ -292,6 +305,95 @@ pub fn run_emergency_disk_gc(
     report
 }
 
+/// Garbage-collect the content-addressable store.
+///
+/// CAS is a **cache**: an evicted object is simply re-uploaded on the next
+/// manifest mismatch, so retention is a throughput trade, never a correctness
+/// one. Policy:
+/// 1. TTL — objects whose mtime is older than `ttl` are removed. Hydration
+///    touches object mtimes (see `CasStore::materialize_to`), so this means
+///    "unused since", not "ingested at".
+/// 2. Quota — if the store exceeds `max_bytes`, oldest-mtime objects are
+///    evicted first (LRU).
+/// 3. Stale `.tmp` files (aborted `put_file` uploads) are removed after an
+///    hour regardless of quota.
+pub fn gc_cas(
+    cas_objects_dir: &Path,
+    max_bytes: Option<u64>,
+    ttl: Option<Duration>,
+) -> CasGcReport {
+    let mut report = CasGcReport::default();
+
+    let mut objects: Vec<(PathBuf, u64, SystemTime)> = Vec::new();
+    for entry in walkdir::WalkDir::new(cas_objects_dir)
+        .follow_links(false)
+        .into_iter()
+        .flatten()
+    {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let meta = match entry.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        objects.push((
+            path.to_path_buf(),
+            meta.len(),
+            meta.modified().unwrap_or(SystemTime::now()),
+        ));
+    }
+
+    let now = SystemTime::now();
+    let mut remaining: Vec<(PathBuf, u64, SystemTime)> = Vec::new();
+    let is_tmp = |p: &Path| {
+        p.file_name()
+            .and_then(|s| s.to_str())
+            .map(|s| s.contains(".tmp."))
+            .unwrap_or(false)
+    };
+
+    for (path, size, mtime) in objects {
+        let age = now.duration_since(mtime).unwrap_or_default();
+        let stale_tmp = is_tmp(&path) && age > Duration::from_secs(3600);
+        let expired = ttl.map(|t| age > t).unwrap_or(false);
+
+        if stale_tmp || expired {
+            if fs::remove_file(&path).is_ok() {
+                report.objects_deleted += 1;
+                report.bytes_freed += size;
+            } else {
+                remaining.push((path, size, mtime));
+            }
+        } else {
+            remaining.push((path, size, mtime));
+        }
+    }
+
+    // Quota: evict oldest-touched first.
+    if let Some(max_bytes) = max_bytes {
+        let mut total: u64 = remaining.iter().map(|(_, s, _)| *s).sum();
+        if total > max_bytes {
+            remaining.sort_by_key(|(_, _, mtime)| *mtime);
+            let mut survivors = Vec::new();
+            for (path, size, mtime) in remaining {
+                if total > max_bytes && fs::remove_file(&path).is_ok() {
+                    report.objects_deleted += 1;
+                    report.bytes_freed += size;
+                    total = total.saturating_sub(size);
+                } else {
+                    survivors.push((path, size, mtime));
+                }
+            }
+            remaining = survivors;
+        }
+    }
+
+    report.remaining_bytes = remaining.iter().map(|(_, s, _)| *s).sum();
+    report
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -384,5 +486,82 @@ mod tests {
         let report = run_emergency_disk_gc(root, 1000, &|_| true);
         assert_eq!(report.workspaces_deleted, 0);
         assert!(feat_ws.exists());
+    }
+}
+
+#[cfg(test)]
+mod cas_gc_tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// Build a fake CAS object layout: cas_objects_dir/ab/cd/<hash>.
+    fn make_object(dir: &Path, hash: &str, size: usize, age_secs: u64) -> PathBuf {
+        let path = dir.join(&hash[..2]).join(&hash[2..4]).join(hash);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, vec![0u8; size]).unwrap();
+        let old = SystemTime::now() - Duration::from_secs(age_secs);
+        let f = fs::File::options().write(true).open(&path).unwrap();
+        f.set_modified(old).unwrap();
+        path
+    }
+
+    #[test]
+    fn test_gc_cas_ttl_evicts_unused_objects() {
+        let dir = tempfile::tempdir().unwrap();
+        let fresh = make_object(dir.path(), "aa11fresh_object_1", 100, 0);
+        let stale = make_object(dir.path(), "bb22stale_object_2", 100, 40 * 86400);
+
+        let report = gc_cas(dir.path(), None, Some(Duration::from_secs(30 * 86400)));
+
+        assert_eq!(report.objects_deleted, 1);
+        assert_eq!(report.bytes_freed, 100);
+        assert!(fresh.is_file(), "fresh object must survive");
+        assert!(!stale.exists(), "stale object must be evicted");
+    }
+
+    #[test]
+    fn test_gc_cas_quota_evicts_lru_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = make_object(dir.path(), "cc33old_object_1111", 400, 86400);
+        let new = make_object(dir.path(), "dd44new_object_1111", 400, 1);
+
+        // Quota 500 bytes, store has 800 → oldest (old) must go first.
+        let report = gc_cas(dir.path(), Some(500), None);
+
+        assert_eq!(report.objects_deleted, 1);
+        assert!(!old.exists(), "oldest object evicted under quota");
+        assert!(new.is_file(), "newest object survives under quota");
+    }
+
+    #[test]
+    fn test_gc_cas_removes_stale_tmp_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let tmp = dir.path().join("ab").join("cd");
+        fs::create_dir_all(&tmp).unwrap();
+        let tmp_file = tmp.join("abcddeadbeef.tmp.12345.7");
+        fs::write(&tmp_file, vec![0u8; 50]).unwrap();
+        let old = SystemTime::now() - Duration::from_secs(7200);
+        let f = fs::File::options().write(true).open(&tmp_file).unwrap();
+        f.set_modified(old).unwrap();
+
+        let report = gc_cas(dir.path(), None, None);
+
+        assert!(!tmp_file.exists(), "stale tmp file must be cleaned");
+        assert_eq!(report.objects_deleted, 1);
+    }
+
+    #[test]
+    fn test_scan_workspaces_skips_cas_dir() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("myrepo")).unwrap();
+        fs::create_dir_all(root.path().join("cas").join("objects")).unwrap();
+
+        let scanned = scan_workspaces(root.path());
+        let names: Vec<&str> = scanned.iter().map(|w| w.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["myrepo"],
+            "cas dir must not count as a workspace"
+        );
     }
 }

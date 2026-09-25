@@ -36,7 +36,27 @@ pub fn get_hostname() -> String {
 }
 
 pub type ActiveBuildEntry = (String, Vec<String>, std::time::Instant, String);
-pub type ActiveBuildMap = Arc<tokio::sync::Mutex<HashMap<String, ActiveBuildEntry>>>;
+/// Active builds use a std mutex: guards remove their entries synchronously
+/// from `Drop` (no detached task, no runtime-shutdown panic), and critical
+/// sections never await.
+pub type ActiveBuildMap = Arc<std::sync::Mutex<HashMap<String, ActiveBuildEntry>>>;
+
+/// Monotonic, collision-free run identifier generator.
+///
+/// The previous scheme (`millis ^ pid & 0xffffffff`) collided whenever two
+/// runs started in the same millisecond — pid is constant within a process,
+/// so identical timestamps produced identical IDs, clobbering STATUS entries
+/// and history file names. Nanosecond timestamp + a process-local counter
+/// makes collisions impossible within (and practically across) restarts.
+fn next_run_id() -> String {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let counter = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("{:016x}{:04x}", nanos, counter & 0xffff)
+}
 
 #[derive(Clone)]
 pub struct ServerContext {
@@ -166,7 +186,7 @@ pub async fn run_server(
         min_disk_bytes: min_disk_bytes.unwrap_or(2_500_000_000), // Default: 2.5 GB
         cas_store,
         start_time: std::time::Instant::now(),
-        active_builds: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        active_builds: Arc::new(std::sync::Mutex::new(HashMap::new())),
         connection_limiter,
     });
 
@@ -234,11 +254,11 @@ struct ActiveBuildGuard {
 
 impl Drop for ActiveBuildGuard {
     fn drop(&mut self) {
-        let active_builds = self.active_builds.clone();
-        let run_id = self.run_id.clone();
-        tokio::spawn(async move {
-            active_builds.lock().await.remove(&run_id);
-        });
+        // Synchronous removal: STATUS must never observe a finished run as
+        // active, and a detached task would panic at runtime shutdown.
+        if let Ok(mut map) = self.active_builds.lock() {
+            map.remove(&self.run_id);
+        }
     }
 }
 
@@ -279,20 +299,24 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
         let uptime_secs = Some(ctx.start_time.elapsed().as_secs());
         let workspaces_count = metrics::get_workspaces_count(&ctx.workdir_root);
 
-        let active_builds_guard = ctx.active_builds.lock().await;
-        let active_builds: Vec<protocol::ActiveBuildInfo> = active_builds_guard
-            .iter()
-            .map(
-                |(id, (project, argv, start_instant, client_addr))| protocol::ActiveBuildInfo {
-                    id: id.clone(),
-                    project: project.clone(),
-                    argv: argv.clone(),
-                    elapsed_ms: start_instant.elapsed().as_millis() as u64,
-                    client_addr: client_addr.clone(),
-                },
-            )
-            .collect();
-        drop(active_builds_guard);
+        let active_builds: Vec<protocol::ActiveBuildInfo> = {
+            let map = ctx
+                .active_builds
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            map.iter()
+                .map(|(id, (project, argv, start_instant, client_addr))| {
+                    protocol::ActiveBuildInfo {
+                        id: id.clone(),
+                        project: project.clone(),
+                        argv: argv.clone(),
+                        elapsed_ms: start_instant.elapsed().as_millis() as u64,
+                        client_addr: client_addr.clone(),
+                    }
+                })
+                .collect()
+        };
+        // Guard is gone here — never held across an await.
 
         let resp = protocol::StatusResponsePayload {
             active_runs,
@@ -759,24 +783,20 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
     info!("Executing command: {:?}", run.argv);
 
     let run_start = std::time::Instant::now();
-    let now_millis = std::time::SystemTime::now()
-        .duration_since(std::time::SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
-    let run_id = format!(
-        "{:08x}",
-        (now_millis ^ (std::process::id() as u128)) & 0xffffffff
-    );
+    let run_id = next_run_id();
 
-    ctx.active_builds.lock().await.insert(
-        run_id.clone(),
-        (
-            hello.project.clone(),
-            run.argv.clone(),
-            std::time::Instant::now(),
-            client_addr.clone(),
-        ),
-    );
+    ctx.active_builds
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(
+            run_id.clone(),
+            (
+                hello.project.clone(),
+                run.argv.clone(),
+                std::time::Instant::now(),
+                client_addr.clone(),
+            ),
+        );
     let _active_build_guard = ActiveBuildGuard {
         active_builds: ctx.active_builds.clone(),
         run_id: run_id.clone(),
@@ -1845,7 +1865,7 @@ mod tests {
             min_disk_bytes: 0,
             cas_store: None,
             start_time: std::time::Instant::now(),
-            active_builds: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            active_builds: Arc::new(std::sync::Mutex::new(HashMap::new())),
             connection_limiter: Arc::new(tokio::sync::Semaphore::new(UNLIMITED_CONNECTIONS)),
         }
     }
@@ -1914,5 +1934,44 @@ mod tests {
         assert!(!is_exposed_bind("[::1]:9876"));
         // Unparseable input is treated conservatively as exposed.
         assert!(is_exposed_bind("not-an-address"));
+    }
+
+    #[test]
+    fn next_run_id_is_collision_free_under_stress() {
+        // Regression: `millis ^ pid` collided for two runs in the same
+        // millisecond. Nanos + counter must never repeat within a process.
+        let mut ids = std::collections::HashSet::with_capacity(10_000);
+        for _ in 0..10_000 {
+            let id = next_run_id();
+            assert!(ids.insert(id), "run_id collision generated");
+        }
+        // Distinct lengths/format sanity (16 hex nanos + 4 hex counter).
+        assert!(ids.iter().all(|id| id.len() == 20));
+    }
+
+    #[tokio::test]
+    async fn active_build_guard_drop_removes_entry_synchronously() {
+        let ctx = ctx_with(Some("tok"));
+        let map = ctx.active_builds.clone();
+        map.lock().unwrap().insert(
+            "run-1".to_string(),
+            (
+                "proj".to_string(),
+                Vec::new(),
+                std::time::Instant::now(),
+                "127.0.0.1".to_string(),
+            ),
+        );
+
+        {
+            let _guard = ActiveBuildGuard {
+                active_builds: map.clone(),
+                run_id: "run-1".to_string(),
+            };
+            assert!(map.lock().unwrap().contains_key("run-1"));
+        }
+        // Synchronous removal: no detached task, no window where STATUS sees
+        // a finished run as active.
+        assert!(!map.lock().unwrap().contains_key("run-1"));
     }
 }

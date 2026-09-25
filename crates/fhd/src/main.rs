@@ -91,6 +91,19 @@ struct Cli {
     gc_interval_secs: u64,
 
     #[arg(
+        long = "cas-ttl-days",
+        default_value = "30",
+        help = "Days of inactivity before a CAS object is evicted (default: 30, 0 = never)"
+    )]
+    cas_ttl_days: u64,
+
+    #[arg(
+        long = "cas-max-gb",
+        help = "Maximum total size of the content-addressable store in GB (default: unlimited)"
+    )]
+    cas_max_gb: Option<f64>,
+
+    #[arg(
         long = "cas-dir",
         env = "FARHAND_CAS_DIR",
         help = "Directory for content-addressable storage (default: <workdir>/cas/objects)"
@@ -209,31 +222,61 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let interval_dur = std::time::Duration::from_secs(cli.gc_interval_secs);
         let gc_lock_manager = lock_manager.clone();
 
+        // CAS GC inputs (objects dir mirrors CasStore::new's layout).
+        let cas_objects_dir = cli
+            .cas_dir
+            .clone()
+            .unwrap_or_else(|| workdir.join("cas"))
+            .join("objects");
+        let cas_ttl = if cli.cas_ttl_days == 0 {
+            None
+        } else {
+            Some(std::time::Duration::from_secs(cli.cas_ttl_days * 86400))
+        };
+        let cas_max_bytes = cli
+            .cas_max_gb
+            .map(|gb| (gb * 1024.0 * 1024.0 * 1024.0) as u64);
+        let cas_enabled = !cli.no_cas;
+
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(interval_dur);
             loop {
                 ticker.tick().await;
                 // Snapshot locked projects (async), then run the blocking GC
-                // pass off the async runtime so directory sizing never stalls
-                // the executor.
+                // passes off the async runtime so directory sizing never
+                // stalls the executor.
                 let locked: std::collections::HashSet<String> = gc_lock_manager
                     .locked_projects()
                     .await
                     .into_iter()
                     .collect();
                 let dir = gc_workdir.clone();
-                let report = tokio::task::spawn_blocking(move || {
-                    workspace::run_garbage_collection(&dir, max_bytes, ttl, &|name: &str| {
-                        locked.contains(name)
-                    })
+                let cas_dir = cas_objects_dir.clone();
+                let (report, cas_report) = tokio::task::spawn_blocking(move || {
+                    let ws =
+                        workspace::run_garbage_collection(&dir, max_bytes, ttl, &|name: &str| {
+                            locked.contains(name)
+                        });
+                    let cas = if cas_enabled {
+                        workspace::gc_cas(&cas_dir, cas_max_bytes, cas_ttl)
+                    } else {
+                        workspace::CasGcReport::default()
+                    };
+                    (ws, cas)
                 })
                 .await
                 .unwrap_or_default();
-                if report.workspaces_deleted > 0 || report.caches_trimmed_bytes > 0 {
+                if report.workspaces_deleted > 0
+                    || report.caches_trimmed_bytes > 0
+                    || cas_report.objects_deleted > 0
+                {
                     info!(
-                        "GC: Pruned {} workspaces ({} bytes), trimmed {} cache bytes. Total disk remaining: {} bytes",
+                        "GC: Pruned {} workspaces ({} bytes) and {} CAS objects ({} bytes); \
+                         trimmed {} cache bytes. Disk remaining: {} bytes",
                         report.workspaces_deleted,
                         report.workspaces_deleted_bytes,
+                        cas_report.objects_deleted,
+                        cas_report.bytes_freed,
                         report.caches_trimmed_bytes,
                         report.remaining_disk_bytes
                     );
