@@ -31,6 +31,13 @@
   <img src="https://img.shields.io/badge/platform-linux%20%7C%20macos%20%7C%20windows-lightgrey?style=flat-square" alt="Platforms" />
 </p>
 
+<p align="center">
+  <a href="assets/demo"><img src="assets/demo/demo-build.gif" alt="Farhand demo: remote delta-sync build with zero-byte second run" width="840" /></a>
+</p>
+<p align="center">
+  <small>Second run: <code>0 files (0 bytes)</code> transferred — persistent workspace + content-addressable storage doing their job. (<a href="assets/demo/demo-top.gif"><code>fh top</code> dashboard</a>)</small>
+</p>
+
 ---
 
 ## What is Farhand?
@@ -280,6 +287,26 @@ fh clean
 
 ---
 
+## Performance
+
+Measured with criterion (`cargo bench -p fileset -p workspace`, release profile)
+on an Intel Core Ultra 7 256V, `/tmp` on tmpfs — full methodology and
+reproduction steps in **[BENCHMARKS.md](BENCHMARKS.md)**:
+
+| Metric | Result |
+| :--- | ---: |
+| Delta tar pack, zstd-3 vs gzip (2.4 MiB payload) | **77 ms vs 322 ms → 4.2× faster** |
+| Delta tar unpack, zstd vs gzip | **19 ms vs 60 ms → 3.1× faster** |
+| Scan + SHA-256 hash, 320 files (~2.4 MiB) | **7.3 ms** |
+| CAS hydration (CoW reflink), 256 KiB file | **~24 µs** (flat vs payload size) |
+| Workspace branch clone (CoW, 100-file tree) | **~4 ms** |
+| Manifest diff, warm workspace (nothing changed) | **~1.1 ms** |
+
+Reproduce: `scripts/run_benchmarks.sh` regenerates `BENCHMARKS.md` from
+criterion's saved estimates.
+
+---
+
 ## Detailed Documentation
 
 Deep-dive guides covering architecture, server setup, and configuration:
@@ -291,6 +318,7 @@ Deep-dive guides covering architecture, server setup, and configuration:
 - 🌐 **[Multi-Agent Pool & Dynamic Load Balancing](docs/multi-agent-pool.md)** — Setup guide for multi-agent clusters, health probing, and hardware tag routing (`--agent-tag`).
 - ⚡ **[Language Server Protocol (LSP) Offloading Guide](docs/lsp-integration.md)** — Offload `rust-analyzer`, `pyright`, `gopls`, and `clangd` to remote agent with VS Code, Neovim, Helix, and Zed.
 - ☁️ **[Remote Access via Cloudflare Tunnel](docs/cloudflared-tunnel.md)** — Connect securely over the internet with `cloudflared access tcp` without opening inbound router ports.
+- 📏 **[Benchmarks](BENCHMARKS.md)** — Reproducible criterion numbers behind the performance claims above.
 
 ## Project & Community
 
