@@ -1,0 +1,12 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/Rayrsn/farhand/security/advisories/new
+    about: >
+      Please report security issues privately via GitHub Security Advisories
+      (Repo → Security → Report a vulnerability). Do not use public issues.
+  - name: Questions & usage help
+    url: https://github.com/Rayrsn/farhand/discussions
+    about: >
+      Ask usage questions in Discussions. The docs/ directory (architecture,
+      configuration, tunnels, LSP) covers most setup topics first.
