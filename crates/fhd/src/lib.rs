@@ -696,7 +696,16 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
     );
 
     let extra_ignores = templates::resolve_template_extra_ignores(&workspace_dir, None);
-    let mut diff = workspace::diff_manifests(&workspace_dir, &manifest, &extra_ignores)?;
+    // Full-workspace scan + hashing is blocking I/O — keep it off the async
+    // runtime (workdir/manifest/ignores moved in owned form).
+    let diff_dir = workspace_dir.clone();
+    let diff_manifest = manifest.clone();
+    let diff_ignores = extra_ignores.clone();
+    let mut diff = tokio::task::spawn_blocking(move || {
+        workspace::diff_manifests(&diff_dir, &diff_manifest, &diff_ignores)
+    })
+    .await
+    .map_err(|e| -> Box<dyn std::error::Error> { Box::new(std::io::Error::other(e)) })??;
 
     if let Some(cas) = &ctx.cas_store {
         let manifest_map: std::collections::HashMap<&str, &str> = manifest
@@ -752,7 +761,11 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
     let bytes_synced = payload.len() as u64;
     if !payload.is_empty() {
         info!("Unpacking {} delta bytes into workspace", payload.len());
-        fileset::unpack_tar(&workspace_dir, &payload)?;
+        let unpack_dir = workspace_dir.clone();
+        let unpack_payload = payload;
+        tokio::task::spawn_blocking(move || fileset::unpack_tar(&unpack_dir, &unpack_payload))
+            .await
+            .map_err(|e| -> Box<dyn std::error::Error> { Box::new(std::io::Error::other(e)) })??;
 
         if let Some(cas) = &ctx.cas_store {
             for entry in &manifest.files {
@@ -879,7 +892,13 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
                     client_addr: client_addr.clone(),
                     error: result.error.clone(),
                 };
-                if let Err(e) = workspace::history::save_run(&workspace_dir, &record) {
+                if let Err(e) = tokio::task::spawn_blocking({
+                    let dir = workspace_dir.clone();
+                    move || workspace::history::save_run(&dir, &record)
+                })
+                .await
+                .map_err(|e| -> Box<dyn std::error::Error> { Box::new(std::io::Error::other(e)) })?
+                {
                     warn!("Failed to save run record: {}", e);
                 }
 
@@ -975,7 +994,13 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
             None
         },
     };
-    if let Err(e) = workspace::history::save_run(&workspace_dir, &record) {
+    if let Err(e) = tokio::task::spawn_blocking({
+        let dir = workspace_dir.clone();
+        move || workspace::history::save_run(&dir, &record)
+    })
+    .await
+    .map_err(|e| -> Box<dyn std::error::Error> { Box::new(std::io::Error::other(e)) })?
+    {
         warn!("Failed to save run record: {}", e);
     }
 
@@ -1708,25 +1733,20 @@ pub async fn run_pty_child_and_stream<
     ));
 
     let (exit_tx, mut exit_rx) = tokio::sync::oneshot::channel();
-    tokio::task::spawn_blocking(move || loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let code = if status.success() {
+    // Blocking child wait off the runtime thread — no 20 ms polling latency,
+    // no executor stalls. The oneshot delivers the exit code to the select!.
+    tokio::task::spawn_blocking(move || {
+        let code = match child.wait() {
+            Ok(status) => {
+                if status.success() {
                     0
                 } else {
                     status.exit_code() as i32
-                };
-                let _ = exit_tx.send(code);
-                break;
+                }
             }
-            Ok(None) => {
-                std::thread::sleep(std::time::Duration::from_millis(20));
-            }
-            Err(_) => {
-                let _ = exit_tx.send(1);
-                break;
-            }
-        }
+            Err(_) => 1,
+        };
+        let _ = exit_tx.send(code);
     });
 
     let exit_code = loop {
