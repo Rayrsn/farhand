@@ -1,3 +1,8 @@
+// Filesystem scanning and archive handling stay pure safe Rust — in
+// particular, the tar unpacker's zip-slip defenses are auditable without
+// reasoning about `unsafe` invariants.
+#![forbid(unsafe_code)]
+
 pub mod ignore;
 pub mod scan;
 pub mod tar;

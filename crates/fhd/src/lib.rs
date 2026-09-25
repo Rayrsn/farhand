@@ -1,3 +1,9 @@
+// Unsafe is allowed only at the FFI boundaries listed in CONTRIBUTING.md
+// (gethostname, kill(2), platform resource probes), each with a SAFETY
+// contract. Connection handling, sync, execution, and session logic must
+// stay pure safe Rust.
+#![deny(unsafe_code)]
+
 pub mod metrics;
 
 use protocol::{
@@ -16,10 +22,29 @@ use tokio::process::Command;
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
+/// Best-effort identity of this agent, used for STATUS reporting and tags.
+///
+/// The environment wins over `gethostname(2)`: `HOSTNAME`/`COMPUTERNAME` is
+/// how operators relabel an agent in a pool (matching the `fhd` tag
+/// selection rules), and on most container/VM setups it is already set — so
+/// the FFI path is only reached on a bare-metal Unix host with no env var.
+#[allow(unsafe_code)] // FFI: gethostname(2) — SAFETY contract inside the body.
 pub fn get_hostname() -> String {
+    if let Ok(name) = std::env::var("HOSTNAME").or_else(|_| std::env::var("COMPUTERNAME")) {
+        if !name.is_empty() {
+            return name;
+        }
+    }
+
     #[cfg(unix)]
     {
+        // POSIX allows gethostname(2) to fill the buffer with no trailing NUL,
+        // hence the explicit length scan below.
         let mut buf = [0u8; 256];
+        // SAFETY: `buf` is a live, writable array of 256 bytes; the cast to
+        // `*mut c_char` is only an aliasing view of the same bytes, and the
+        // length passed matches the array bound. gethostname never retains
+        // the pointer and writes at most `len` bytes.
         let res = unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) };
         if res == 0 {
             let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
@@ -30,9 +55,8 @@ pub fn get_hostname() -> String {
             }
         }
     }
-    std::env::var("HOSTNAME")
-        .or_else(|_| std::env::var("COMPUTERNAME"))
-        .unwrap_or_else(|_| "fhd-agent".to_string())
+
+    "fhd-agent".to_string()
 }
 
 pub type ActiveBuildEntry = (String, Vec<String>, std::time::Instant, String);
@@ -1430,15 +1454,29 @@ pub fn build_raw_shell_command(
     cmd
 }
 
+/// Terminate a remote command's whole process group (AGENTS.md §3.4).
+///
+/// SIGTERM first, then SIGKILL after 3s: the negative pid signals the
+/// process *group*, which is why `build_command` sets `process_group(0)` —
+/// that makes the child a group leader whose pgid equals its pid, so the
+/// compiler tree (rustc → linker → build script) dies together instead of
+/// leaving orphans behind.
+#[allow(unsafe_code)] // FFI: kill(2) on our own child's process group — SAFETY comments inside.
 pub async fn kill_process_group(child: &mut tokio::process::Child) {
     #[cfg(unix)]
     if let Some(pid) = child.id() {
+        // SAFETY: `pid` is the id of a child this daemon spawned with
+        // `process_group(0)`, so `-pid` addresses that child's process group
+        // and can only signal processes we own. `kill` is async-signal-safe
+        // and has no memory preconditions.
         unsafe {
             libc::kill(-(pid as i32), libc::SIGTERM);
         }
         tokio::select! {
             _ = child.wait() => {}
             _ = tokio::time::sleep(std::time::Duration::from_secs(3)) => {
+                // SAFETY: as above; the process group may still contain
+                // descendants that ignored SIGTERM.
                 unsafe {
                     libc::kill(-(pid as i32), libc::SIGKILL);
                 }
@@ -1729,6 +1767,7 @@ pub fn resolve_shell_executable(requested: &str) -> String {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(unsafe_code)] // FFI: kill(2) on the PTY child's own process group on disconnect.
 pub async fn run_pty_child_and_stream<
     W: AsyncWrite + Unpin + Send + 'static,
     R: tokio::io::AsyncRead + Unpin + Send,
@@ -1981,6 +2020,9 @@ pub async fn run_pty_child_and_stream<
                         warn!("Client disconnected during PTY session. Terminating child.");
                         #[cfg(unix)]
                         if let Some(pid) = _child_pid {
+                            // SAFETY: pid is the PTY child we spawned with
+                            // `process_group(0)`, so `-pid` signals only that
+                            // child's process group (AGENTS.md §3.4).
                             unsafe {
                                 libc::kill(-(pid as i32), libc::SIGTERM);
                             }

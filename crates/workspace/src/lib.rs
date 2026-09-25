@@ -1,3 +1,8 @@
+// Unsafe is allowed only at the FFI boundaries listed in CONTRIBUTING.md
+// (CoW syscalls, statvfs), each with a SAFETY contract. Everything else —
+// locking, CAS, history, GC, presets — must stay pure safe Rust.
+#![deny(unsafe_code)]
+
 use fileset::FilesetError;
 use protocol::{FileEntry, ManifestPayload};
 use sha2::{Digest, Sha256};

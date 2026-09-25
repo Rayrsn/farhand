@@ -33,7 +33,7 @@ jobs:
         run: cargo fmt --all --check
 
       - name: Run Clippy checks
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks
 
       - name: Run Workspace Tests
         run: cargo test --workspace --verbose

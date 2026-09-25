@@ -3,6 +3,8 @@
 //! Handles loading `.farhand.yaml`, environment variable interpolation (`${VAR}`),
 //! and configuration parsing.
 
+#![forbid(unsafe_code)]
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;

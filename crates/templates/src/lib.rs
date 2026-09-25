@@ -2,6 +2,7 @@
 //!
 //! Provides declarative YAML template parsing, embedded defaults via `include_str!`,
 //! multi-tier resolution hierarchy (Project > User > Built-in), and monorepo matching.
+#![forbid(unsafe_code)]
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

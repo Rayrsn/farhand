@@ -1,3 +1,7 @@
+// The wire layer is pure safe Rust: parsing, framing, and path normalization
+// must never contain unsafe code, so any attempt to add some fails to compile.
+#![forbid(unsafe_code)]
+
 pub mod frame;
 pub mod messages;
 pub mod path;

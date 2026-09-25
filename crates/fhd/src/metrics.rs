@@ -1,3 +1,8 @@
+// Every function in this file is a thin platform FFI probe (load average,
+// physical memory) with a SAFETY comment at its unsafe call; see
+// CONTRIBUTING.md ("Unsafe code") for the policy.
+#![allow(unsafe_code)]
+
 use std::path::Path;
 
 pub fn get_cpu_count() -> usize {
@@ -9,6 +14,9 @@ pub fn get_cpu_count() -> usize {
 #[cfg(unix)]
 pub fn get_load_averages() -> Option<[f64; 3]> {
     let mut loads = [0.0f64; 3];
+    // SAFETY: `loads` is a live, writable array of exactly `3` elements and
+    // we pass the matching element count, so getloadavg(3) writes only
+    // within its bounds. It never dereferences the array after return.
     let ret = unsafe { libc::getloadavg(loads.as_mut_ptr(), 3) };
     if ret == 3 {
         Some(loads)
@@ -51,6 +59,12 @@ pub fn get_memory_info() -> (Option<u64>, Option<u64>) {
 
     #[cfg(target_os = "macos")]
     {
+        // SAFETY: `mib` is a live 2-element array, which is what the
+        // CTL_HW/HW_MEMSIZE MIB request requires (mib[0] = CTL_HW,
+        // mib[1] = HW_MEMSIZE). `size` and `len` are valid u64 slots and
+        // `len` is pre-set to the buffer size sysctl expects. sysctl only
+        // writes through `oldp` for `oldlenp` bytes and never retains the
+        // pointers.
         unsafe {
             let mut mib = [libc::CTL_HW, libc::HW_MEMSIZE];
             let mut size: u64 = 0;
@@ -90,6 +104,13 @@ pub fn get_memory_info() -> (Option<u64>, Option<u64>) {
         }
 
         let mut status = std::mem::MaybeUninit::<MEMORYSTATUSEX>::uninit();
+        // SAFETY: the local struct mirrors the Win32 `MEMORYSTATUSEX`
+        // layout exactly (repr(C), same field order and widths), so passing
+        // its pointer is ABI-compatible. `dwLength` is set to the struct
+        // size *before* the call, which is how the API validates the buffer.
+        // The call is infallible from Rust's perspective (it only fills the
+        // buffer), and `assume_init` happens only after a non-zero return,
+        // which per the API contract means the struct was populated.
         unsafe {
             let ptr = status.as_mut_ptr();
             (*ptr).dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;

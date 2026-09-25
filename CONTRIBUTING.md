@@ -60,6 +60,23 @@ House rules:
 - Bump `[workspace.package].version` in `Cargo.toml` for feature releases
   (minor) or fixes (patch) — the release workflow publishes on `v*` tags.
 
+## Unsafe code
+
+farhand is `#![forbid(unsafe_code)]` everywhere *except* a small, audited set
+of FFI calls in `fhd` (hostname, kill(2), load/memory probes) and
+`workspace` (clonefile, FICLONE, statvfs). Every one of those blocks carries a
+`// SAFETY:` comment explaining the preconditions it relies on, and CI runs
+
+```bash
+cargo clippy --workspace --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks
+```
+
+so a new undocumented `unsafe` block fails the build. If you need to add
+unsafe code, the bar is: prove the preconditions in the SAFETY comment, keep
+the FFI surface as small as possible, and prefer a `std`-only alternative when
+one exists. Miri is not part of CI — it cannot follow FFI, so it would only
+cover the non-unsafe majority.
+
 ## Fuzzing
 
 The wire protocol parsers are fuzzed with libFuzzer (requires a nightly

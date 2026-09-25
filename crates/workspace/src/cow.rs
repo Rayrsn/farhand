@@ -2,6 +2,15 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
+/// Linux `FICLONE` ioctl request code: `_IOW(0x94, 9, int)` = `0x40049409`.
+///
+/// The `libc` crate does not export this constant on every target we build
+/// for, so it is defined here once instead of being inlined as a magic
+/// number at the call site. Passed to `ioctl` on a destination file opened
+/// for writing, with the source fd as the argument (see `cow_clone_file`).
+#[cfg(target_os = "linux")]
+const FICLONE: libc::c_ulong = 0x4004_9409;
+
 /// Perform a Copy-on-Write (CoW) directory clone from `src` to `dst`.
 ///
 /// - macOS (APFS): the whole directory is duplicated via `clonefile(2)` in
@@ -12,6 +21,7 @@ use std::path::Path;
 ///
 /// No external processes are spawned — this is all std/libc, per the
 /// zero-external-binaries tenet.
+#[allow(unsafe_code)] // FFI: clonefile(2) — SAFETY contract inside the body.
 pub fn cow_clone_dir(src: &Path, dst: &Path) -> io::Result<()> {
     if !src.exists() {
         return Err(io::Error::new(
@@ -38,6 +48,10 @@ pub fn cow_clone_dir(src: &Path, dst: &Path) -> io::Result<()> {
             CString::new(src.as_os_str().as_bytes()),
             CString::new(dst.as_os_str().as_bytes()),
         ) {
+            // SAFETY: both CStrings own NUL-terminated, interior-NUL-free
+            // buffers, so `as_ptr()` yields valid C strings for the duration
+            // of the call. clonefile(2) only reads them and never retains
+            // the pointers past return.
             let res = unsafe { libc::clonefile(c_src.as_ptr(), c_dst.as_ptr(), 0) };
             if res == 0 {
                 tracing::info!(
@@ -143,6 +157,7 @@ fn clone_mtime(src: &Path, dst: &Path) -> io::Result<()> {
 /// silently corrupt the shared CAS object or seed workspace behind it.
 /// Copying is slower on non-reflink filesystems but keeps every copy
 /// independent.
+#[allow(unsafe_code)] // FFI: clonefile(2) + FICLONE ioctl — SAFETY comments inside.
 pub fn cow_clone_file(src: &Path, dst: &Path) -> io::Result<()> {
     if !src.is_file() {
         return Err(io::Error::new(
@@ -167,6 +182,8 @@ pub fn cow_clone_file(src: &Path, dst: &Path) -> io::Result<()> {
             CString::new(src.as_os_str().as_bytes()),
             CString::new(dst.as_os_str().as_bytes()),
         ) {
+            // SAFETY: as above — live NUL-terminated C strings, no
+            // retention by the callee.
             let res = unsafe { libc::clonefile(c_src.as_ptr(), c_dst.as_ptr(), 0) };
             if res == 0 {
                 return Ok(());
@@ -186,9 +203,13 @@ pub fn cow_clone_file(src: &Path, dst: &Path) -> io::Result<()> {
                 .truncate(true)
                 .open(dst),
         ) {
-            // FICLONE is 0x40049409 on Linux
-            let res =
-                unsafe { libc::ioctl(dst_file.as_raw_fd(), 0x40049409, src_file.as_raw_fd()) };
+            // SAFETY: both fds are open and live for the whole call —
+            // `src_file` read-only, `dst_file` opened for writing (which is
+            // what FICLONE requires of the destination). The ioctl copies
+            // file content between the two descriptors; the `libc` crate
+            // does not expose FICLONE on all targets, hence the local
+            // constant (same value as <linux/fs.h> _IOW(0x94, 9, int)).
+            let res = unsafe { libc::ioctl(dst_file.as_raw_fd(), FICLONE, src_file.as_raw_fd()) };
             if res == 0 {
                 // Reflinks clone contents only; carry permission bits over.
                 let _ = clone_mode(src, dst);

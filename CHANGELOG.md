@@ -98,6 +98,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   per target runs on every PR; a 10-minute pass runs nightly. Committed seed
   corpora capture known attack vectors (traversal tar, absolute-path tar, lying
   frame header).
+- **Unsafe audit**: all 11 `unsafe` blocks (FFI only) now carry `// SAFETY:`
+  contracts, and CI enforces `clippy::undocumented_unsafe_blocks` so new
+  unsafe code cannot land undocumented. The undocumented Linux `FICLONE`
+  magic number became a documented constant, `statvfs` moved from `mem::zeroed`
+  to `MaybeUninit` (initialized only on syscall success), and agent identity
+  now prefers `HOSTNAME`/`COMPUTERNAME` over `gethostname(2)` — an operator
+  can relabel a pool agent — with the libc call as fallback. Miri is
+  intentionally not in CI: it cannot follow FFI, so it would cover only the
+  non-unsafe majority of the code.
 - New `fhd` flag: `--max-connections`.
 
 ## [1.7.0] - 2026-09-22

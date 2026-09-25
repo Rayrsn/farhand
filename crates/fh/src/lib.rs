@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 pub mod clean;
 pub mod client;
 pub mod envfilter;
