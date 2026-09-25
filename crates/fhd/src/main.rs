@@ -37,6 +37,12 @@ struct Cli {
     max_concurrent_runs: Option<usize>,
 
     #[arg(
+        long = "max-connections",
+        help = "Maximum concurrent client connections (default: 32, 0 = unlimited)"
+    )]
+    max_connections: Option<usize>,
+
+    #[arg(
         long = "tag",
         action = clap::ArgAction::Append,
         help = "Agent capability tags (repeatable, e.g. '--tag lan --tag gpu')"
@@ -277,6 +283,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cli.cas_dir,
         cli.no_cas,
         tls_acceptor,
+        cli.max_connections,
     )
     .await?;
     Ok(())

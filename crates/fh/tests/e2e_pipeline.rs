@@ -46,6 +46,7 @@ async fn spawn_test_server_full(
             None,
             false,
             None,
+            None,
         )
         .await;
     });
@@ -73,6 +74,7 @@ async fn spawn_agent_tls(
             None,
             false,
             Some(tls_acceptor),
+            None,
         )
         .await;
     });
@@ -3272,4 +3274,57 @@ async fn test_lsp_raw_stdio_echo() {
     assert_eq!(msg, MsgType::Log);
     let log: LogPayload = serde_json::from_slice(&payload).unwrap();
     assert!(log.data.contains("Content-Length: 26"));
+}
+
+#[tokio::test]
+async fn test_connection_limit_closes_excess_connections() {
+    let workdir = tempfile::tempdir().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+
+    // Server capped at exactly one concurrent connection.
+    let workdir_path = workdir.path().to_path_buf();
+    let _handle = tokio::spawn(async move {
+        let _ = fhd::run_server(
+            listener,
+            None,
+            workdir_path,
+            None,
+            None,
+            Vec::new(),
+            None,
+            None,
+            false,
+            None,
+            Some(1),
+        )
+        .await;
+    });
+
+    // First connection occupies the only slot; leave it idle.
+    let mut first = TcpStream::connect(&addr).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    // Second connection must be closed promptly by the server (EOF, no data).
+    let mut second = TcpStream::connect(&addr).await.unwrap();
+    let mut sink = [0u8; 16];
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        tokio::io::AsyncReadExt::read(&mut second, &mut sink),
+    )
+    .await
+    .expect("server did not close the excess connection in time");
+    assert_eq!(result.unwrap(), 0, "excess connection should see EOF");
+
+    // First connection still has its slot — the socket stays open (a zero
+    // read would also surface here, so write-check instead: try to read with
+    // a short timeout and expect a timeout, i.e. the server did not close it).
+    let mut sink = [0u8; 16];
+    let kept_open = tokio::time::timeout(
+        std::time::Duration::from_millis(300),
+        tokio::io::AsyncReadExt::read(&mut first, &mut sink),
+    )
+    .await;
+    assert!(kept_open.is_err(), "first connection should still be open");
+    drop(first);
 }

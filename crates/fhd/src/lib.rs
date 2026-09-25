@@ -1,9 +1,10 @@
 pub mod metrics;
 
 use protocol::{
-    decode_json, read_frame, write_frame, write_json_frame, HelloAckPayload, HelloPayload,
-    LogPayload, ManifestPayload, MsgType, NeedPayload, PortClosePayload, PortDataPayload,
-    PortOpenPayload, ResizePayload, ResultPayload, RunPayload, CURRENT_PROTOCOL_VERSION,
+    decode_json, read_frame, read_frame_limited, write_frame, write_json_frame, HelloAckPayload,
+    HelloPayload, LogPayload, ManifestPayload, MsgType, NeedPayload, PortClosePayload,
+    PortDataPayload, PortOpenPayload, ResizePayload, ResultPayload, RunPayload,
+    CURRENT_PROTOCOL_VERSION,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -51,6 +52,8 @@ pub struct ServerContext {
     pub cas_store: Option<workspace::CasStore>,
     pub start_time: std::time::Instant,
     pub active_builds: ActiveBuildMap,
+    /// Caps concurrent client connections; excess sockets are closed on accept.
+    pub connection_limiter: Arc<tokio::sync::Semaphore>,
 }
 
 impl ServerContext {
@@ -99,6 +102,12 @@ pub fn validate_start_config(
     }
 }
 
+/// Default concurrent-connection cap when none is configured.
+const DEFAULT_MAX_CONNECTIONS: usize = 32;
+/// "Unlimited" sentinel for the connection limiter (tokio semaphores cap
+/// permits well below usize::MAX); a build agent will never approach this.
+const UNLIMITED_CONNECTIONS: usize = 1 << 20;
+
 /// Whether a listen address is exposed (unspecified address or any
 /// non-loopback IP). Unparseable addresses are treated conservatively as
 /// exposed.
@@ -121,6 +130,7 @@ pub async fn run_server(
     cas_dir: Option<PathBuf>,
     no_cas: bool,
     tls_acceptor: Option<protocol::TlsAcceptor>,
+    max_connections: Option<usize>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let max_runs = max_concurrent_runs.unwrap_or_else(|| {
         std::thread::available_parallelism()
@@ -130,6 +140,11 @@ pub async fn run_server(
     let semaphore = Arc::new(tokio::sync::Semaphore::new(max_runs));
     let lock_manager = workspace::WorkspaceLockManager::new();
     let queue_depth = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let connection_limiter = Arc::new(tokio::sync::Semaphore::new(match max_connections {
+        Some(0) => UNLIMITED_CONNECTIONS,
+        Some(n) => n,
+        None => DEFAULT_MAX_CONNECTIONS,
+    }));
 
     let cas_store = if !no_cas {
         let base = cas_dir.unwrap_or_else(|| workdir.clone());
@@ -151,15 +166,29 @@ pub async fn run_server(
         cas_store,
         start_time: std::time::Instant::now(),
         active_builds: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        connection_limiter,
     });
 
     loop {
         match listener.accept().await {
             Ok((stream, addr)) => {
+                // Bound concurrent connections: excess sockets are closed
+                // immediately so a flood cannot spawn unbounded tasks.
+                let permit = match ctx.connection_limiter.clone().try_acquire_owned() {
+                    Ok(permit) => permit,
+                    Err(_) => {
+                        warn!(
+                            "Connection limit reached; dropping connection from {}",
+                            addr
+                        );
+                        continue;
+                    }
+                };
                 info!("Accepted connection from {}", addr);
                 let ctx_clone = Arc::clone(&ctx);
                 let tls_acceptor_clone = tls_acceptor.clone();
                 tokio::spawn(async move {
+                    let _permit = permit; // released when the connection task ends
                     let res = match tls_acceptor_clone {
                         Some(acceptor) => match acceptor.accept(stream).await {
                             Ok(tls_stream) => {
@@ -217,8 +246,10 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
     ctx: Arc<ServerContext>,
     client_addr: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // 1. First frame: can be STATUS probe, HISTORY query, or HELLO handshake
-    let (msg_type, payload) = read_frame(&mut stream).await?;
+    // 1. First frame: can be STATUS probe, HISTORY query, or HELLO handshake.
+    //    Pre-authentication, so a strict size cap applies (see MAX_PRE_AUTH_PAYLOAD).
+    let (msg_type, payload) =
+        read_frame_limited(&mut stream, protocol::MAX_PRE_AUTH_PAYLOAD).await?;
 
     if msg_type == MsgType::Status {
         let status_req: protocol::StatusRequestPayload = decode_json(&payload)?;
@@ -1759,6 +1790,7 @@ mod tests {
             cas_store: None,
             start_time: std::time::Instant::now(),
             active_builds: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            connection_limiter: Arc::new(tokio::sync::Semaphore::new(UNLIMITED_CONNECTIONS)),
         }
     }
 
