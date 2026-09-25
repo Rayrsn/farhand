@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **CAS housekeeping**: new `--cas-ttl-days` (default 30) / `--cas-max-gb`
+  eviction for content-addressable objects (previously unbounded growth);
+  hydration touches object mtimes so eviction is LRU-by-use; `put_file` tmp
+  names are unique per call (concurrent stores of the same hash no longer
+  race); the `cas/` directory no longer counts as a workspace in quota
+  accounting.
+- **Collision-free run IDs**: run identifiers were `millis ^ pid` — two runs
+  starting in the same millisecond collided, clobbering STATUS entries and
+  history files. IDs are now nanosecond-timestamp + process counter.
+- **Synchronous active-build guard drop**: finished runs no longer linger in
+  STATUS (and no detached task panics at runtime shutdown).
+- **Panic hygiene**: `fhd --shell " "` (empty invocation) is rejected at
+  startup instead of panicking the connection task; `fh top` / `fh history`
+  truncate long commands on UTF-8 char boundaries (multibyte command names
+  used to panic); TLS SNI handles bracketed IPv6 literals (`[::1]:9876`);
+  malformed `--forward` specs and unknown `--compression` values are hard
+  errors instead of being silently ignored.
+- **Queued-connection disconnect detection**: a queued run whose client
+  disconnects now frees its slot immediately (a watchdog owns the read half
+  during queue waits) instead of holding it until the lock frees.
+- **Bounded queue**: new `--max-queued-runs` (default 16) rejects runs beyond
+  the cap instead of accepting unbounded memory growth.
+- **Blocking I/O off the async runtime**: workspace diff, delta unpack, and
+  history saves run via `spawn_blocking`; PTY child exit is awaited through a
+  blocking `wait()` task instead of a 20 ms poll loop.
+- **Client safety**: `fh init --token` warns about the plaintext write and a
+  new `--token-env` flag writes the `${FARHAND_TOKEN}` interpolation form;
+  watch mode uses a bounded event channel (drop-on-full coalescing); agent
+  pool selection no longer relies on an `unwrap()`.
+
 ### Security
 - **`fhd` now requires an authentication token by default** and refuses to start
   without one unless `--allow-unauthenticated` is passed explicitly. Empty tokens
