@@ -1,6 +1,6 @@
 # Farhand Internal Architecture & Wire Protocol
 
-Farhand is designed as a **zero-dependency, transport-agnostic remote build and test offloader** written in pure Rust. It allows lightweight or battery-constrained local machines to transparently execute compilation, testing, and packaging jobs on powerful remote agent machines over a raw or tunneled TCP socket, streaming output in real time and pulling back build artifacts.
+Farhand is designed as a **remote build and test offloader with zero external system binaries, transport-agnostic by design** and written in pure Rust. It allows lightweight or battery-constrained local machines to transparently execute compilation, testing, and packaging jobs on powerful remote agent machines over a raw or tunneled TCP socket, streaming output in real time and pulling back build artifacts.
 
 ---
 

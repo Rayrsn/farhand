@@ -5,7 +5,7 @@
 <h1 align="center">Farhand (fh)</h1>
 
 <p align="center">
-  <strong>Zero-dependency remote build and test offloader.</strong>
+  <strong>Remote build and test offloader — zero external system binaries.</strong>
 </p>
 
 <p align="center">
@@ -23,10 +23,11 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Rayrsn/farhand/actions"><img src="https://img.shields.io/badge/build-passing-brightgreen?style=flat-square" alt="Build Status" /></a>
-  <a href="https://github.com/Rayrsn/farhand/releases/tag/v1.7.0"><img src="https://img.shields.io/badge/version-1.7.0-orange?style=flat-square" alt="Version" /></a>
-  <a href="https://raw.githubusercontent.com/Rayrsn/farhand/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT%2FApache--2.0-blue?style=flat-square" alt="License" /></a>
-  <img src="https://img.shields.io/badge/dependencies-zero-success?style=flat-square" alt="Zero Dependencies" />
+  <a href="https://github.com/Rayrsn/farhand/actions/workflows/ci.yml"><img src="https://github.com/Rayrsn/farhand/actions/workflows/ci.yml/badge.svg" alt="CI Status" /></a>
+  <a href="https://github.com/Rayrsn/farhand/releases/latest"><img src="https://img.shields.io/github/v/release/Rayrsn/farhand?style=flat-square" alt="Release" /></a>
+  <a href="LICENSE-MIT"><img src="https://img.shields.io/github/license/Rayrsn/farhand?style=flat-square" alt="License: MIT OR Apache-2.0" /></a>
+  <img src="https://img.shields.io/badge/MSRV-1.75-orange?style=flat-square" alt="MSRV 1.75" />
+  <a href="https://github.com/Rayrsn/farhand/releases/latest"><img src="https://img.shields.io/badge/no%20external%20system%20binaries-success?style=flat-square" alt="No External System Binaries" /></a>
   <img src="https://img.shields.io/badge/platform-linux%20%7C%20macos%20%7C%20windows-lightgrey?style=flat-square" alt="Platforms" />
 </p>
 
@@ -46,7 +47,7 @@ Logs stream directly into your terminal in real time, and build artifacts (like 
 
 | Feature | Farhand (`fh`) | `ssh` + `rsync` scripts | Remote Desktop / SSH VSCode |
 | :--- | :---: | :---: | :---: |
-| **Zero Runtime Dependencies** | **Yes** (pure static Rust) | No (requires `rsync`, `ssh`, `tar`) | No (heavy daemon) |
+| **No External System Binaries** | **Yes** (pure static Rust) | No (requires `rsync`, `ssh`, `tar`) | No (heavy daemon) |
 | **Zstandard (zstd) Wire Compression** | **Yes** (negotiated, 3–5x faster) | No (gzip or none) | N/A |
 | **Global Content-Addressable Storage (CAS)** | **Yes** (zero-copy CoW hydration) | No | No |
 | **Persistent Dependency Cache** | **Yes** (`node_modules` stays remote) | Often wipes or conflicts | Local to remote box |
@@ -60,7 +61,7 @@ Logs stream directly into your terminal in real time, and build artifacts (like 
 
 ## Core Features
 
-- ⚡ **Zero External Dependencies**: Pure Rust binaries. Does not invoke or depend on system `ssh`, `rsync`, `tar`, or `gzip`.
+- ⚡ **No External System Binaries**: Pure static Rust binaries. Never invokes or depends on system `ssh`, `rsync`, `tar`, or `gzip` (templates are compiled in — nothing is read from disk or executed).
 - 🚀 **High-Speed Zstandard (zstd) Wire Compression**: Automatic handshake negotiation chooses `zstd` (level 3) for delta and artifact transfers, delivering 3–5× faster compression throughput than gzip with minimal CPU overhead.
 - 🗄️ **Global Content-Addressable Storage (CAS)**: Files with matching SHA-256 hashes are deduplicated globally on the agent host across all branches and projects, hydrated instantly via zero-copy CoW reflinks (`clonefile` on macOS / `FICLONE` ioctl on Linux). Zero-byte uploads for known files!
 - 📁 **Persistent Workspace Cache**: Remote dependencies (`node_modules/`, `target/`, `.venv/`) remain on the agent host across runs. Only changed source files are transferred.
@@ -290,6 +291,12 @@ Deep-dive guides covering architecture, server setup, and configuration:
 - 🌐 **[Multi-Agent Pool & Dynamic Load Balancing](docs/multi-agent-pool.md)** — Setup guide for multi-agent clusters, health probing, and hardware tag routing (`--agent-tag`).
 - ⚡ **[Language Server Protocol (LSP) Offloading Guide](docs/lsp-integration.md)** — Offload `rust-analyzer`, `pyright`, `gopls`, and `clangd` to remote agent with VS Code, Neovim, Helix, and Zed.
 - ☁️ **[Remote Access via Cloudflare Tunnel](docs/cloudflared-tunnel.md)** — Connect securely over the internet with `cloudflared access tcp` without opening inbound router ports.
+
+## Project & Community
+
+- 📜 **[Changelog](CHANGELOG.md)** — Notable changes per release.
+- 🤝 **[Contributing Guide](CONTRIBUTING.md)** — Dev setup, code style, commit conventions, testing expectations.
+- 🔐 **[Security Policy](SECURITY.md)** — Supported versions, private vulnerability reporting, and the `fhd` threat model.
 
 ---
 
