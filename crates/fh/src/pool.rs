@@ -121,11 +121,9 @@ pub async fn select_best_agent(
 
     let best = scores
         .into_iter()
-        .filter(|s| s.status.is_some())
-        .min_by_key(|s| {
-            let st = s.status.as_ref().unwrap();
-            (st.active_runs + st.queue_depth, s.latency)
-        })
+        .filter_map(|mut s| s.status.take().map(|st| (s, st)))
+        .min_by_key(|(s, st)| (st.active_runs + st.queue_depth, s.latency))
+        .map(|(s, _)| s)
         .ok_or("all candidate agents are unreachable or rejected the probe")?;
 
     if verbose {

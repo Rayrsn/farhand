@@ -95,7 +95,16 @@ pub fn init_project(opts: &InitOptions) -> Result<InitResult, InitError> {
     };
 
     let token_line = match &opts.token {
-        Some(tok) => format!("token: \"{}\"", tok),
+        Some(tok) => {
+            // Plaintext tokens in committed files are a leak risk; nudge
+            // users toward environment interpolation (the default).
+            eprintln!(
+                "Warning: writing the token in plaintext to .farhand.yaml. \
+                 Prefer `fh init --token-env` (token: \"${{FARHAND_TOKEN}}\") or \
+                 `fh init` without flags and export FARHAND_TOKEN."
+            );
+            format!("token: \"{}\"", tok)
+        }
         None => "token: \"${FARHAND_TOKEN}\"".to_string(),
     };
 

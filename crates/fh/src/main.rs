@@ -259,6 +259,11 @@ enum Subcommands {
         #[arg(long)]
         token: Option<String>,
 
+        /// Write the safe `token: "${FARHAND_TOKEN}"` interpolation instead of
+        /// a plaintext token (recommended for committed configs)
+        #[arg(long)]
+        token_env: bool,
+
         /// Project name (default: directory name)
         #[arg(short, long)]
         name: Option<String>,
@@ -1139,13 +1144,14 @@ async fn main() {
         path,
         host,
         token,
+        token_env,
         name,
         template,
         with_template,
         force,
     }) = &cli.subcommand
     {
-        let opts = fh::InitOptions {
+        let mut opts = fh::InitOptions {
             path: path.clone(),
             host: host.clone(),
             token: token.clone(),
@@ -1154,6 +1160,11 @@ async fn main() {
             with_template: *with_template,
             force: *force,
         };
+        if *token_env {
+            // --token-env opts into the environment-interpolation form; the
+            // plaintext --token path still works but warns (see init.rs).
+            opts.token = None;
+        }
 
         match fh::init_project(&opts) {
             Ok(res) => {
@@ -1713,11 +1724,15 @@ async fn main() {
 
         println!("\n👁️  Watching for changes... (debounce: 150ms)");
 
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        // Bounded channel: an editor firing thousands of events fills at most
+        // 256 slots (older events are dropped — the debounce tick coalesces
+        // what matters into a single rebuild).
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<notify::Event>(256);
         let mut watcher = match RecommendedWatcher::new(
             move |res: notify::Result<notify::Event>| {
                 if let Ok(event) = res {
-                    let _ = tx.send(event);
+                    // Drop-on-full: coalescing happens at the debounce tick.
+                    let _ = tx.try_send(event);
                 }
             },
             NotifyConfig::default(),
