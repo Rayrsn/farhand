@@ -48,6 +48,7 @@ async fn spawn_test_server_full(
             None,
             None,
             None,
+            None,
         )
         .await;
     });
@@ -75,6 +76,7 @@ async fn spawn_agent_tls(
             None,
             false,
             Some(tls_acceptor),
+            None,
             None,
             None,
         )
@@ -3337,6 +3339,7 @@ async fn test_connection_limit_closes_excess_connections() {
             None,
             Some(1),
             None,
+            None,
         )
         .await;
     });
@@ -3495,5 +3498,257 @@ async fn test_e2e_mtls_client_cert_required_and_verified() {
     assert!(
         rejected,
         "server must reject clients without a client certificate in mTLS mode"
+    );
+}
+
+#[tokio::test]
+async fn test_e2e_queued_client_disconnect_frees_slot() {
+    let workdir = tempdir().unwrap();
+    let (server_addr, _server_handle) =
+        spawn_test_server(Some("q-token".into()), workdir.path().to_path_buf()).await;
+
+    let run_payload = |argv: Vec<String>| RunPayload {
+        argv,
+        outputs: None,
+        cwd: None,
+        template: None,
+        no_cache: false,
+        env: None,
+        toolchain: None,
+        tty: false,
+        cols: None,
+        rows: None,
+        raw_stdio: None,
+    };
+    let manifest = ManifestPayload { files: Vec::new() };
+
+    // Run 1 holds the project lock with a long sleep.
+    let mut run1 = TcpStream::connect(&server_addr).await.unwrap();
+    let hello = HelloPayload {
+        token: "q-token".into(),
+        project: "queued-project".into(),
+        protocol_version: CURRENT_PROTOCOL_VERSION,
+        compressions: None,
+    };
+    write_json_frame(&mut run1, MsgType::Hello, &hello)
+        .await
+        .unwrap();
+    let (msg, _) = read_frame(&mut run1).await.unwrap();
+    assert_eq!(msg, MsgType::HelloAck);
+    write_json_frame(&mut run1, MsgType::Manifest, &manifest)
+        .await
+        .unwrap();
+    let (msg, _) = read_frame(&mut run1).await.unwrap();
+    assert_eq!(msg, MsgType::Need);
+    write_frame(&mut run1, MsgType::Files, &[]).await.unwrap();
+    let sleep_argv = if cfg!(windows) {
+        vec![
+            "cmd.exe".into(),
+            "/C".into(),
+            "ping -n 3 127.0.0.1 > nul".into(),
+        ]
+    } else {
+        vec!["sleep".into(), "2".into()]
+    };
+    write_json_frame(&mut run1, MsgType::Run, &run_payload(sleep_argv))
+        .await
+        .unwrap();
+
+    // Give run 1 time to start (lock now held).
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+
+    // Run 2 connects for the same project, sends its manifest, and gets
+    // queued on the project lock.
+    let mut run2 = TcpStream::connect(&server_addr).await.unwrap();
+    write_json_frame(&mut run2, MsgType::Hello, &hello)
+        .await
+        .unwrap();
+    let (msg, _) = read_frame(&mut run2).await.unwrap();
+    assert_eq!(msg, MsgType::HelloAck);
+    write_json_frame(&mut run2, MsgType::Manifest, &manifest)
+        .await
+        .unwrap();
+
+    // While queued, run 2's client dies. The daemon's watchdog must free
+    // the slot instead of holding it forever.
+    let (msg2, _) = read_frame(&mut run2).await.unwrap();
+    assert_eq!(msg2, MsgType::Queued);
+    tokio::io::AsyncWriteExt::shutdown(&mut run2).await.unwrap();
+
+    // The server must notice the disconnect and close its side (EOF), and
+    // the queue depth must return to zero — the key regression assertion.
+    let mut buf = [0u8; 8];
+    let n = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        tokio::io::AsyncReadExt::read(&mut run2, &mut buf),
+    )
+    .await
+    .expect("server did not close the disconnected client's connection in time")
+    .unwrap();
+    assert_eq!(n, 0, "expected EOF from the server after client shutdown");
+
+    let mut probe = TcpStream::connect(&server_addr).await.unwrap();
+    let status_req = protocol::StatusRequestPayload {
+        token: "q-token".into(),
+    };
+    write_json_frame(&mut probe, MsgType::Status, &status_req)
+        .await
+        .unwrap();
+    let (msg, payload) = read_frame(&mut probe).await.unwrap();
+    assert_eq!(msg, MsgType::StatusResp);
+    let st: protocol::StatusResponsePayload = serde_json::from_slice(&payload).unwrap();
+    assert_eq!(
+        st.queue_depth, 0,
+        "disconnected client must free its queue slot"
+    );
+
+    // Run 3 must still be servable: it queues behind run 1 (which sleeps 2s)
+    // and proceeds once the lock frees.
+    let mut run3 = TcpStream::connect(&server_addr).await.unwrap();
+    write_json_frame(&mut run3, MsgType::Hello, &hello)
+        .await
+        .unwrap();
+    let (msg, payload) = read_frame(&mut run3).await.unwrap();
+    assert_eq!(msg, MsgType::HelloAck);
+    let ack: HelloAckPayload = serde_json::from_slice(&payload).unwrap();
+    assert!(ack.ok, "third client must be accepted (slot was freed)");
+
+    write_json_frame(&mut run3, MsgType::Manifest, &manifest)
+        .await
+        .unwrap();
+    // The project lock may still be held by run 1 — accept QUEUED frames
+    // until the NEED arrives.
+    loop {
+        let (m, _) = read_frame(&mut run3).await.unwrap();
+        if m == MsgType::Need {
+            break;
+        }
+        assert_eq!(m, MsgType::Queued, "unexpected frame while queued");
+    }
+    write_frame(&mut run3, MsgType::Files, &[]).await.unwrap();
+
+    let run3_cmd = vec![
+        if cfg!(windows) {
+            "cmd".into()
+        } else {
+            "echo".into()
+        },
+        if cfg!(windows) {
+            "/C".into()
+        } else {
+            "done".into()
+        },
+    ];
+    write_json_frame(&mut run3, MsgType::Run, &run_payload(run3_cmd))
+        .await
+        .unwrap();
+    loop {
+        let (msg, payload) = read_frame(&mut run3).await.unwrap();
+        if msg == MsgType::Result {
+            let res: ResultPayload = serde_json::from_slice(&payload).unwrap();
+            assert_eq!(res.exit_code, 0);
+            break;
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_e2e_queue_full_rejection() {
+    let workdir = tempdir().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let wd = workdir.path().to_path_buf();
+    let _handle = tokio::spawn(async move {
+        let _ = fhd::run_server(
+            listener,
+            Some("qf-token".into()),
+            wd,
+            None,
+            None,
+            Vec::new(),
+            None,
+            None,
+            false,
+            None,
+            None,
+            Some(1), // max_queued_runs = 1
+            None,
+        )
+        .await;
+    });
+
+    let run_payload = || RunPayload {
+        argv: vec!["sleep".into(), "2".into()],
+        outputs: None,
+        cwd: None,
+        template: None,
+        no_cache: false,
+        env: None,
+        toolchain: None,
+        tty: false,
+        cols: None,
+        rows: None,
+        raw_stdio: None,
+    };
+    let manifest = ManifestPayload { files: Vec::new() };
+    let hello = HelloPayload {
+        token: "qf-token".into(),
+        project: "full-queue-project".into(),
+        protocol_version: CURRENT_PROTOCOL_VERSION,
+        compressions: None,
+    };
+
+    // Run 1 holds the project lock.
+    let mut run1 = TcpStream::connect(&addr).await.unwrap();
+    write_json_frame(&mut run1, MsgType::Hello, &hello)
+        .await
+        .unwrap();
+    let (msg, payload) = read_frame(&mut run1).await.unwrap();
+    assert_eq!(msg, MsgType::HelloAck);
+    let ack: HelloAckPayload = serde_json::from_slice(&payload).unwrap();
+    assert!(ack.ok);
+    write_json_frame(&mut run1, MsgType::Manifest, &manifest)
+        .await
+        .unwrap();
+    let (msg, _) = read_frame(&mut run1).await.unwrap();
+    assert_eq!(msg, MsgType::Need);
+    write_frame(&mut run1, MsgType::Files, &[]).await.unwrap();
+    write_json_frame(&mut run1, MsgType::Run, &run_payload())
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+
+    // Run 2 fills the single queue slot.
+    let mut run2 = TcpStream::connect(&addr).await.unwrap();
+    write_json_frame(&mut run2, MsgType::Hello, &hello)
+        .await
+        .unwrap();
+    let (msg, _) = read_frame(&mut run2).await.unwrap();
+    assert_eq!(msg, MsgType::HelloAck);
+    write_json_frame(&mut run2, MsgType::Manifest, &manifest)
+        .await
+        .unwrap();
+    let (msg2, _) = read_frame(&mut run2).await.unwrap();
+    assert_eq!(msg2, MsgType::Queued, "run 2 should be queued");
+
+    // Run 3 is rejected: the queue is full. The rejection HelloAck (ok:false)
+    // arrives AFTER the manifest — the first ack is the plain handshake.
+    let mut run3 = TcpStream::connect(&addr).await.unwrap();
+    write_json_frame(&mut run3, MsgType::Hello, &hello)
+        .await
+        .unwrap();
+    let (msg, _) = read_frame(&mut run3).await.unwrap();
+    assert_eq!(msg, MsgType::HelloAck);
+
+    write_json_frame(&mut run3, MsgType::Manifest, &manifest)
+        .await
+        .unwrap();
+    let (msg, payload) = read_frame(&mut run3).await.unwrap();
+    assert_eq!(msg, MsgType::HelloAck);
+    let ack: HelloAckPayload = serde_json::from_slice(&payload).unwrap();
+    assert!(!ack.ok, "run 3 must be rejected when the queue is full");
+    assert!(
+        ack.error.unwrap().contains("full"),
+        "rejection must explain the queue is full"
     );
 }

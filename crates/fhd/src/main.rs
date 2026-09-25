@@ -43,6 +43,12 @@ struct Cli {
     max_connections: Option<usize>,
 
     #[arg(
+        long = "max-queued-runs",
+        help = "Maximum runs waiting for a lock or concurrency slot (default: 16, 0 = unlimited)"
+    )]
+    max_queued_runs: Option<usize>,
+
+    #[arg(
         long = "tag",
         action = clap::ArgAction::Append,
         help = "Agent capability tags (repeatable, e.g. '--tag lan --tag gpu')"
@@ -356,6 +362,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cli.no_cas,
         tls_acceptor,
         cli.max_connections,
+        cli.max_queued_runs,
         Some(lock_manager),
     )
     .await?;

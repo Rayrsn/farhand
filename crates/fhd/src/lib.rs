@@ -74,6 +74,9 @@ pub struct ServerContext {
     pub active_builds: ActiveBuildMap,
     /// Caps concurrent client connections; excess sockets are closed on accept.
     pub connection_limiter: Arc<tokio::sync::Semaphore>,
+    /// Caps how many runs may wait (project lock or concurrency semaphore)
+    /// before new runs are rejected with a queue-full error.
+    pub max_queued_runs: usize,
 }
 
 impl ServerContext {
@@ -151,6 +154,7 @@ pub async fn run_server(
     no_cas: bool,
     tls_acceptor: Option<protocol::TlsAcceptor>,
     max_connections: Option<usize>,
+    max_queued_runs: Option<usize>,
     lock_manager: Option<workspace::WorkspaceLockManager>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let max_runs = max_concurrent_runs.unwrap_or_else(|| {
@@ -188,6 +192,7 @@ pub async fn run_server(
         start_time: std::time::Instant::now(),
         active_builds: Arc::new(std::sync::Mutex::new(HashMap::new())),
         connection_limiter,
+        max_queued_runs: max_queued_runs.unwrap_or(16),
     });
 
     loop {
@@ -599,8 +604,16 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
         hello.project, negotiated_compression
     );
 
+    // Split the stream up front: writes go through the shared writer from
+    // here on, and a watchdog can hold the read half while we are queued to
+    // detect client disconnects (a dead client must free its queue slot).
+    let (read_half, write_half) = tokio::io::split(stream);
+    let shared_writer = Arc::new(Mutex::new(write_half));
+    let mut read_half = read_half;
+    let mut queued_frames: Vec<(MsgType, Vec<u8>)> = Vec::new();
+
     // 2. Receive next frame: PUT_TEMPLATE or MANIFEST
-    let (msg_type, payload) = read_frame(&mut stream).await?;
+    let (msg_type, payload) = read_frame(&mut read_half).await?;
     let manifest: ManifestPayload = if msg_type == MsgType::PutTemplate {
         let put_req: protocol::PutTemplatePayload = decode_json(&payload)?;
         info!(
@@ -621,7 +634,10 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
                     compression: None,
                     remote_workdir: None,
                 };
-                write_json_frame(&mut stream, MsgType::HelloAck, &ack).await?;
+                {
+                    let mut w = shared_writer.lock().await;
+                    write_json_frame(&mut *w, MsgType::HelloAck, &ack).await?;
+                }
                 return Ok(());
             }
             Err(e) => {
@@ -632,7 +648,10 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
                     compression: None,
                     remote_workdir: None,
                 };
-                write_json_frame(&mut stream, MsgType::HelloAck, &ack).await?;
+                {
+                    let mut w = shared_writer.lock().await;
+                    write_json_frame(&mut *w, MsgType::HelloAck, &ack).await?;
+                }
                 return Err(format!("Failed to save template: {}", e).into());
             }
         }
@@ -646,6 +665,79 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
         .into());
     };
 
+    /// Wait for `acquire` while watching the client connection for disconnects.
+    ///
+    /// While queued, the daemon normally does not read the socket — a client that
+    /// dies while waiting would hold its queue slot forever. The watchdog owns
+    /// the read half during the wait, buffers any frames that (against today's
+    /// protocol) arrive early, and detects EOF. On acquisition the read half and
+    /// any buffered frames are handed back; `Ok(None)` means the client
+    /// disconnected and the caller must abort.
+    #[allow(clippy::type_complexity)]
+    async fn wait_with_disconnect_watch<S, T, Fut>(
+        read_half: tokio::io::ReadHalf<S>,
+        queued: protocol::QueuedPayload,
+        writer: &Arc<Mutex<tokio::io::WriteHalf<S>>>,
+        acquire: Fut,
+    ) -> Result<Option<(tokio::io::ReadHalf<S>, T, Vec<(MsgType, Vec<u8>)>)>, String>
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+        Fut: std::future::Future<Output = T>,
+    {
+        let (acquired_tx, acquired_rx) = tokio::sync::oneshot::channel::<()>();
+        let watchdog: tokio::task::JoinHandle<
+            Result<
+                (tokio::io::ReadHalf<S>, Vec<(MsgType, Vec<u8>)>, bool),
+                std::convert::Infallible,
+            >,
+        > = tokio::spawn(async move {
+            let mut read_half = read_half;
+            let mut buffered: Vec<(MsgType, Vec<u8>)> = Vec::new();
+            tokio::pin!(acquired_rx);
+            loop {
+                tokio::select! {
+                    _ = &mut acquired_rx => {
+                        break Ok((read_half, buffered, false));
+                    }
+                    res = read_frame(&mut read_half) => match res {
+                        Ok(frame) => {
+                            // Early frames are a protocol violation today; buffer
+                            // a bounded amount and keep consuming so EOF
+                            // detection keeps working.
+                            if buffered.len() < 16 {
+                                buffered.push(frame);
+                            }
+                            continue;
+                        }
+                        Err(_) => {
+                            break Ok((read_half, buffered, true));
+                        }
+                    }
+                }
+            }
+        });
+
+        {
+            let mut w = writer.lock().await;
+            write_json_frame(&mut *w, MsgType::Queued, &queued)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+
+        let acquired = acquire.await;
+        let _ = acquired_tx.send(());
+        let (read_half, buffered, disconnected) = match watchdog.await {
+            Ok(Ok(t)) => t,
+            Ok(Err(infallible)) => match infallible {},
+            Err(join_err) => return Err(format!("queue watchdog panicked: {}", join_err)),
+        };
+
+        if disconnected {
+            return Ok(None);
+        }
+        Ok(Some((read_half, acquired, buffered)))
+    }
+
     // Acquire per-project lock to ensure serialized execution on the same project workspace
     let project_mutex = ctx.lock_manager.get_lock(&hello.project).await;
     let _project_guard = match project_mutex.clone().try_lock_owned() {
@@ -655,15 +747,47 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
                 "Project '{}' is busy. Sending QUEUED frame...",
                 hello.project
             );
+            // Admission control: a full queue rejects immediately instead of
+            // letting disconnected/queued connections grow memory forever.
+            if ctx.queue_depth.load(std::sync::atomic::Ordering::SeqCst) >= ctx.max_queued_runs {
+                let ack = HelloAckPayload {
+                    ok: false,
+                    error: Some(format!(
+                        "Agent queue is full ({} queued runs). Try again later.",
+                        ctx.max_queued_runs
+                    )),
+                    compression: None,
+                    remote_workdir: None,
+                };
+                let mut w = shared_writer.lock().await;
+                write_json_frame(&mut *w, MsgType::HelloAck, &ack).await?;
+                return Err("queue full".into());
+            }
             ctx.queue_depth
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            let pos = ctx.queue_depth.load(std::sync::atomic::Ordering::Relaxed);
+            let pos = ctx.queue_depth.load(std::sync::atomic::Ordering::SeqCst);
             let queued = protocol::QueuedPayload {
                 position: pos,
                 reason: "project_busy".to_string(),
             };
-            write_json_frame(&mut stream, MsgType::Queued, &queued).await?;
-            let guard = project_mutex.lock_owned().await;
+            let outcome = wait_with_disconnect_watch(
+                read_half,
+                queued,
+                &shared_writer,
+                project_mutex.lock_owned(),
+            )
+            .await?;
+            let (rh, guard, frames) = match outcome {
+                Some(t) => t,
+                None => {
+                    ctx.queue_depth
+                        .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                    info!("Client disconnected while queued (project busy); freeing slot");
+                    return Ok(());
+                }
+            };
+            read_half = rh;
+            queued_frames.extend(frames);
             ctx.queue_depth
                 .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
             guard
@@ -675,15 +799,45 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
         Ok(permit) => permit,
         Err(_) => {
             info!("Agent concurrency limit reached. Sending QUEUED frame...");
+            if ctx.queue_depth.load(std::sync::atomic::Ordering::SeqCst) >= ctx.max_queued_runs {
+                let ack = HelloAckPayload {
+                    ok: false,
+                    error: Some(format!(
+                        "Agent queue is full ({} queued runs). Try again later.",
+                        ctx.max_queued_runs
+                    )),
+                    compression: None,
+                    remote_workdir: None,
+                };
+                let mut w = shared_writer.lock().await;
+                write_json_frame(&mut *w, MsgType::HelloAck, &ack).await?;
+                return Err("queue full".into());
+            }
             ctx.queue_depth
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            let pos = ctx.queue_depth.load(std::sync::atomic::Ordering::Relaxed);
+            let pos = ctx.queue_depth.load(std::sync::atomic::Ordering::SeqCst);
             let queued = protocol::QueuedPayload {
                 position: pos,
                 reason: "concurrency_limit".to_string(),
             };
-            write_json_frame(&mut stream, MsgType::Queued, &queued).await?;
-            let permit_res = ctx.semaphore.clone().acquire_owned().await;
+            let outcome = wait_with_disconnect_watch(
+                read_half,
+                queued,
+                &shared_writer,
+                ctx.semaphore.clone().acquire_owned(),
+            )
+            .await?;
+            let (rh, permit_res, frames) = match outcome {
+                Some(t) => t,
+                None => {
+                    ctx.queue_depth
+                        .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                    info!("Client disconnected while queued (concurrency limit); freeing slot");
+                    return Ok(());
+                }
+            };
+            read_half = rh;
+            queued_frames.extend(frames);
             ctx.queue_depth
                 .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
             permit_res.map_err(|e| e.to_string())?
@@ -750,10 +904,28 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
         want: diff.want.clone(),
         delete_extraneous: diff.delete_extraneous.clone(),
     };
-    write_json_frame(&mut stream, MsgType::Need, &need).await?;
+    {
+        let mut w = shared_writer.lock().await;
+        write_json_frame(&mut *w, MsgType::Need, &need).await?;
+    }
 
-    // 4. Receive FILES frame (delta archive)
-    let (msg_type, payload) = read_frame(&mut stream).await?;
+    // 4. Receive FILES frame (delta archive). If a queued watchdog buffered
+    // early frames, consume them first (defensive; the client sends nothing
+    // while queued in today's protocol).
+    let (msg_type, payload) = loop {
+        if !queued_frames.is_empty() {
+            let frame = queued_frames.remove(0);
+            if frame.0 == MsgType::Files {
+                break frame;
+            }
+            warn!(
+                "Discarding unexpected buffered frame {:?} from queue window",
+                frame.0
+            );
+            continue;
+        }
+        break read_frame(&mut read_half).await?;
+    };
     if msg_type != MsgType::Files {
         return Err(format!("Expected FILES frame, got {:?}", msg_type).into());
     }
@@ -788,7 +960,20 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
     }
 
     // 5. Receive RUN frame
-    let (msg_type, payload) = read_frame(&mut stream).await?;
+    let (msg_type, payload) = loop {
+        if !queued_frames.is_empty() {
+            let frame = queued_frames.remove(0);
+            if frame.0 == MsgType::Run {
+                break frame;
+            }
+            warn!(
+                "Discarding unexpected buffered frame {:?} before RUN",
+                frame.0
+            );
+            continue;
+        }
+        break read_frame(&mut read_half).await?;
+    };
     if msg_type != MsgType::Run {
         return Err(format!("Expected RUN frame, got {:?}", msg_type).into());
     }
@@ -816,8 +1001,8 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
     };
 
     // 6. Pre-build dependency caching hook
-    let (mut read_half, write_half) = tokio::io::split(stream);
-    let shared_writer = Arc::new(Mutex::new(write_half));
+    // (the stream was already split after the handshake; read/write halves
+    // and the shared writer are in scope)
 
     let matched_templates = templates::match_templates(&workspace_dir, run.template.as_deref());
     let hook_template = matched_templates
@@ -1902,6 +2087,7 @@ mod tests {
             start_time: std::time::Instant::now(),
             active_builds: Arc::new(std::sync::Mutex::new(HashMap::new())),
             connection_limiter: Arc::new(tokio::sync::Semaphore::new(UNLIMITED_CONNECTIONS)),
+            max_queued_runs: 16,
         }
     }
 
