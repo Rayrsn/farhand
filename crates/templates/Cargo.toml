@@ -1,5 +1,5 @@
 [package]
-name = "templates"
+name = "farhand-templates"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -13,13 +13,16 @@ keywords.workspace = true
 categories.workspace = true
 rust-version.workspace = true
 
+[lib]
+name = "templates"
+
 [dependencies]
 serde = { workspace = true }
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 glob = { workspace = true }
 tracing = { workspace = true }
-protocol = { version = "1.8", path = "../protocol" }
+protocol = { package = "farhand-protocol", version = "1.8", path = "../protocol" }
 
 [dev-dependencies]
 tempfile = { workspace = true }

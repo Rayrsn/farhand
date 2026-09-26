@@ -1,5 +1,5 @@
 [package]
-name = "protocol"
+name = "farhand-protocol"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -12,6 +12,9 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 rust-version.workspace = true
+
+[lib]
+name = "protocol"
 
 [dependencies]
 tokio = { workspace = true, features = ["io-util", "net"] }

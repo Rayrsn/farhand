@@ -1,5 +1,5 @@
 [package]
-name = "fhd"
+name = "farhand-agent"
 description = "Farhand agent daemon: persistent workspace caching, process isolation, and build runner"
 version.workspace = true
 edition.workspace = true
@@ -13,11 +13,19 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[lib]
+name = "fhd"
+
+# Published as farhand-*, installed as the short names users actually type.
+[[bin]]
+name = "fhd"
+path = "src/main.rs"
+
 [dependencies]
-protocol = { version = "1.8", path = "../protocol" }
-fileset = { version = "1.8", path = "../fileset" }
-workspace = { version = "1.8", path = "../workspace" }
-templates = { version = "1.8", path = "../templates" }
+protocol = { package = "farhand-protocol", version = "1.8", path = "../protocol" }
+fileset = { package = "farhand-fileset", version = "1.8", path = "../fileset" }
+workspace = { package = "farhand-workspace", version = "1.8", path = "../workspace" }
+templates = { package = "farhand-templates", version = "1.8", path = "../templates" }
 tokio = { workspace = true, features = ["full"] }
 clap = { workspace = true, features = ["derive", "env"] }
 tracing.workspace = true

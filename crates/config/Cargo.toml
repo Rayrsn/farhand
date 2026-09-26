@@ -1,5 +1,5 @@
 [package]
-name = "config"
+name = "farhand-config"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -12,6 +12,9 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 rust-version.workspace = true
+
+[lib]
+name = "config"
 
 [dependencies]
 serde = { workspace = true }

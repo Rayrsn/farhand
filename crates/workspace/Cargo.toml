@@ -1,5 +1,5 @@
 [package]
-name = "workspace"
+name = "farhand-workspace"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -13,16 +13,19 @@ keywords.workspace = true
 categories.workspace = true
 rust-version.workspace = true
 
+[lib]
+name = "workspace"
+
 [dependencies]
-protocol = { version = "1.8", path = "../protocol" }
-fileset = { version = "1.8", path = "../fileset" }
+protocol = { package = "farhand-protocol", version = "1.8", path = "../protocol" }
+fileset = { package = "farhand-fileset", version = "1.8", path = "../fileset" }
 sha2 = { workspace = true }
 hex = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 walkdir = { workspace = true }
 glob = { workspace = true }
-templates = { version = "1.8", path = "../templates" }
+templates = { package = "farhand-templates", version = "1.8", path = "../templates" }
 tokio = { workspace = true, features = ["sync"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -31,8 +34,8 @@ libc = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 criterion = { workspace = true }
-fileset = { version = "1.8", path = "../fileset" }
-protocol = { version = "1.8", path = "../protocol" }
+fileset = { package = "farhand-fileset", version = "1.8", path = "../fileset" }
+protocol = { package = "farhand-protocol", version = "1.8", path = "../protocol" }
 
 [[bench]]
 name = "cas_cow"

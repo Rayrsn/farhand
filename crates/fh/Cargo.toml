@@ -1,5 +1,5 @@
 [package]
-name = "fh"
+name = "farhand-cli"
 description = "Farhand CLI client: offload compilation, test, and build jobs to remote machines"
 version.workspace = true
 edition.workspace = true
@@ -13,11 +13,19 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[lib]
+name = "fh"
+
+# Published as farhand-*, installed as the short names users actually type.
+[[bin]]
+name = "fh"
+path = "src/main.rs"
+
 [dependencies]
-protocol = { version = "1.8", path = "../protocol" }
-fileset = { version = "1.8", path = "../fileset" }
-config = { version = "1.8", path = "../config" }
-templates = { version = "1.8", path = "../templates" }
+protocol = { package = "farhand-protocol", version = "1.8", path = "../protocol" }
+fileset = { package = "farhand-fileset", version = "1.8", path = "../fileset" }
+config = { package = "farhand-config", version = "1.8", path = "../config" }
+templates = { package = "farhand-templates", version = "1.8", path = "../templates" }
 tokio = { workspace = true, features = ["full"] }
 clap = { workspace = true, features = ["derive", "env"] }
 clap_complete.workspace = true
@@ -31,8 +39,8 @@ notify = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-fhd = { version = "1.8", path = "../fhd" }
-workspace = { version = "1.8", path = "../workspace" }
+fhd = { package = "farhand-agent", version = "1.8", path = "../fhd" }
+workspace = { package = "farhand-workspace", version = "1.8", path = "../workspace" }
 tempfile = { workspace = true }
 # Only for the process-liveness probe in the cancellation e2e test
 # (signal 0); already in the dependency graph via fhd/workspace.
