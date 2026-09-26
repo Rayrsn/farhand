@@ -37,10 +37,12 @@ fn build_tar_entries<W: std::io::Write>(
     root: &Path,
     paths: &[String],
     writer: W,
+    mut on_entry: impl FnMut(usize, usize),
 ) -> Result<W, FilesetError> {
     let mut builder = Builder::new(writer);
+    let total = paths.len();
 
-    for rel_path in paths {
+    for (index, rel_path) in paths.iter().enumerate() {
         let rel_buf = match protocol::from_wire_path(rel_path) {
             Ok(p) => p,
             Err(_) => return Err(FilesetError::InsecurePath(rel_path.clone())),
@@ -96,7 +98,10 @@ fn build_tar_entries<W: std::io::Write>(
                     .map_err(|e| FilesetError::Tar(e.to_string()))?;
             }
         }
+
+        on_entry(index + 1, total);
     }
+    on_entry(total, total);
 
     builder
         .into_inner()
@@ -104,27 +109,41 @@ fn build_tar_entries<W: std::io::Write>(
 }
 
 /// Pack an arbitrary list of relative file paths from `root` into a compressed tar archive.
+/// Pack `paths` into a compressed archive, reporting progress.
+///
+/// `on_progress` is called with `(done, total)` after each entry and once more
+/// when the archive is complete, so a caller can drive a progress bar from
+/// real work rather than a timer. Packing is the slow part of a sync for any
+/// non-trivial delta, which is why it is the part worth watching.
+pub fn pack_tar_with_algo_progress(
+    root: &Path,
+    paths: &[String],
+    algo: CompressionAlgo,
+    on_progress: impl FnMut(usize, usize),
+) -> Result<Vec<u8>, FilesetError> {
+    match algo {
+        CompressionAlgo::Zstd => {
+            let encoder = zstd::stream::write::Encoder::new(Vec::new(), 3)?;
+            let finished = build_tar_entries(root, paths, encoder, on_progress)?;
+            finished.finish().map_err(FilesetError::Io)
+        }
+        CompressionAlgo::Gzip => {
+            let encoder = GzEncoder::new(Vec::new(), Compression::default());
+            let finished = build_tar_entries(root, paths, encoder, on_progress)?;
+            finished.finish().map_err(FilesetError::Io)
+        }
+        CompressionAlgo::None => build_tar_entries(root, paths, Vec::new(), on_progress),
+    }
+}
+
 pub fn pack_tar_with_algo(
     root: &Path,
     paths: &[String],
     algo: CompressionAlgo,
 ) -> Result<Vec<u8>, FilesetError> {
-    match algo {
-        CompressionAlgo::Zstd => {
-            let encoder = zstd::stream::write::Encoder::new(Vec::new(), 3)?;
-            let finished = build_tar_entries(root, paths, encoder)?;
-            finished.finish().map_err(FilesetError::Io)
-        }
-        CompressionAlgo::Gzip => {
-            let encoder = GzEncoder::new(Vec::new(), Compression::default());
-            let finished = build_tar_entries(root, paths, encoder)?;
-            finished.finish().map_err(FilesetError::Io)
-        }
-        CompressionAlgo::None => build_tar_entries(root, paths, Vec::new()),
-    }
+    pack_tar_with_algo_progress(root, paths, algo, |_, _| {})
 }
 
-/// Pack an arbitrary list of relative file paths from `root` using default compression (Zstandard).
 pub fn pack_tar(root: &Path, paths: &[String]) -> Result<Vec<u8>, FilesetError> {
     pack_tar_with_algo(root, paths, CompressionAlgo::Zstd)
 }
@@ -191,6 +210,39 @@ fn unpack_archive_reader<R: std::io::Read>(dest_dir: &Path, reader: R) -> Result
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn packing_reports_monotonic_progress_ending_at_the_total() {
+        let root = tempdir().unwrap();
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            std::fs::write(root.path().join(name), name).unwrap();
+        }
+        let paths: Vec<String> = ["a.txt", "b.txt", "c.txt"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        let mut seen: Vec<(usize, usize)> = Vec::new();
+        let packed = pack_tar_with_algo_progress(
+            root.path(),
+            &paths,
+            CompressionAlgo::None,
+            |done, total| seen.push((done, total)),
+        )
+        .unwrap();
+        assert!(!packed.is_empty());
+
+        // Every callback agrees on the total, counts only move forward, and
+        // the run finishes at exactly the total — a progress bar driven by
+        // this must never sit at 100% early or stall short of it.
+        assert!(!seen.is_empty(), "packing reported no progress at all");
+        assert!(seen.iter().all(|(_, total)| *total == paths.len()));
+        assert!(
+            seen.windows(2).all(|w| w[0].0 <= w[1].0),
+            "progress went backwards: {seen:?}"
+        );
+        assert_eq!(seen.last().copied(), Some((paths.len(), paths.len())));
+    }
 
     #[test]
     fn test_pack_and_unpack_roundtrip() {

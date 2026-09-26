@@ -537,7 +537,14 @@ async fn run_build(p: RunParams<'_>) -> Result<i32, Box<dyn std::error::Error + 
                 need.want.len()
             );
         }
-        let tar_gz = match fileset::pack_tar_with_algo(project_dir, &need.want, compression_algo) {
+        let progress = fh::progress::Progress::start("packing delta");
+        let packed = fileset::pack_tar_with_algo_progress(
+            project_dir,
+            &need.want,
+            compression_algo,
+            |done, total| progress.update(done, total),
+        );
+        let tar_gz = match packed {
             Ok(t) => t,
             Err(e) => {
                 eprintln!("Error: failed to pack delta files into archive: {}", e);
@@ -545,6 +552,7 @@ async fn run_build(p: RunParams<'_>) -> Result<i32, Box<dyn std::error::Error + 
             }
         };
 
+        progress.clear();
         let upload_len = tar_gz.len() as u64;
         let want_len = need.want.len();
 

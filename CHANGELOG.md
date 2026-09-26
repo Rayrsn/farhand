@@ -25,6 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - The daemon now treats a client that stops after NEED (a dry run) or after
     FILES (a sync with no command) as a completed session instead of logging a
     protocol error.
+- **Progress reporting while the delta is packed**: the client draws a live
+  bar (`[====    ]  42% 17/40 packing delta  0.4s`) driven by real per-entry
+  callbacks from the packer, not a timer. It renders only when stdout is a
+  terminal, so redirected output and CI logs stay clean — verified by running
+  under a pty and confirming silence without one.
 - **Watch mode now honours each template's `ignoreExtra`**, so a template can
   declare paths that must not trigger a rebuild (a vendored tree, snapshot
   files), and the debounce is configurable with `--watch-debounce`
