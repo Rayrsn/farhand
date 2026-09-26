@@ -52,7 +52,6 @@ skip = [
     { name = "syn" },
     { name = "thiserror" },
     { name = "thiserror-impl" },
-    { name = "webpki-roots" },
     { name = "windows-sys" },
     { name = "windows-targets" },
     { name = "windows_*" },
