@@ -10,6 +10,11 @@ plan/
 AGENTS.md
 agent.md
 
+# Superseded by CHANGELOG.md and the shipped features. Kept on disk, never
+# committed — and ignored explicitly so a broad `git add -A docs/` cannot
+# sweep it back in.
+docs/future-roadmap.md
+
 # cargo-fuzz: keep committed seed corpora, ignore libFuzzer's generated
 # coverage corpus and crash artifacts (crashes are triaged, not committed).
 fuzz/target/
