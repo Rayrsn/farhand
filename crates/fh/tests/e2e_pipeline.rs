@@ -56,6 +56,69 @@ async fn spawn_test_server_full(
     (addr, handle)
 }
 
+/// Like [`spawn_test_server_with_concurrency`], but also hands back a handle to
+/// the agent's project-lock manager.
+///
+/// The manager is `Clone` over an `Arc`, so the caller shares state with the
+/// running daemon. That lets a test wait for the *actual* lock instead of
+/// sleeping and hoping — the difference between a deterministic test and one
+/// that flakes on a slower platform.
+async fn spawn_test_server_with_lock(
+    token: Option<String>,
+    workdir: PathBuf,
+    max_concurrent_runs: Option<usize>,
+) -> (
+    String,
+    tokio::task::JoinHandle<()>,
+    workspace::WorkspaceLockManager,
+) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let lock_manager = workspace::WorkspaceLockManager::new();
+    let server_locks = lock_manager.clone();
+
+    let handle = tokio::spawn(async move {
+        let _ = fhd::run_server(
+            listener,
+            token,
+            workdir,
+            None,
+            max_concurrent_runs,
+            vec![],
+            None,
+            None,
+            false,
+            None,
+            None,
+            None,
+            Some(server_locks),
+        )
+        .await;
+    });
+
+    (addr, handle, lock_manager)
+}
+
+/// Block until `project` is locked by a run, or fail after 20 seconds.
+///
+/// Polls a real condition rather than waiting out a fixed interval: a 100 ms
+/// guess was occasionally not enough on Windows for the first client to
+/// connect, scan, and take the lock, so the test read `Need` where it
+/// expected `Queued`.
+async fn wait_for_project_lock(locks: &workspace::WorkspaceLockManager, project: &str) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        if locks.is_locked(project).await {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "project {project} was never locked; the first run never started"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
 async fn spawn_agent_tls(
     workdir: PathBuf,
     token: Option<String>,
@@ -970,8 +1033,8 @@ outputs:
 async fn test_e2e_concurrency_project_workspace_locking_and_queued() {
     let token = "concurrency-proj-token".to_string();
     let workdir = tempdir().unwrap();
-    let (server_addr, _server_handle) =
-        spawn_test_server(Some(token.clone()), workdir.path().to_path_buf()).await;
+    let (server_addr, _server_handle, locks) =
+        spawn_test_server_with_lock(Some(token.clone()), workdir.path().to_path_buf(), None).await;
 
     let project_dir = tempdir().unwrap();
     fs::write(project_dir.path().join("main.txt"), "hello").unwrap();
@@ -996,8 +1059,10 @@ async fn test_e2e_concurrency_project_workspace_locking_and_queued() {
         .await
     });
 
-    // Give task1 time to connect, handshake, and hold the workspace lock
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    // Wait for task1 to actually hold the project lock rather than guessing
+    // with a fixed sleep — the guess was too short on Windows, where the run
+    // can lose the race and this test then read `Need` instead of `Queued`.
+    wait_for_project_lock(&locks, project_name).await;
 
     // Client 2 connects for the same project. It MUST receive QUEUED (reason: project_busy)
     let mut stream2 = TcpStream::connect(&server_addr).await.unwrap();
