@@ -14,10 +14,10 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-protocol = { path = "../protocol" }
-fileset = { path = "../fileset" }
-config = { path = "../config" }
-templates = { path = "../templates" }
+protocol = { version = "1.8", path = "../protocol" }
+fileset = { version = "1.8", path = "../fileset" }
+config = { version = "1.8", path = "../config" }
+templates = { version = "1.8", path = "../templates" }
 tokio = { workspace = true, features = ["full"] }
 clap = { workspace = true, features = ["derive", "env"] }
 clap_complete.workspace = true
@@ -31,8 +31,8 @@ notify = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-fhd = { path = "../fhd" }
-workspace = { path = "../workspace" }
+fhd = { version = "1.8", path = "../fhd" }
+workspace = { version = "1.8", path = "../workspace" }
 tempfile = { workspace = true }
 # Only for the process-liveness probe in the cancellation e2e test
 # (signal 0); already in the dependency graph via fhd/workspace.

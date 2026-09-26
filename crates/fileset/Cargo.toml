@@ -3,6 +3,15 @@ name = "fileset"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "File scanning, ignore rules, hashing, and tar/gzip/zstd packing for Farhand"
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 sha2 = { workspace = true }
@@ -12,7 +21,7 @@ flate2 = { workspace = true }
 zstd = { workspace = true }
 walkdir = { workspace = true }
 glob = { workspace = true }
-protocol = { path = "../protocol" }
+protocol = { version = "1.8", path = "../protocol" }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 

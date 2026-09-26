@@ -3,6 +3,15 @@ name = "protocol"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "Wire protocol for Farhand: framing, message types, path normalization, and TLS"
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 tokio = { workspace = true, features = ["io-util", "net"] }
