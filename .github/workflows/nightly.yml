@@ -65,6 +65,13 @@ jobs:
         with:
           tool: cargo-fuzz
 
+      - name: Install musl-tools
+        # cc-rs probes for a musl compiler while building the C shims in the
+        # dependency graph (ring, via rustls) and errors when it cannot find
+        # `x86_64-linux-musl-gcc`. The release workflow installs this same
+        # package on this same runner, so it is known to be available.
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
       - name: Deep fuzz each target (10 min)
         env:
           # libFuzzer's sanitizer cannot link a statically linked libc, and
@@ -127,12 +134,22 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: The formula must match the latest published release
+        env:
+          # `gh` does not pick up GITHUB_TOKEN on its own; without this the
+          # command fails on an auth prompt and `set -e` turns the whole check
+          # into a permanent false alarm. contents:read is enough to read a
+          # release.
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           latest=$(gh release view --json tagName --jq '.tagName' | sed 's/^v//')
           formula_version=$(sed -n 's/^  version "\(.*\)"$/\1/p' Formula/farhand.rb)
           echo "latest release: ${latest}"
           echo "formula version: ${formula_version}"
+          if [ -z "${latest}" ]; then
+            echo "::error::could not read the latest release tag; refusing to judge the formula against an empty value" >&2
+            exit 1
+          fi
           if [ "${latest}" != "${formula_version}" ]; then
             echo "::error::Formula/farhand.rb is at ${formula_version} but the latest release is ${latest}. Update the version and its checksums." >&2
             exit 1
