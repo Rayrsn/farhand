@@ -37,17 +37,21 @@ jobs:
   fuzz:
     name: Fuzz (deep run)
     runs-on: ubuntu-latest
-    # Advisory: this does not gate a PR, because a nightly fuzzer should not
-    # be able to hold up a release. The fuzz-lite property tests that DO run on
-    # every PR in all three CI jobs are the fast gate; this is the deep run, and
-    # its results are the point.
+    # A real libFuzzer run, and it is no longer advisory. This was red on every
+    # nightly for weeks: --build-std compiles compiler_builtins with crt-static,
+    # which libFuzzer's sanitizer rejects, and that had been written off as
+    # unfixable from a workflow. It was fixable — the flag rustc names in the
+    # error, plus a pinned target triple so cc-rs stops reaching for a musl C++
+    # toolchain on a glibc runner. See the run step.
     #
-    # The hosted runner needs RUSTFLAGS (see the run step) because --build-std
-    # compiles compiler_builtins with crt-static, which libFuzzer's sanitizer
-    # rejects. That was previously written off as unfixable from a workflow; the
-    # flag rustc names in the error turned out to be settable, and it is
-    # verified locally. Whether the runner honours it is what this job reports.
-    continue-on-error: true
+    # A nightly fuzzer does not gate a PR, so nothing downstream waits on it —
+    # but a failure here is a real signal, either a crash or a build that broke,
+    # and it should redden the nightly rather than be absorbed by
+    # continue-on-error.
+    #
+    # The fast gate stays the fuzz-lite property tests, which run in all three
+    # PR CI jobs. This is the deep run: roughly 230 million executions a night
+    # across the frame parser, the tar unpacker, and wire-path handling.
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

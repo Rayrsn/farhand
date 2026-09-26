@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **The nightly fuzz job now runs.** It had been red on every nightly run for
+  weeks and was annotated as unfixable from a workflow, which was wrong on both
+  counts. Three separate causes: `--build-std` compiles `compiler_builtins` with
+  `crt-static`, which libFuzzer's sanitizer rejects (rustc names the fix in the
+  error); `musl-tools` was missing for the C shims; and `cc-rs` was reaching
+  for a musl C++ toolchain on a glibc runner, so the target triple is now pinned
+  rather than inferred. It is no longer `continue-on-error` — a nightly fuzzer
+  gates nothing downstream, so a failure here is information, not noise. First
+  green run: ~230 million executions across the frame parser, the tar unpacker
+  and wire-path handling, no crashes.
 - **The e2e suite was not hermetic.** `FARHAND_HOST` and `FARHAND_TOKEN`
   deliberately outrank `.farhand.yaml`, so a developer who has them exported —
   which the README documents — had every config-resolution test silently
