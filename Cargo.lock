@@ -310,16 +310,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 
 [[package]]
-name = "config"
-version = "1.8.1"
-dependencies = [
- "serde",
- "serde_yaml",
- "tempfile",
- "thiserror 2.0.20",
-]
-
-[[package]]
 name = "const-oid"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -562,53 +552,133 @@ dependencies = [
 ]
 
 [[package]]
-name = "fastrand"
-version = "2.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
+name = "farhand-agent"
+version = "1.9.0"
+dependencies = [
+ "clap",
+ "farhand-fileset",
+ "farhand-protocol",
+ "farhand-templates",
+ "farhand-workspace",
+ "libc",
+ "portable-pty",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
 
 [[package]]
-name = "fh"
-version = "1.8.1"
+name = "farhand-cli"
+version = "1.9.0"
 dependencies = [
  "clap",
  "clap_complete",
  "clap_mangen",
- "config",
  "crossterm",
- "fhd",
- "fileset",
+ "farhand-agent",
+ "farhand-config",
+ "farhand-fileset",
+ "farhand-protocol",
+ "farhand-templates",
+ "farhand-workspace",
  "futures",
  "libc",
  "notify",
- "protocol",
  "serde_json",
  "tempfile",
- "templates",
  "thiserror 2.0.20",
  "tokio",
  "tracing",
  "tracing-subscriber",
- "workspace",
 ]
 
 [[package]]
-name = "fhd"
-version = "1.8.1"
+name = "farhand-config"
+version = "1.9.0"
 dependencies = [
- "clap",
- "fileset",
- "libc",
- "portable-pty",
- "protocol",
- "serde_json",
+ "serde",
+ "serde_yaml",
  "tempfile",
- "templates",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "farhand-fileset"
+version = "1.9.0"
+dependencies = [
+ "criterion",
+ "farhand-protocol",
+ "flate2",
+ "glob",
+ "hex",
+ "sha2",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tracing",
+ "walkdir",
+ "zstd",
+]
+
+[[package]]
+name = "farhand-protocol"
+version = "1.9.0"
+dependencies = [
+ "byteorder",
+ "hex",
+ "rcgen",
+ "rustls",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-rustls",
+ "webpki-roots",
+]
+
+[[package]]
+name = "farhand-templates"
+version = "1.9.0"
+dependencies = [
+ "farhand-protocol",
+ "glob",
+ "serde",
+ "serde_yaml",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tracing",
+]
+
+[[package]]
+name = "farhand-workspace"
+version = "1.9.0"
+dependencies = [
+ "criterion",
+ "farhand-fileset",
+ "farhand-protocol",
+ "farhand-templates",
+ "glob",
+ "hex",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.20",
  "tokio",
  "tracing",
- "tracing-subscriber",
- "workspace",
+ "walkdir",
 ]
+
+[[package]]
+name = "fastrand"
+version = "2.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
 name = "filedescriptor"
@@ -619,24 +689,6 @@ dependencies = [
  "libc",
  "thiserror 1.0.69",
  "winapi",
-]
-
-[[package]]
-name = "fileset"
-version = "1.8.1"
-dependencies = [
- "criterion",
- "flate2",
- "glob",
- "hex",
- "protocol",
- "sha2",
- "tar",
- "tempfile",
- "thiserror 2.0.20",
- "tracing",
- "walkdir",
- "zstd",
 ]
 
 [[package]]
@@ -1242,24 +1294,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "protocol"
-version = "1.8.1"
-dependencies = [
- "byteorder",
- "hex",
- "rcgen",
- "rustls",
- "rustls-pki-types",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.20",
- "tokio",
- "tokio-rustls",
- "webpki-roots",
-]
-
-[[package]]
 name = "quote"
 version = "1.0.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1700,19 +1734,6 @@ dependencies = [
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "templates"
-version = "1.8.1"
-dependencies = [
- "glob",
- "protocol",
- "serde",
- "serde_yaml",
- "tempfile",
- "thiserror 2.0.20",
- "tracing",
 ]
 
 [[package]]
@@ -2238,27 +2259,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "80d0f4e272c85def139476380b12f9ac60926689dd2e01d4923222f40580869d"
 dependencies = [
  "winapi",
-]
-
-[[package]]
-name = "workspace"
-version = "1.8.1"
-dependencies = [
- "criterion",
- "fileset",
- "glob",
- "hex",
- "libc",
- "protocol",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "templates",
- "thiserror 2.0.20",
- "tokio",
- "tracing",
- "walkdir",
 ]
 
 [[package]]

@@ -13,6 +13,8 @@
       let
         pkgs = nixpkgs.legacyPackages.${system};
         rustToolchain = pkgs.rustPlatform.rustc;
+        # One source of truth: the version lives in Cargo.toml and nowhere else.
+        version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).workspace.package.version;
       in
       {
         packages = {
@@ -20,7 +22,7 @@
 
           fh = pkgs.rustPlatform.buildRustPackage {
             pname = "farhand-cli";
-            version = "1.8.1";
+            inherit version;
 
             src = ./.;
 
@@ -41,7 +43,7 @@
 
           fhd = pkgs.rustPlatform.buildRustPackage {
             pname = "farhand-agent";
-            version = "1.8.1";
+            inherit version;
 
             src = ./.;
 

@@ -8,15 +8,19 @@
 , fetchgit
 , fetchzip
 , src ? null
-, version ? "1.8.1"
+, version ? null
 }:
 
 let
+  # Default to the version in Cargo.toml, so the package definition and the
+  # crate can never disagree.
+  resolvedVersion = if version != null then version else (builtins.fromTOML (builtins.readFile ./Cargo.toml)).workspace.package.version;
+
   # Prefer a local checkout (the flake passes `src = ./.`); fall back to the
   # released tarball so a pinned nixpkgs can still build a known version.
   source = if src != null then src else fetchgit {
     url = "https://github.com/Rayrsn/farhand.git";
-    rev = "v${version}";
+    rev = "v${resolvedVersion}";
     sha256 = lib.fakeSha256;
   };
 
@@ -30,7 +34,7 @@ in
 rec {
   fh = rustPlatform.buildRustPackage (common // {
     pname = "farhand-cli";
-    inherit version;
+    version = resolvedVersion;
     meta = {
       description = "Farhand client: offload builds and tests to a remote machine";
       homepage = "https://github.com/Rayrsn/farhand";
@@ -42,7 +46,7 @@ rec {
 
   fhd = rustPlatform.buildRustPackage (common // {
     pname = "farhand-agent";
-    inherit version;
+    version = resolvedVersion;
     meta = {
       description = "Farhand agent: runs authenticated commands in a persistent remote workspace";
       homepage = "https://github.com/Rayrsn/farhand";
