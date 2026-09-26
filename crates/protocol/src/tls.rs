@@ -174,6 +174,13 @@ pub fn generate_client_identity() -> Result<ClientIdentity, TlsError> {
         .self_signed(&ca_key)
         .map_err(|e| TlsError::Config(format!("Failed to generate CA cert: {}", e)))?;
 
+    // rcgen 0.14 made the signing identity explicit: an `Issuer` carries the
+    // issuer's distinguished name, key identifier, usages, and signing key,
+    // and `signed_by` takes it instead of (cert, key) separately. We already
+    // hold the CA's params and key, so we build the Issuer directly rather
+    // than round-tripping the certificate through PEM.
+    let ca_issuer = rcgen::Issuer::new(ca_params, ca_key);
+
     let mut leaf_params = rcgen::CertificateParams::new(vec!["farhand-client".to_string()])
         .map_err(|e| TlsError::Config(format!("Failed to build leaf params: {}", e)))?;
     leaf_params.is_ca = rcgen::IsCa::ExplicitNoCa;
@@ -182,7 +189,7 @@ pub fn generate_client_identity() -> Result<ClientIdentity, TlsError> {
     let leaf_key = rcgen::KeyPair::generate()
         .map_err(|e| TlsError::Config(format!("Failed to generate key pair: {}", e)))?;
     let leaf = leaf_params
-        .signed_by(&leaf_key, &ca_cert, &ca_key)
+        .signed_by(&leaf_key, &ca_issuer)
         .map_err(|e| TlsError::Config(format!("Failed to sign client cert: {}", e)))?;
 
     Ok(ClientIdentity {
