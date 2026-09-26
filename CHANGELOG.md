@@ -25,6 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - The daemon now treats a client that stops after NEED (a dry run) or after
     FILES (a sync with no command) as a completed session instead of logging a
     protocol error.
+- **[An honest competitive comparison](docs/comparison.md)**: against mutagen,
+  Remote-SSH, `cargo-remote`, and rsync scripts — including a section on where
+  each of those is the better tool, and a maturity note that admits the
+  Windows support is recent and adoption is small.
 - **Nix packaging**: a `flake.nix` exposing `fh` and `fhd` plus a dev shell
   with `rust-analyzer`, `cargo-audit`, and `cargo-deny`, and a `default.nix` for
   non-flake consumers. Not evaluated in this repository's CI (no Nix
