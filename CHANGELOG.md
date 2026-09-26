@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.1] - 2026-09-26
+
+### Changed
+- **Dependency maintenance, reviewed rather than bulk-merged.** Every Dependabot
+  proposal was checked instead of merged on a green matrix:
+  - `rcgen` 0.13 → 0.14 required migrating the mutual-TLS client PKI to the
+    new explicit `Issuer` model (`signed_by(key, &Issuer)` replaces
+    `signed_by(key, &ca_cert, &ca_key)`). The wire format and the generated
+    PKI are unchanged, and the mTLS e2e test passes unmodified.
+  - `webpki-roots` 0.26 → 1.0, which also collapsed a duplicate in the lockfile
+    — `deny.toml`'s skip entry for it is now obsolete and removed, leaving
+    cargo-deny green with one fewer exemption.
+  - `zstd` 0.13 → 0.14, `criterion` 0.5 → 0.8, `clap` 4.6.6 → 4.6.7.
+  - `actions/checkout` v4 → v7 and `actions/upload-artifact` v4 → v7, each
+    pinned SHA verified against its tag before merging.
+- **Dependabot is now scoped to what CI actually exercises.** Three action
+  bumps are ignored with written reasons: `dtolnay/rust-toolchain` (Dependabot
+  collapses the three per-toolchain pins — stable, the 1.88 MSRV job, nightly —
+  into the `stable` commit while the comments keep claiming otherwise, which
+  would have quietly turned the MSRV gate into a duplicate of the main build);
+  `codecov/codecov-action` (no token, so uploads are tokenless, and v5+ changed
+  that path — with `fail_ci_if_error: false` a silent failure would freeze the
+  badge while CI stayed green); and `softprops/action-gh-release` (runs only on
+  a tag, so no PR check ever exercises it — it will be validated during a real
+  release).
+
+### Fixed
+- **A concurrency test no longer depends on a 100 ms sleep.** The
+  project-locking test waited a fixed interval for the first client to take the
+  workspace lock, which on Windows was sometimes not enough — the test then read
+  `Need` where it expected `Queued`. It now polls the running agent's actual
+  lock (the manager is `Clone` over an `Arc`, so the test can hold a handle), so
+  no timing assumption remains.
+
 ## [1.8.0] - 2026-09-25
 
 ### Engineering
@@ -228,7 +262,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Run observability (`fh history`) and packaging/distribution (release workflow, Homebrew, install scripts, systemd/launchd units)
 - APFS Copy-on-Write workspace branching, two-tier LRU + emergency disk GC, `fh clean`
 
-[Unreleased]: https://github.com/Rayrsn/farhand/compare/v1.8.0...HEAD
+[Unreleased]: https://github.com/Rayrsn/farhand/compare/v1.8.1...HEAD
+[1.8.1]: https://github.com/Rayrsn/farhand/compare/v1.8.0...v1.8.1
 [1.8.0]: https://github.com/Rayrsn/farhand/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/Rayrsn/farhand/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/Rayrsn/farhand/compare/v1.5.0...v1.6.0
