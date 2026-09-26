@@ -4098,3 +4098,110 @@ async fn test_e2e_queue_full_rejection() {
         "rejection must explain the queue is full"
     );
 }
+
+/// `fh sync --dry-run` and `fh why` answer questions about the transfer
+/// itself. They are exercised through the real binary, because the value is
+/// entirely in the report the user sees.
+#[tokio::test]
+async fn test_e2e_cli_sync_dry_run_and_why() {
+    let token = "sync-report-token".to_string();
+    let workdir = tempdir().unwrap();
+    let project_dir = tempdir().unwrap();
+    let (server_addr, _server_handle) =
+        spawn_test_server(Some(token.clone()), workdir.path().to_path_buf()).await;
+
+    fs::create_dir_all(project_dir.path().join("src")).unwrap();
+    fs::create_dir_all(project_dir.path().join("node_modules/pkg")).unwrap();
+    fs::write(project_dir.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+    fs::write(project_dir.path().join("README.md"), "readme\n").unwrap();
+    fs::write(project_dir.path().join("scratch.log"), "noise\n").unwrap();
+    fs::write(project_dir.path().join("node_modules/pkg/index.js"), "x\n").unwrap();
+    fs::write(project_dir.path().join(".gitignore"), "*.log\n").unwrap();
+
+    let run_fh = |args: &[&str]| {
+        let dir = project_dir.path().to_path_buf();
+        let addr = server_addr.clone();
+        let tok = token.clone();
+        let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        async move {
+            tokio::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+                .current_dir(&dir)
+                .args(["--host", &addr, "--token", &tok])
+                .args(&args)
+                .output()
+                .await
+                .unwrap()
+        }
+    };
+
+    // 1. A dry run against an empty agent must plan to move everything that
+    //    is not ignored, and nothing that is.
+    let out = run_fh(&["sync", "--dry-run"]).await;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(stdout.contains("Would upload"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("src/main.rs") || stdout.contains("100%"),
+        "stdout: {stdout}"
+    );
+
+    // 2. Listing names the exact transfer set — and excludes ignored paths.
+    let listed = run_fh(&["sync", "--list"]).await;
+    let listed_out = String::from_utf8_lossy(&listed.stdout);
+    assert!(listed_out.contains("src/main.rs"), "stdout: {listed_out}");
+    assert!(listed_out.contains("README.md"), "stdout: {listed_out}");
+    assert!(
+        !listed_out.contains("scratch.log"),
+        "a .gitignore'd file must not be in the transfer set: {listed_out}"
+    );
+    assert!(
+        !listed_out.contains("node_modules"),
+        "a built-in ignored directory must not be in the transfer set: {listed_out}"
+    );
+
+    // 3. A real sync moves the files, so a following dry run plans nothing.
+    let synced = run_fh(&["sync"]).await;
+    assert_eq!(synced.status.code(), Some(0), "sync failed");
+    let after = run_fh(&["sync", "--dry-run"]).await;
+    let after_out = String::from_utf8_lossy(&after.stdout);
+    assert!(
+        after_out.contains("Would upload 0 file"),
+        "workspace should be current after a sync: {after_out}"
+    );
+    assert!(
+        after_out.contains("already on the agent"),
+        "the report should call out what did not move: {after_out}"
+    );
+
+    // 4. `why` explains an included file and an ignored one, by name.
+    let why_included = run_fh(&["why", "src/main.rs"]).await;
+    let why_included_out = String::from_utf8_lossy(&why_included.stdout);
+    assert!(
+        why_included_out.contains("already on the agent"),
+        "a synced file should read as a content-addressed hit: {why_included_out}"
+    );
+    assert!(why_included_out.contains("sha256"), "{why_included_out}");
+
+    let why_ignored = run_fh(&["why", "scratch.log"]).await;
+    let why_ignored_out = String::from_utf8_lossy(&why_ignored.stdout);
+    assert!(
+        why_ignored_out.contains("excluded"),
+        "an ignored file should be reported as excluded: {why_ignored_out}"
+    );
+    assert!(
+        why_ignored_out.contains("*.log"),
+        "the report should name the rule that matched: {why_ignored_out}"
+    );
+
+    let why_builtin = run_fh(&["why", "node_modules/pkg/index.js"]).await;
+    let why_builtin_out = String::from_utf8_lossy(&why_builtin.stdout);
+    assert!(
+        why_builtin_out.contains("node_modules"),
+        "the built-in ignore should be named: {why_builtin_out}"
+    );
+}

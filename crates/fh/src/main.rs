@@ -1036,6 +1036,58 @@ fn main() {
     }
 }
 
+/// Render a sync report as the summary a human actually wants: what moves,
+/// what does not, and why that is worth caring about.
+fn print_sync_report(report: &fh::sync::SyncReport, list: bool) {
+    use fh::sync::human_bytes;
+
+    let verb = if report.bytes_uploaded > 0 {
+        "Uploaded"
+    } else {
+        "Would upload"
+    };
+    println!(
+        "Scan      {} files, {}",
+        report.files_scanned,
+        human_bytes(report.bytes_scanned)
+    );
+    println!(
+        "Transfer  {} {} file(s), {}",
+        verb,
+        report.files_to_transfer,
+        human_bytes(report.bytes_to_transfer)
+    );
+    println!(
+        "Cached    {} file(s) already on the agent, {} not re-sent",
+        report.files_already_present,
+        human_bytes(report.bytes_already_present)
+    );
+    if report.was_queued {
+        println!("Note      the agent queued this sync behind a busy workspace");
+    }
+    if list {
+        if report.files_wanted.is_empty() {
+            println!("          (nothing to transfer — the workspace is already current)");
+        } else {
+            println!("Files to transfer:");
+            for path in &report.files_wanted {
+                println!("  {path}");
+            }
+        }
+    } else if report.bytes_scanned > 0 {
+        println!(
+            "          {}% of the project would cross the network",
+            report.transfer_ratio_percent()
+        );
+    }
+    if report.bytes_uploaded > 0 {
+        println!(
+            "          {} on the wire after compression",
+            human_bytes(report.bytes_uploaded)
+        );
+    }
+}
+
 #[tokio::main]
 async fn run_cli() {
     let raw_args: Vec<String> = std::env::args().collect();
@@ -1531,7 +1583,13 @@ async fn run_cli() {
         _ => cli.command.clone(),
     };
 
-    if effective_command.is_empty() {
+    // `sync` and `why` answer questions about the transfer, so they take no
+    // command; everything else is a build, watch, shell, or exec run.
+    let takes_no_command = matches!(
+        cli.subcommand,
+        Some(Subcommands::Sync { .. } | Subcommands::Why { .. })
+    );
+    if effective_command.is_empty() && !takes_no_command {
         eprintln!("Error: no remote command specified. Usage: fh [OPTIONS] <COMMAND>... or fh watch <COMMAND>... or fh shell");
         exit(EXIT_INFRA_ERROR);
     }
@@ -1580,6 +1638,78 @@ async fn run_cli() {
     }
 
     let effective_compression = cli.compression.or(cfg.compression);
+
+    // Handle Sync and Why subcommands. Both answer questions about the
+    // transfer itself rather than running a build, so they branch out before
+    // the run pipeline is set up.
+    if let Some(sub @ (Subcommands::Sync { .. } | Subcommands::Why { .. })) = &cli.subcommand {
+        let request = fh::sync::SyncRequest {
+            host: &host,
+            token: &token,
+            project_name: &project_name,
+            project_dir: &project_dir,
+            // `why` is inherently a read-only question.
+            dry_run: matches!(sub, Subcommands::Why { .. }),
+            compression: effective_compression.clone(),
+            tls_config: tls_config.as_ref(),
+        };
+
+        if let Subcommands::Why { path } = sub {
+            let code = match fh::sync::why(request, path).await {
+                Ok(fh::sync::WhyOutcome::OutsideProject) => {
+                    eprintln!("{path} is not inside the project directory.");
+                    1
+                }
+                Ok(fh::sync::WhyOutcome::Ignored { reason }) => {
+                    println!("{path}");
+                    match reason {
+                        Some(r) => println!("  excluded — {r}"),
+                        None => println!("  excluded — matched an ignore rule"),
+                    }
+                    println!("  nothing is sent for this path");
+                    0
+                }
+                Ok(fh::sync::WhyOutcome::WillUpload { size, hash }) => {
+                    println!("{path}");
+                    println!(
+                        "  will be uploaded — {} is not on the agent",
+                        fh::sync::human_bytes(size)
+                    );
+                    println!("  sha256 {hash}");
+                    0
+                }
+                Ok(fh::sync::WhyOutcome::AlreadyPresent { size, hash }) => {
+                    println!("{path}");
+                    println!(
+                        "  already on the agent — content-addressed hit, nothing to send ({})",
+                        fh::sync::human_bytes(size)
+                    );
+                    println!("  sha256 {hash}");
+                    0
+                }
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    EXIT_INFRA_ERROR
+                }
+            };
+            exit(code);
+        }
+
+        let list = matches!(sub, Subcommands::Sync { list: true, .. });
+        let dry_run = matches!(sub, Subcommands::Sync { dry_run: true, .. }) || list;
+        let report = fh::sync::sync_once(fh::sync::SyncRequest { dry_run, ..request }).await;
+
+        match report {
+            Ok(report) => {
+                print_sync_report(&report, list);
+                exit(0);
+            }
+            Err(e) => {
+                eprintln!("Error: {e}");
+                exit(EXIT_INFRA_ERROR);
+            }
+        }
+    }
 
     if is_watch {
         Box::pin(run_watch(RunParams {

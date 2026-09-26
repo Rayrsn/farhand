@@ -256,6 +256,22 @@ pub(crate) enum Subcommands {
         limit: usize,
     },
     /// Clean remote project workspaces or caches
+    Sync {
+        /// Report what would be transferred without sending any file data
+        #[arg(long)]
+        dry_run: bool,
+
+        /// List every path that would be transferred (implies --dry-run detail)
+        #[arg(long)]
+        list: bool,
+    },
+
+    /// Explain what happens to a single path: uploaded, already on the agent, or ignored
+    Why {
+        /// Path to explain (relative to the project directory, or absolute)
+        path: String,
+    },
+
     Clean {
         /// Specific project/branch name to clean (default: current project/branch)
         #[arg(long)]

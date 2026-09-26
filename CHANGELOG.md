@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`fh sync` / `fh why` — see exactly what crosses the wire.** A build reports
+  its sync as a side effect; these make the transfer the subject.
+  - `fh sync --dry-run` connects, exchanges the manifest, and reports what
+    *would* move — file count, bytes, what the agent already has, and the share
+    of the project that would cross the network — without sending a single
+    file. `--list` additionally names every path in the transfer set.
+  - `fh sync` performs the sync without running a build, warming the agent's
+    workspace for the next run.
+  - `fh why <path>` explains a single path: it will be uploaded, it is already
+    on the agent as a content-addressed hit, or it is excluded — naming the
+    `.gitignore` pattern or built-in directory responsible.
+  - Both are built on the real manifest/NEED exchange, so the answers come from
+    the agent's actual state rather than a local guess, and the ignore rules
+    applied are the ones `scan` itself uses.
+  - The daemon now treats a client that stops after NEED (a dry run) or after
+    FILES (a sync with no command) as a completed session instead of logging a
+    protocol error.
+
 ## [1.8.1] - 2026-09-26
 
 ### Changed

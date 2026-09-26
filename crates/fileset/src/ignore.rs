@@ -133,6 +133,37 @@ impl IgnoreMatcher {
 
         ignored
     }
+
+    /// The pattern that decided the outcome for `rel_path`, if any.
+    ///
+    /// Mirrors [`IgnoreMatcher::should_ignore`] rule for rule — same ordering,
+    /// same negation handling — so the pattern reported is the one that
+    /// actually set the result, not merely the first that matched. Returns
+    /// `None` when no rule applies, or when only the built-in ignore list
+    /// matched (callers report that case separately).
+    pub fn matching_rule(&self, rel_path: &str, is_dir: bool) -> Option<String> {
+        let clean_path = rel_path.trim_matches('/');
+        if is_default_ignored(clean_path) {
+            return None;
+        }
+        let basename = clean_path.split('/').next_back().unwrap_or(clean_path);
+
+        let mut decided: Option<String> = None;
+        for rule in &self.rules {
+            if rule.dir_only && !is_dir {
+                continue;
+            }
+            let matches = if rule.match_full_path {
+                rule.pattern.matches(clean_path)
+            } else {
+                rule.pattern.matches(basename) || rule.pattern.matches(clean_path)
+            };
+            if matches {
+                decided = Some(rule.pattern.as_str().to_string());
+            }
+        }
+        decided
+    }
 }
 
 #[cfg(test)]

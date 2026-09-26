@@ -84,6 +84,7 @@ Logs stream directly into your terminal in real time, and build artifacts (like 
 - 🔒 **Native Zero-Config TLS & Mutual TLS (mTLS)**: Pure-Rust, memory-safe TLS via `rustls` (zero OpenSSL / C library dependencies). Supports automatic self-signed cert generation (`fhd --tls-auto`), SHA-256 fingerprint verification (`fh --tls-fingerprint <sha256>`), CA verification (`--tls-ca`), and mutual TLS client certificates (`--tls-cert`, `--tls-key`).
 - 🛠️ **Declarative Toolchain Manager Hooks**: Declare language versions per project in `.farhand.yaml` or via CLI (`-T rust=nightly`). Farhand automatically configures `RUSTUP_TOOLCHAIN`, `PYENV_VERSION`, `NODE_VERSION`, and wraps remote invocations with `nvm`, `fnm`, `pyenv`, or `goenv`.
 - 📊 **Run Observability**: Query execution history, exit codes, synced bytes, and duration using `fh history` and host status via `fh status`.
+- 🔍 **Transfer Transparency (`fh sync`, `fh why`)**: See exactly what a build would upload — file count, bytes, and the share of the project that would cross the network — with `fh sync --dry-run`; ask about any single path with `fh why`, which names the ignore rule that excluded it or reports the content-addressed hit that skipped it.
 
 ---
 
@@ -256,6 +257,15 @@ fh -T rust=nightly -T node=22 -- npm run build
 
 # Inspect execution history and agent status (including available remote disk space)
 fh history
+
+# See exactly what a build would transfer — nothing leaves your machine
+fh sync --dry-run
+fh sync --list           # ...and name every file in the transfer set
+fh sync                  # actually sync, without running a build
+
+# Ask why any single path is (or is not) on the agent
+fh why src/main.rs       # uploaded, or a content-addressed hit?
+fh why node_modules/x.js # excluded — and by which rule
 
 # Live terminal resource dashboard & host telemetry
 fh top                  # Interactive live TUI (CPU, RAM, Disk, Active Builds)

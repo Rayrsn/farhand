@@ -1,4 +1,4 @@
-use crate::ignore::IgnoreMatcher;
+use crate::ignore::{is_default_ignored, IgnoreMatcher, DEFAULT_IGNORES};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs::File;
@@ -76,14 +76,42 @@ pub fn get_file_mode(metadata: &std::fs::Metadata) -> u32 {
 
 /// Scan a directory, applying default ignore rules, .gitignore, .farhand-ignore,
 /// and extra caller patterns. Returns a map of relative paths to FileMeta.
-pub fn scan(
-    root: &Path,
-    extra_ignores: &[String],
-) -> Result<HashMap<String, FileMeta>, FilesetError> {
+/// Build the ignore matcher exactly as [`scan`] does.
+///
+/// Shared so that an explanation of *why* a path was skipped can never drift
+/// from the rules the scan actually applied — a `why` built from different
+/// rules would confidently report the wrong reason.
+fn build_matcher(root: &Path, extra_ignores: &[String]) -> IgnoreMatcher {
     let mut matcher = IgnoreMatcher::new();
     matcher.load_file(&root.join(".gitignore"));
     matcher.load_file(&root.join(".farhand-ignore"));
     matcher.add_patterns(extra_ignores);
+    matcher
+}
+
+/// Explain why `rel_path` is excluded from a sync, if it is.
+///
+/// Uses the same matcher as [`scan`], so the answer is the real one. Returns
+/// `None` when the path is not ignored, which means the caller should look at
+/// the agent's state instead (already present, or due to transfer).
+pub fn explain_ignore(root: &Path, rel_path: &str, extra_ignores: &[String]) -> Option<String> {
+    if is_default_ignored(rel_path) {
+        let component = rel_path
+            .split('/')
+            .find(|part| !part.is_empty() && DEFAULT_IGNORES.contains(part))?;
+        return Some(format!("built-in ignore: {component}/"));
+    }
+    let matcher = build_matcher(root, extra_ignores);
+    matcher
+        .matching_rule(rel_path, false)
+        .map(|pattern| format!("ignore rule: {pattern}"))
+}
+
+pub fn scan(
+    root: &Path,
+    extra_ignores: &[String],
+) -> Result<HashMap<String, FileMeta>, FilesetError> {
+    let matcher = build_matcher(root, extra_ignores);
 
     let mut result = HashMap::new();
     let mut walker = WalkDir::new(root).follow_links(false).into_iter();
@@ -189,5 +217,38 @@ mod tests {
         assert_eq!(main_meta.path, "src/main.rs");
         assert_eq!(main_meta.size, 12);
         assert!(!main_meta.hash.is_empty());
+    }
+
+    #[test]
+    fn explain_ignore_names_the_rule_that_matched() {
+        let root = tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("src")).unwrap();
+        std::fs::create_dir_all(root.path().join("target/debug")).unwrap();
+        std::fs::write(root.path().join("src/main.rs"), "fn main() {}").unwrap();
+        std::fs::write(root.path().join("debug.log"), "noise").unwrap();
+        std::fs::write(root.path().join("target/debug/bin"), "x").unwrap();
+        std::fs::write(root.path().join(".gitignore"), "*.log\n").unwrap();
+
+        // A .gitignore pattern is reported by name.
+        assert_eq!(
+            explain_ignore(root.path(), "debug.log", &[]).as_deref(),
+            Some("ignore rule: *.log")
+        );
+
+        // The built-in list is reported as such, with the component that hit.
+        assert_eq!(
+            explain_ignore(root.path(), "target/debug/bin", &[]).as_deref(),
+            Some("built-in ignore: target/")
+        );
+
+        // A plain source file is not ignored — that is not this function's
+        // answer to give, and returning None says so.
+        assert_eq!(explain_ignore(root.path(), "src/main.rs", &[]), None);
+
+        // Extra patterns are honored exactly as the scan applies them.
+        assert_eq!(
+            explain_ignore(root.path(), "src/main.rs", &["*.rs".to_string()]).as_deref(),
+            Some("ignore rule: *.rs")
+        );
     }
 }

@@ -22,9 +22,9 @@ use session::{deny_control_request, DEFAULT_MAX_CONNECTIONS, UNLIMITED_CONNECTIO
 use stream::{execute_and_stream, execute_raw_command_and_stream};
 
 use protocol::{
-    decode_json, read_frame, read_frame_limited, write_frame, write_json_frame, HelloAckPayload,
-    HelloPayload, ManifestPayload, MsgType, NeedPayload, ResultPayload, RunPayload,
-    CURRENT_PROTOCOL_VERSION,
+    decode_json, read_frame, read_frame_limited, write_frame, write_json_frame, FrameError,
+    HelloAckPayload, HelloPayload, ManifestPayload, MsgType, NeedPayload, ResultPayload,
+    RunPayload, CURRENT_PROTOCOL_VERSION,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -787,7 +787,20 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
             );
             continue;
         }
-        break read_frame(&mut read_half).await?;
+        match read_frame(&mut read_half).await {
+            Ok(frame) => break frame,
+            Err(e) => {
+                // `fh sync --dry-run` reads NEED to learn what would move and
+                // then hangs up without sending FILES. Nothing was transferred
+                // and the workspace is untouched, which is exactly what the
+                // client asked for — not a protocol error.
+                if matches!(e, FrameError::Io(_) | FrameError::UnexpectedEof) {
+                    info!("Client hung up after NEED (dry run); no files were transferred");
+                    return Ok(());
+                }
+                return Err(e.into());
+            }
+        }
     };
     if msg_type != MsgType::Files {
         return Err(format!("Expected FILES frame, got {:?}", msg_type).into());
@@ -835,7 +848,20 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
             );
             continue;
         }
-        break read_frame(&mut read_half).await?;
+        match read_frame(&mut read_half).await {
+            Ok(frame) => break frame,
+            Err(e) => {
+                // A client that sent its files and then hung up has finished a
+                // sync-only session (`fh sync`): the delta is already applied
+                // and there is no command to run. That is a successful outcome,
+                // not a protocol error — the workspace really is up to date.
+                if matches!(e, FrameError::Io(_) | FrameError::UnexpectedEof) {
+                    info!("Client completed a sync-only session; workspace is up to date");
+                    return Ok(());
+                }
+                return Err(e.into());
+            }
+        }
     };
     if msg_type != MsgType::Run {
         return Err(format!("Expected RUN frame, got {:?}", msg_type).into());

@@ -7,6 +7,7 @@ pub mod history;
 pub mod init;
 pub mod lsp;
 pub mod pool;
+pub mod sync;
 pub mod top;
 pub mod watch;
 
