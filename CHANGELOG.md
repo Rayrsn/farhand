@@ -25,6 +25,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   platforms.
 
 ### Fixed
+- **`fh` could not start on Windows at all.** Windows gives the main thread a
+  1 MiB stack (Linux gives 8 MiB), and the client needed more than that before
+  doing any work, so it aborted with `STATUS_STACK_OVERFLOW`
+  (`0xC00000FD`) — even `fh --version` crashed. The work now runs on a thread
+  with an explicit 16 MiB stack, the build/upload/download futures are boxed so
+  they do not sit in one enormous frame chain, and CI runs both binaries under
+  `ulimit -s 1024` so this cannot come back unnoticed.
 - **Release artifacts build on every target again.** The Linux CoW ioctl
   constant was typed `c_ulong`, but musl's `ioctl` takes its request as
   `c_int` — so both musl artifacts (x86_64 and aarch64) failed to compile

@@ -66,6 +66,33 @@ jobs:
       - name: Type-check workspace for musl
         run: cargo check --workspace --all-targets --target x86_64-unknown-linux-musl
 
+  # Windows gives the main thread a 1 MiB stack; Linux gives it 8 MiB. Both
+  # binaries used to need more than 1 MiB before doing any work, so on Windows
+  # they aborted with STATUS_STACK_OVERFLOW (0xC00000FD) before printing
+  # `--version` — the client was simply unusable there, and only the Windows
+  # test job noticed. This job pins the limit so a regression fails here.
+  stack:
+    name: 1 MiB main-thread stack (Windows parity)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      - name: Build the binaries
+        run: cargo build -p fh -p fhd
+
+      - name: Both binaries must run within a 1 MiB stack
+        run: |
+          ulimit -s 1024
+          ./target/debug/fh --version
+          ./target/debug/fhd --version
+
   msrv:
     name: MSRV (1.88.0)
     runs-on: ubuntu-latest

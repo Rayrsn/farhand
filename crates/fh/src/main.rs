@@ -854,7 +854,7 @@ async fn run_watch(p: RunParams<'_>) -> ! {
     println!("   Command: {:?}", command);
     println!("   Press Ctrl+C to exit.\n");
 
-    let initial_code = run_build(RunParams {
+    let initial_code = Box::pin(run_build(RunParams {
         host,
         token,
         project_name,
@@ -872,7 +872,7 @@ async fn run_watch(p: RunParams<'_>) -> ! {
         verbose,
         tls_config,
         telemetry,
-    })
+    }))
     .await;
 
     if let Ok(130) = initial_code {
@@ -969,7 +969,7 @@ async fn run_watch(p: RunParams<'_>) -> ! {
             while rx.try_recv().is_ok() {}
 
             println!("\n🔄 Change detected, syncing and rebuilding...");
-            let code = run_build(RunParams {
+            let code = Box::pin(run_build(RunParams {
                 host,
                 token,
                 project_name,
@@ -987,7 +987,7 @@ async fn run_watch(p: RunParams<'_>) -> ! {
                 verbose,
                 tls_config,
                 telemetry,
-            })
+            }))
             .await;
 
             if let Ok(130) = code {
@@ -1005,8 +1005,39 @@ async fn run_watch(p: RunParams<'_>) -> ! {
     exit(0);
 }
 
+/// Stack for the thread that runs the client.
+///
+/// Windows gives the main thread a 1 MiB stack; Linux gives it 8 MiB. The
+/// client needs more than 1 MiB before it does any work at all — an
+/// unoptimized build's async state machines, the clap command tree, and the
+/// scan/upload/download futures all live in the same frame chain — so on
+/// Windows `fh` aborted with `STATUS_STACK_OVERFLOW` (0xC00000FD) before
+/// printing its version. Rather than depend on whatever the platform hands
+/// the main thread, the work runs on a thread whose stack we choose.
+const MAIN_STACK_SIZE: usize = 16 * 1024 * 1024;
+
+fn main() {
+    match std::thread::Builder::new()
+        .name("farhand-cli".to_string())
+        .stack_size(MAIN_STACK_SIZE)
+        .spawn(run_cli)
+    {
+        Ok(handle) => {
+            // Every exit path inside `run_cli` calls `std::process::exit`
+            // explicitly, so a clean join here is the exceptional case.
+            if handle.join().is_err() {
+                std::process::exit(EXIT_INFRA_ERROR);
+            }
+        }
+        Err(e) => {
+            eprintln!("Error: could not start farhand ({e}).");
+            std::process::exit(EXIT_INFRA_ERROR);
+        }
+    }
+}
+
 #[tokio::main]
-async fn main() {
+async fn run_cli() {
     let raw_args: Vec<String> = std::env::args().collect();
     if raw_args.len() > 1 && raw_args[1] == "__test_echo" {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1551,7 +1582,7 @@ async fn main() {
     let effective_compression = cli.compression.or(cfg.compression);
 
     if is_watch {
-        run_watch(RunParams {
+        Box::pin(run_watch(RunParams {
             host: &host,
             token: &token,
             project_name: &project_name,
@@ -1569,11 +1600,11 @@ async fn main() {
             verbose,
             tls_config: tls_config.as_ref(),
             telemetry: &mut telemetry,
-        })
+        }))
         .await;
     }
 
-    let exit_code = match run_build(RunParams {
+    let exit_code = match Box::pin(run_build(RunParams {
         host: &host,
         token: &token,
         project_name: &project_name,
@@ -1591,7 +1622,7 @@ async fn main() {
         verbose,
         tls_config: tls_config.as_ref(),
         telemetry: &mut telemetry,
-    })
+    }))
     .await
     {
         Ok(code) => code,
