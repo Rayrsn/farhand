@@ -82,6 +82,30 @@ the other crates; `fileset` is filesystem/archiving only; `workspace` owns
 agent-side storage (CAS/CoW, locks, GC, history). Cross-imports between
 those three are a bug, not a style question.
 
+## Publishing to crates.io
+
+The crates publish under the `farhand-*` namespace (`farhand` itself is taken
+on crates.io by an unrelated project). Each package keeps its library name and
+its `fh` / `fhd` executable names, so nothing a user types changes.
+
+Publish in dependency order — a crate cannot be packaged until the ones it
+depends on exist on the registry:
+
+```bash
+for c in farhand-protocol farhand-fileset farhand-config \
+         farhand-templates farhand-workspace farhand-agent farhand-cli; do
+  cargo publish -p "$c"    # or --dry-run to check first
+done
+```
+
+`cargo publish --dry-run` only fully succeeds for crates whose dependencies
+are already published, so expect `no matching package named farhand-protocol
+found` for everything after the first until the chain exists. That is the
+expected pre-publish state, not a packaging defect.
+
+The release workflow builds the binaries from the tag; publishing is
+deliberately a separate, manual step so a bad package cannot ship on its own.
+
 ## Commit & PR Style
 
 - Conventional Commits: `feat:`, `fix:`, `docs:`, `test:`, `chore:`, `bench:` —
