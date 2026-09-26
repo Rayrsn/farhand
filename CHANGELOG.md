@@ -84,6 +84,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   usable from a script.
 
 ### Fixed
+- **The published packages would not have built.** `farhand-templates` embedded
+  the builtin templates from a repository-level `templates/builtin/` directory,
+  but a crate published to crates.io contains only the files inside its own
+  directory. Every in-tree build and the whole test suite passed, and
+  `cargo install farhand-cli` would have failed for everyone — *after* the six
+  crates below it were already published, where a version can never be
+  removed. The templates now live in `crates/templates/builtin/`, with a test
+  that fails if they move back out or if a duplicate appears at the old path.
 - **`brew install farhand` served v1.7.0 while v1.8.0 and v1.8.1 had shipped.**
   The formula's URLs interpolate its own version, so it quietly pointed at
   1.7.0's artifacts with a version string that matched its own checksum — no

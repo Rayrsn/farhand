@@ -93,27 +93,27 @@ pub struct BuiltinTemplate {
 pub const BUILTIN_TEMPLATES: &[BuiltinTemplate] = &[
     BuiltinTemplate {
         name: "npm",
-        yaml: include_str!("../../../templates/builtin/npm.yaml"),
+        yaml: include_str!("../builtin/npm.yaml"),
     },
     BuiltinTemplate {
         name: "rust",
-        yaml: include_str!("../../../templates/builtin/rust.yaml"),
+        yaml: include_str!("../builtin/rust.yaml"),
     },
     BuiltinTemplate {
         name: "go",
-        yaml: include_str!("../../../templates/builtin/go.yaml"),
+        yaml: include_str!("../builtin/go.yaml"),
     },
     BuiltinTemplate {
         name: "python",
-        yaml: include_str!("../../../templates/builtin/python.yaml"),
+        yaml: include_str!("../builtin/python.yaml"),
     },
     BuiltinTemplate {
         name: "maven",
-        yaml: include_str!("../../../templates/builtin/maven.yaml"),
+        yaml: include_str!("../builtin/maven.yaml"),
     },
     BuiltinTemplate {
         name: "gradle",
-        yaml: include_str!("../../../templates/builtin/gradle.yaml"),
+        yaml: include_str!("../builtin/gradle.yaml"),
     },
 ];
 
@@ -437,5 +437,55 @@ outputs:
         let loaded = load_templates(Some(ws.path()));
         assert!(loaded.contains_key("zig"));
         assert_eq!(loaded["zig"].source, TemplateSource::Project);
+    }
+}
+
+#[cfg(test)]
+mod packaging_tests {
+    /// The builtin templates must live inside this crate's own directory.
+    ///
+    /// `cargo publish` packages only the files under the crate directory, then
+    /// *verifies* the package by building it. Templates read from a
+    /// repository-level `templates/` directory therefore compile fine in-tree,
+    /// pass the whole test suite, and break `cargo install farhand-cli` for
+    /// everyone on crates.io — and they break it *mid-chain*, after the crates
+    /// below this one are already published and can never be removed.
+    ///
+    /// Both halves are checked: the files are inside the crate, and the
+    /// repository-level directory they used to live in does not exist, so
+    /// nobody is tempted to move them back.
+    #[test]
+    fn builtin_templates_live_inside_the_crate() {
+        let crate_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let builtin = crate_root.join("builtin");
+        assert!(
+            builtin.is_dir(),
+            "expected the builtin templates at {}",
+            builtin.display()
+        );
+
+        for name in ["rust", "npm", "go", "python", "maven", "gradle"] {
+            let file = builtin.join(format!("{name}.yaml"));
+            assert!(
+                file.is_file(),
+                "missing builtin template: {}",
+                file.display()
+            );
+        }
+
+        // A crate cannot read above itself once packaged, so the old
+        // repository-level location must be gone for good.
+        let repo_root = crate_root
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("crate is two levels below the repository root");
+        let old_location = repo_root.join("templates");
+        assert!(
+            !old_location.exists(),
+            "{} still exists. If these are duplicates of the crate's own \
+             builtin/ directory, delete them — otherwise a future edit to one \
+             copy will silently not be the one that ships.",
+            old_location.display()
+        );
     }
 }
