@@ -1,0 +1,144 @@
+{
+  "title": "Farhand Agent",
+  "uid": "farhand-agent",
+  "tags": ["farhand", "build", "agents"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "15s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "instance",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "query": "label_values(farhand_up, instance)",
+        "includeAll": true,
+        "multi": true,
+        "refresh": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Agent up",
+      "description": "1 while the agent is serving metrics; 0 means the scrape is being answered by something else or the agent is gone.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 0 },
+      "targets": [
+        { "expr": "farhand_up{instance=~\"$instance\"}", "legendFormat": "{{instance}}", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1,
+          "mappings": [
+            { "type": "value", "options": { "0": { "color": "red", "text": "DOWN" }, "1": { "color": "green", "text": "UP" } } }
+          ]
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Active runs (of max)",
+      "description": "Runs executing right now against the configured concurrency limit. Sustained pressure at the limit means builds are queueing.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 6, "y": 0 },
+      "targets": [
+        { "expr": "farhand_active_runs{instance=~\"$instance\"}", "legendFormat": "active", "refId": "A" },
+        { "expr": "farhand_max_runs{instance=~\"$instance\"}", "legendFormat": "limit", "refId": "B" }
+      ],
+      "fieldConfig": { "defaults": { "min": 0, "unit": "short" }, "overrides": [] }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Queue depth",
+      "description": "Runs waiting on a project lock or a run slot. Non-zero for long periods usually means a stuck or very long build.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 5 },
+      "targets": [
+        { "expr": "farhand_queue_depth{instance=~\"$instance\"}", "legendFormat": "queued", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "min": 0, "unit": "short" }, "overrides": [] }
+    },
+    {
+      "id": 4,
+      "type": "piechart",
+      "title": "Active builds by project",
+      "description": "Which projects are consuming the agent right now. Project is a bounded label; run ids deliberately are not exported.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 0 },
+      "targets": [
+        { "expr": "farhand_active_builds{instance=~\"$instance\"}", "legendFormat": "{{project}}", "refId": "A", "instant": true }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Disk free on the workspace volume",
+      "description": "Free space where workspaces live. Farhand runs emergency GC below the agent's --min-disk-gb; alert before that.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 13 },
+      "targets": [
+        { "expr": "farhand_disk_free_bytes{instance=~\"$instance\"}", "legendFormat": "free", "refId": "A" },
+        { "expr": "farhand_disk_total_bytes{instance=~\"$instance\"}", "legendFormat": "total", "refId": "B" }
+      ],
+      "fieldConfig": { "defaults": { "min": 0, "unit": "bytes" }, "overrides": [] }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Host load average",
+      "description": "Agent host load. Compare against the CPU count panel: load above core count for long periods means builds are competing.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 13 },
+      "targets": [
+        { "expr": "farhand_load_average{instance=~\"$instance\"}", "legendFormat": "{{interval}}m", "refId": "A" },
+        { "expr": "farhand_cpu_count{instance=~\"$instance\"}", "legendFormat": "cores", "refId": "B" }
+      ],
+      "fieldConfig": { "defaults": { "min": 0, "unit": "short" }, "overrides": [] }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Memory used on the agent host",
+      "description": "Physical memory in use on the machine running the agent.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 21 },
+      "targets": [
+        { "expr": "farhand_memory_used_bytes{instance=~\"$instance\"}", "legendFormat": "used", "refId": "A" },
+        { "expr": "farhand_memory_total_bytes{instance=~\"$instance\"}", "legendFormat": "total", "refId": "B" }
+      ],
+      "fieldConfig": { "defaults": { "min": 0, "unit": "bytes" }, "overrides": [] }
+    },
+    {
+      "id": 8,
+      "type": "stat",
+      "title": "Uptime",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 21 },
+      "targets": [
+        { "expr": "farhand_uptime_seconds{instance=~\"$instance\"}", "legendFormat": "uptime", "refId": "A", "instant": true }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] }
+    },
+    {
+      "id": 9,
+      "type": "stat",
+      "title": "Workspaces",
+      "description": "Persistent workspaces on the agent. Growth without bound usually means branch workspaces are accumulating; `fh clean` prunes them.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 21 },
+      "targets": [
+        { "expr": "farhand_workspaces{instance=~\"$instance\"}", "legendFormat": "workspaces", "refId": "A", "instant": true }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] }
+    }
+  ]
+}

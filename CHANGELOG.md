@@ -25,6 +25,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - The daemon now treats a client that stops after NEED (a dry run) or after
     FILES (a sync with no command) as a completed session instead of logging a
     protocol error.
+- **Opt-in Prometheus metrics on `fhd`** (`--metrics-port`): run/slot
+  gauges, queue depth, active builds per project, disk, load, and memory, plus
+  `/healthz` for container probes. Hand-rolled over a `TcpListener` — this is
+  one static text endpoint, and a web framework in the daemon's dependency
+  tree would be a poor trade. Binds separately from the agent port, and a
+  metrics port that cannot bind logs an error instead of taking the agent
+  down. Run ids are deliberately not labels, so finished runs leave no stale
+  series. Documented in [docs/observability.md](docs/observability.md) with
+  alert rules and an importable Grafana dashboard.
 - **Progress reporting while the delta is packed**: the client draws a live
   bar (`[====    ]  42% 17/40 packing delta  0.4s`) driven by real per-entry
   callbacks from the packer, not a timer. It renders only when stdout is a

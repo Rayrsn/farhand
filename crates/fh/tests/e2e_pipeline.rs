@@ -49,6 +49,7 @@ async fn spawn_test_server_full(
             None,
             None,
             None,
+            None, // metrics port: unused by the test server
         )
         .await;
     });
@@ -92,6 +93,7 @@ async fn spawn_test_server_with_lock(
             None,
             None,
             Some(server_locks),
+            None, // metrics port: unused by the test server
         )
         .await;
     });
@@ -142,6 +144,7 @@ async fn spawn_agent_tls(
             None,
             None,
             None,
+            None, // metrics port: unused by the test server
         )
         .await;
     });
@@ -3686,6 +3689,7 @@ async fn test_connection_limit_closes_excess_connections() {
             Some(1),
             None,
             None,
+            None, // metrics port: unused by the test server
         )
         .await;
     });
@@ -4019,6 +4023,7 @@ async fn test_e2e_queue_full_rejection() {
             None,
             Some(1), // max_queued_runs = 1
             None,
+            None, // metrics port: unused by the test server
         )
         .await;
     });

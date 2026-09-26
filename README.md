@@ -278,6 +278,9 @@ fh --watch --watch-debounce 400 -- npm run build
 fh completions bash > /etc/bash_completion.d/fh
 fh man --dir /usr/share/man/man1
 
+# Prometheus metrics for Grafana/Prometheus (opt-in on the agent)
+fhd --listen 0.0.0.0:9876 --token "$FARHAND_TOKEN" --metrics-port 9100
+
 # Live terminal resource dashboard & host telemetry
 fh top                  # Interactive live TUI (CPU, RAM, Disk, Active Builds)
 fh top --once           # Print snapshot and exit
@@ -340,6 +343,7 @@ criterion's saved estimates.
 
 Deep-dive guides covering architecture, server setup, and configuration:
 
+- 📈 **[Observability](docs/observability.md)** — live `fh top`, plus an opt-in Prometheus endpoint (`fhd --metrics-port`) with an importable Grafana dashboard.
 - 📖 **[Internal Architecture & Wire Protocol](docs/architecture.md)** — Binary framing specs, frame layouts, state machines, and Section 5.1 deletion safety.
 - 🍏 **[Apple Silicon Mac Mini Setup Guide](docs/mac-build-server-setup.md)** — Production step-by-step guide for turning a Mac Mini into a multi-developer build server (`launchd`, firewalls, network access).
 - 💾 **[Storage Optimization & Caching Guide](docs/storage-and-caching.md)** — Deep dive into APFS Copy-on-Write cloning, LRU garbage collection, and shared toolchain caches (`sccache`).

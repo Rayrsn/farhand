@@ -5,6 +5,7 @@
 #![deny(unsafe_code)]
 
 pub mod metrics;
+pub mod metrics_server;
 
 // Module layout: `lib.rs` owns the server lifecycle (accept loop, TLS
 // dispatch, per-connection run pipeline); everything else lives in a focused
@@ -55,6 +56,9 @@ pub async fn run_server(
     max_connections: Option<usize>,
     max_queued_runs: Option<usize>,
     lock_manager: Option<workspace::WorkspaceLockManager>,
+    // When set, serve Prometheus metrics on this port, alongside the agent
+    // protocol on the main listener.
+    metrics_port: Option<u16>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let max_runs = max_concurrent_runs.unwrap_or_else(|| {
         std::thread::available_parallelism()
@@ -93,6 +97,22 @@ pub async fn run_server(
         connection_limiter,
         max_queued_runs: max_queued_runs.unwrap_or(16),
     });
+
+    if let Some(port) = metrics_port {
+        match tokio::net::TcpListener::bind(("0.0.0.0", port)).await {
+            Ok(metrics_listener) => {
+                let metrics_ctx = Arc::clone(&ctx);
+                tokio::spawn(async move {
+                    metrics_server::serve_metrics(metrics_listener, metrics_ctx).await;
+                });
+            }
+            Err(e) => {
+                // A metrics port that cannot bind must not take the agent down
+                // with it: the agent is what people depend on.
+                error!("failed to bind metrics port {port} ({e}); metrics disabled");
+            }
+        }
+    }
 
     loop {
         match listener.accept().await {

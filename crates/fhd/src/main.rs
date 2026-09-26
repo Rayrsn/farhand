@@ -48,6 +48,14 @@ struct Cli {
     )]
     max_queued_runs: Option<usize>,
 
+    /// Serve Prometheus metrics on this port (e.g. 9100). Disabled by default.
+    #[arg(
+        long,
+        value_name = "PORT",
+        help = "Serve Prometheus metrics on this port"
+    )]
+    metrics_port: Option<u16>,
+
     #[arg(
         long = "tag",
         action = clap::ArgAction::Append,
@@ -364,6 +372,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cli.max_connections,
         cli.max_queued_runs,
         Some(lock_manager),
+        cli.metrics_port,
     )
     .await?;
     Ok(())
