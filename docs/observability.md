@@ -65,8 +65,17 @@ labelling by it would leave a stale series behind in Prometheus forever.
 `farhand_active_builds` is labelled by `project` instead, which is bounded by
 the number of projects on the host.
 
-Disk and memory gauges are omitted rather than reported as zero when the
-platform probe fails, so a scrape never looks like "the disk is full".
+Two more things about the exposition worth knowing before you alert on it:
+
+- **`farhand_active_builds` is absent when no run is in flight.** A per-project
+  gauge with no projects to report emits no samples, so an idle agent exports
+  13 metric names (15 series, since `farhand_load_average` reports one per
+  interval) rather than the 14 names in the table above. Its series appears
+  when the first build starts and disappears when the last one ends. Prometheus
+  treats a metric that comes and goes this way as correct; a gauge pinned at
+  `0` for every project ever seen would be the thing that misleads.
+- **Disk and memory gauges are omitted rather than reported as zero when the
+  platform probe fails**, so a scrape never looks like "the disk is full".
 
 ### Alerts worth having
 

@@ -387,4 +387,91 @@ mod tests {
         // Every sample must stay on one line, or everything after it is lost.
         assert_eq!(out.text.lines().filter(|l| !l.starts_with('#')).count(), 1);
     }
+
+    /// Guards the metric reference in `docs/observability.md` against the code.
+    ///
+    /// Every metric this endpoint can emit is named in that table, and every
+    /// metric in the table is emitted here. Documentation drift on a metrics
+    /// endpoint is not cosmetic: someone alerts on a name that does not exist,
+    /// or assumes a gauge is missing when it is deliberately absent while idle.
+    ///
+    /// Skipped when the documentation is not present (a packaged crate does not
+    /// ship the repository's `docs/`), so a published crate's tests do not fail
+    /// over a file they were never given.
+    #[test]
+    fn documented_metrics_match_the_emitted_set() {
+        let doc_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/observability.md");
+        let Ok(doc) = std::fs::read_to_string(&doc_path) else {
+            eprintln!("skipping: {} is not available", doc_path.display());
+            return;
+        };
+
+        // Table rows look like: | `farhand_up` | gauge | | ... |
+        let documented: std::collections::BTreeSet<String> = doc
+            .lines()
+            .filter_map(|line| line.strip_prefix("| `"))
+            .filter_map(|rest| rest.split('`').next())
+            .filter(|name| name.starts_with("farhand_"))
+            .map(str::to_string)
+            .collect();
+        assert!(
+            !documented.is_empty(),
+            "found no metric rows in {} — the table format probably changed",
+            doc_path.display()
+        );
+
+        // Render against a live context so the emitted set is what a scrape
+        // would actually contain, not a scan of the source.
+        let ctx = test_context();
+        let rendered = render(&ctx);
+        let emitted: std::collections::BTreeSet<String> = rendered
+            .lines()
+            .filter(|l| !l.starts_with('#'))
+            .filter_map(|l| l.split(['{', ' ']).next())
+            .filter(|n| n.starts_with("farhand_"))
+            .map(str::to_string)
+            .collect();
+
+        let undocumented: Vec<&String> = emitted.difference(&documented).collect();
+        assert!(
+            undocumented.is_empty(),
+            "emitted but absent from docs/observability.md: {undocumented:?}"
+        );
+
+        // `farhand_active_builds` only has samples while a run is in flight, so
+        // an idle render cannot prove it is emitted. Check the documented-but-idle
+        // case against the source, and say so rather than pretending otherwise.
+        let source = include_str!("metrics_server.rs");
+        let missing: Vec<&String> = documented
+            .iter()
+            .filter(|name| !emitted.contains(*name))
+            .filter(|name| !source.contains(&format!("\"{name}\"")))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "documented in docs/observability.md but never emitted: {missing:?}"
+        );
+    }
+
+    /// A minimal context for rendering the exposition without touching the disk.
+    fn test_context() -> crate::session::ServerContext {
+        use std::collections::HashMap;
+        crate::session::ServerContext {
+            expected_token: None,
+            workdir_root: std::env::temp_dir(),
+            custom_shell: None,
+            semaphore: Arc::new(tokio::sync::Semaphore::new(4)),
+            lock_manager: workspace::WorkspaceLockManager::new(),
+            tags: vec![],
+            queue_depth: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            max_runs: 4,
+            min_disk_bytes: 0,
+            cas_store: None,
+            start_time: std::time::Instant::now(),
+            active_builds: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            connection_limiter: Arc::new(tokio::sync::Semaphore::new(32)),
+            max_queued_runs: 16,
+        }
+    }
 }
