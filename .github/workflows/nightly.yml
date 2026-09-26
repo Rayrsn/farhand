@@ -45,6 +45,9 @@ jobs:
         uses: dtolnay/rust-toolchain@be39649afda95dbf70f87cce95f68b8d5797b296 # nightly
         with:
           toolchain: nightly
+          # cargo-fuzz may build std from source for sanitizer support, which
+          # needs the rust-src component.
+          components: rust-src
 
       - name: Install cargo-fuzz
         uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2
@@ -52,6 +55,8 @@ jobs:
           tool: cargo-fuzz
 
       - name: Deep fuzz each target (10 min)
+        env:
+          RUSTFLAGS: -Ctarget-feature=-crt-static
         run: |
           for target in fuzz_read_frame fuzz_unpack_tar fuzz_wire_paths; do
             echo "::group::$target"

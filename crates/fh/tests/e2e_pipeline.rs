@@ -1182,8 +1182,9 @@ async fn test_e2e_concurrency_global_semaphore_limit() {
     assert!(out2.contains("beta-done"));
 }
 
-/// Is `pid` still a live process?
+/// Only used by the POSIX process-group cancellation test.
 #[cfg(unix)]
+/// Is `pid` still a live process?
 fn process_is_alive(pid: u32) -> bool {
     // SAFETY: signal 0 is a pure liveness probe — it performs the
     // existence/permission check but delivers nothing and cannot affect the
@@ -1197,15 +1198,8 @@ fn process_is_alive(pid: u32) -> bool {
     std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
-#[cfg(windows)]
-fn process_is_alive(pid: u32) -> bool {
-    std::process::Command::new("tasklist")
-        .args(["/FI", &format!("PID eq {pid}"), "/NH"])
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()))
-        .unwrap_or(false)
-}
-
+/// Only used by the POSIX process-group cancellation test.
+#[cfg(unix)]
 /// Poll until `pid` is gone, or `timeout` elapses. Returns whether it died.
 async fn wait_until_process_gone(pid: u32, timeout: std::time::Duration) -> bool {
     let deadline = std::time::Instant::now() + timeout;
@@ -1220,6 +1214,8 @@ async fn wait_until_process_gone(pid: u32, timeout: std::time::Duration) -> bool
     }
 }
 
+/// Only used by the POSIX process-group cancellation test.
+#[cfg(unix)]
 /// Wait for a pid file the remote command writes at startup, then parse it.
 async fn wait_for_pid_file(path: &Path) -> u32 {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
@@ -2514,10 +2510,26 @@ async fn test_e2e_pty_terminal_resize_and_stdin() {
     write_frame(&mut stream, MsgType::Files, &[]).await.unwrap();
 
     let run = RunPayload {
+        // The child must stay alive until the Stdin frame arrives. An
+        // instant-exit command (`echo pty-ok`) finished before the Resize and
+        // Stdin frames were sent, so the agent closed the socket with those
+        // frames still unread — and macOS answers that with RST, which
+        // discards the already-buffered Result frame. Linux sends FIN and
+        // kept passing, so this only ever showed up on one platform. Reading
+        // a line first makes the ordering deterministic *and* proves the
+        // stdin frame actually reached the child.
         argv: if cfg!(windows) {
-            vec!["cmd.exe".into(), "/C".into(), "echo pty-ok".into()]
+            vec![
+                "cmd.exe".into(),
+                "/C".into(),
+                "set /p line= & echo pty-ok:%line%".into(),
+            ]
         } else {
-            vec!["sh".into(), "-c".into(), "echo pty-ok".into()]
+            vec![
+                "sh".into(),
+                "-c".into(),
+                "read line; echo pty-ok:$line".into(),
+            ]
         },
         outputs: None,
         cwd: None,
