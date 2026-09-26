@@ -159,8 +159,8 @@ jobs:
         uses: dtolnay/rust-toolchain@be39649afda95dbf70f87cce95f68b8d5797b296 # nightly
         with:
           toolchain: nightly
-          # cargo-fuzz may build std from source for sanitizer support, which
-          # needs the rust-src component.
+          # --build-std (used on every fuzz run below) compiles std with
+          # sanitizer instrumentation, which requires the rust-src component.
           components: rust-src
 
       - name: Install cargo-fuzz
@@ -169,19 +169,13 @@ jobs:
           tool: cargo-fuzz
 
       - name: Fuzz frame reader (60s)
-        run: cargo +nightly fuzz run fuzz_read_frame -- -max_total_time=60
-        env:
-          RUSTFLAGS: -Ctarget-feature=-crt-static
+        run: cargo +nightly fuzz run fuzz_read_frame --build-std -- -max_total_time=60
 
       - name: Fuzz tar unpacker (60s)
-        run: cargo +nightly fuzz run fuzz_unpack_tar -- -max_total_time=60
-        env:
-          RUSTFLAGS: -Ctarget-feature=-crt-static
+        run: cargo +nightly fuzz run fuzz_unpack_tar --build-std -- -max_total_time=60
 
       - name: Fuzz wire-path parser (60s)
-        run: cargo +nightly fuzz run fuzz_wire_paths -- -max_total_time=60
-        env:
-          RUSTFLAGS: -Ctarget-feature=-crt-static
+        run: cargo +nightly fuzz run fuzz_wire_paths --build-std -- -max_total_time=60
 
       - name: Upload crash artifacts (if any)
         if: failure()
