@@ -25,6 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - The daemon now treats a client that stops after NEED (a dry run) or after
     FILES (a sync with no command) as a completed session instead of logging a
     protocol error.
+- **Shell completions and man pages**: `fh completions <shell>` prints a
+  completion script for bash, zsh, fish, elvish, or PowerShell, and
+  `fh man --dir <dir>` writes a man page per subcommand. Both are generated
+  from the same clap definitions the binary uses, so they cannot describe a
+  stale interface. Both need no host, config, or network.
 - **`fh doctor`** — a read-only diagnosis of the things that actually break
   remote builds: where farhand is pointed, whether a token is configured and
   whether it is stored in plaintext, whether the transport is encrypted,

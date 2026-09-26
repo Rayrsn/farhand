@@ -255,7 +255,7 @@ pub(crate) enum Subcommands {
         #[arg(long, default_value_t = 10)]
         limit: usize,
     },
-    /// Clean remote project workspaces or caches
+    /// Bring the agent's workspace up to date without running a build
     Sync {
         /// Report what would be transferred without sending any file data
         #[arg(long)]
@@ -264,6 +264,20 @@ pub(crate) enum Subcommands {
         /// List every path that would be transferred (implies --dry-run detail)
         #[arg(long)]
         list: bool,
+    },
+
+    /// Print a shell completion script to stdout
+    Completions {
+        /// Shell to generate completions for
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
+
+    /// Write man pages for `fh` into a directory
+    Man {
+        /// Directory to write the pages into
+        #[arg(long, default_value = "man")]
+        dir: PathBuf,
     },
 
     /// Diagnose the connection, agent capacity, and configuration in one pass
@@ -275,6 +289,7 @@ pub(crate) enum Subcommands {
         path: String,
     },
 
+    /// Clean remote project workspaces or caches
     Clean {
         /// Specific project/branch name to clean (default: current project/branch)
         #[arg(long)]
@@ -374,4 +389,43 @@ pub(crate) enum TemplateAction {
         #[arg(long, default_value = "project")]
         scope: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn every_subcommand_documents_itself() {
+        // A variant that lost its doc comment to a neighbour would otherwise
+        // silently inherit the wrong description in `--help` and in the
+        // generated man pages.
+        let cmd = Cli::command();
+        for sub in cmd.get_subcommands() {
+            let name = sub.get_name();
+            assert!(
+                sub.get_about().is_some(),
+                "subcommand `{name}` has no description"
+            );
+        }
+    }
+
+    #[test]
+    fn no_two_subcommands_share_a_description() {
+        // A misattached doc comment shows up as two commands carrying the same
+        // text, which is the general shape of the bug this guards against.
+        let cmd = Cli::command();
+        let mut seen: Vec<(String, String)> = Vec::new();
+        for sub in cmd.get_subcommands() {
+            let about = sub.get_about().map(|a| a.to_string()).unwrap_or_default();
+            if let Some((other, _)) = seen.iter().find(|(_, text)| *text == about) {
+                panic!(
+                    "`{other}` and `{}` share the description: {about}",
+                    sub.get_name()
+                );
+            }
+            seen.push((sub.get_name().to_string(), about));
+        }
+    }
 }

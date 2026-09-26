@@ -1112,6 +1112,57 @@ async fn run_cli() {
     }
 
     let cli = Cli::parse();
+
+    // Completions and man pages are generated from the same clap definitions
+    // the binary already uses, so they cannot describe a stale interface. They
+    // are handled first because they need no host, no config, and no network —
+    // asking a user to configure an agent to print a shell script would be
+    // absurd.
+    match &cli.subcommand {
+        Some(Subcommands::Completions { shell }) => {
+            let mut cmd = <Cli as clap::CommandFactory>::command();
+            let name = cmd.get_name().to_string();
+            clap_complete::generate(*shell, &mut cmd, name, &mut std::io::stdout());
+            exit(0);
+        }
+        Some(Subcommands::Man { dir }) => {
+            if let Err(e) = std::fs::create_dir_all(dir) {
+                eprintln!("Error: could not create {}: {e}", dir.display());
+                exit(EXIT_INFRA_ERROR);
+            }
+            let root = <Cli as clap::CommandFactory>::command();
+            let subs: Vec<clap::Command> = root.get_subcommands().cloned().collect();
+
+            let write_page = |name: &str, cmd: &clap::Command| {
+                let man = clap_mangen::Man::new(cmd.clone());
+                let mut page: Vec<u8> = Vec::new();
+                if let Err(e) = man.render(&mut page) {
+                    eprintln!("Error: failed to render the man page for {name}: {e}");
+                    exit(EXIT_INFRA_ERROR);
+                }
+                let path = dir.join(format!("{name}.1"));
+                if let Err(e) = std::fs::write(&path, page) {
+                    eprintln!("Error: could not write {}: {e}", path.display());
+                    exit(EXIT_INFRA_ERROR);
+                }
+            };
+
+            write_page("fh", &root);
+            for sub in &subs {
+                // Title the page the way it is installed ("fh-sync", not
+                // "sync"), so `man 1 fh-sync` finds it.
+                let mut page_cmd = sub.clone();
+                page_cmd = page_cmd
+                    .display_name(format!("fh-{}", sub.get_name()))
+                    .clone();
+                write_page(&format!("fh-{}", sub.get_name()), &page_cmd);
+            }
+            println!("Wrote {} man page(s) to {}", subs.len() + 1, dir.display());
+            exit(0);
+        }
+        _ => {}
+    }
+
     setup_tracing(&cli.log_level, &cli.log_format);
     let mut telemetry = Telemetry::default();
 

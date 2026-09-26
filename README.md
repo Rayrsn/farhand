@@ -271,6 +271,10 @@ fh why node_modules/x.js # excluded — and by which rule
 # One-shot diagnosis: config, token handling, transport, connectivity, and agent capacity
 fh doctor
 
+# Shell completions and man pages, generated from the binary's own CLI definition
+fh completions bash > /etc/bash_completion.d/fh
+fh man --dir /usr/share/man/man1
+
 # Live terminal resource dashboard & host telemetry
 fh top                  # Interactive live TUI (CPU, RAM, Disk, Active Builds)
 fh top --once           # Print snapshot and exit
