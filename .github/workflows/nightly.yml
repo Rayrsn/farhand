@@ -37,11 +37,16 @@ jobs:
   fuzz:
     name: Fuzz (deep run)
     runs-on: ubuntu-latest
-    # Advisory: libFuzzer needs an instrumented std and a non-static CRT, and
-    # the hosted runner links the CRT statically, so this job cannot be made
-    # green there without a target we do not build. It still runs, and its
-    # results are the point. Fuzzing is verified locally and in the
-    # fuzz-lite property tests that DO run on every PR in all 3 CI jobs.
+    # Advisory: this does not gate a PR, because a nightly fuzzer should not
+    # be able to hold up a release. The fuzz-lite property tests that DO run on
+    # every PR in all three CI jobs are the fast gate; this is the deep run, and
+    # its results are the point.
+    #
+    # The hosted runner needs RUSTFLAGS (see the run step) because --build-std
+    # compiles compiler_builtins with crt-static, which libFuzzer's sanitizer
+    # rejects. That was previously written off as unfixable from a workflow; the
+    # flag rustc names in the error turned out to be settable, and it is
+    # verified locally. Whether the runner honours it is what this job reports.
     continue-on-error: true
     steps:
       - name: Checkout repository
@@ -61,6 +66,13 @@ jobs:
           tool: cargo-fuzz
 
       - name: Deep fuzz each target (10 min)
+        env:
+          # libFuzzer's sanitizer cannot link a statically linked libc, and
+          # --build-std compiles `compiler_builtins` with crt-static enabled,
+          # which is what the hosted runner trips over. rustc names this flag
+          # in the error itself, and RUSTFLAGS reaches the build-std units
+          # because cargo-fuzz passes an explicit --target.
+          RUSTFLAGS: "-C target-feature=-crt-static"
         run: |
           for target in fuzz_read_frame fuzz_unpack_tar fuzz_wire_paths; do
             echo "::group::$target"
