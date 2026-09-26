@@ -25,6 +25,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - The daemon now treats a client that stops after NEED (a dry run) or after
     FILES (a sync with no command) as a completed session instead of logging a
     protocol error.
+- **`fh doctor`** — a read-only diagnosis of the things that actually break
+  remote builds: where farhand is pointed, whether a token is configured and
+  whether it is stored in plaintext, whether the transport is encrypted,
+  declared toolchains, and the agent's reachability, disk, queue depth, and
+  load. The probe is deliberately two-phase, because a single failed request
+  cannot distinguish "the daemon is not running" from "the daemon is there and
+  rejected your token" — and those need completely different fixes. Nothing is
+  synced and no run slot is used; the only remote traffic is the same STATUS
+  request `fh top` makes. Exits 125 when something is actually broken, so it is
+  usable from a script.
 
 ## [1.8.1] - 2026-09-26
 

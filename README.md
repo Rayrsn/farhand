@@ -85,6 +85,7 @@ Logs stream directly into your terminal in real time, and build artifacts (like 
 - 🛠️ **Declarative Toolchain Manager Hooks**: Declare language versions per project in `.farhand.yaml` or via CLI (`-T rust=nightly`). Farhand automatically configures `RUSTUP_TOOLCHAIN`, `PYENV_VERSION`, `NODE_VERSION`, and wraps remote invocations with `nvm`, `fnm`, `pyenv`, or `goenv`.
 - 📊 **Run Observability**: Query execution history, exit codes, synced bytes, and duration using `fh history` and host status via `fh status`.
 - 🔍 **Transfer Transparency (`fh sync`, `fh why`)**: See exactly what a build would upload — file count, bytes, and the share of the project that would cross the network — with `fh sync --dry-run`; ask about any single path with `fh why`, which names the ignore rule that excluded it or reports the content-addressed hit that skipped it.
+- 🩺 **`fh doctor`**: One read-only pass over everything that commonly breaks a remote build — where it is pointed, whether the token is present and stored safely, whether the transport is encrypted, declared toolchains, and the agent's connectivity, disk, queue, and load. It distinguishes "cannot reach the agent" from "reached it and it rejected your token", and exits 125 when something is actually broken.
 
 ---
 
@@ -266,6 +267,9 @@ fh sync                  # actually sync, without running a build
 # Ask why any single path is (or is not) on the agent
 fh why src/main.rs       # uploaded, or a content-addressed hit?
 fh why node_modules/x.js # excluded — and by which rule
+
+# One-shot diagnosis: config, token handling, transport, connectivity, and agent capacity
+fh doctor
 
 # Live terminal resource dashboard & host telemetry
 fh top                  # Interactive live TUI (CPU, RAM, Disk, Active Builds)

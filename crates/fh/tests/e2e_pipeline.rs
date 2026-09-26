@@ -4205,3 +4205,66 @@ async fn test_e2e_cli_sync_dry_run_and_why() {
         "the built-in ignore should be named: {why_builtin_out}"
     );
 }
+
+/// `fh doctor` must diagnose the common misconfigurations, not just report
+/// that something went wrong. Both the healthy path and the wrong-token path
+/// are asserted, because a diagnostic that cannot tell them apart is the
+/// failure mode worth guarding against.
+#[tokio::test]
+async fn test_e2e_cli_doctor_healthy_and_rejected() {
+    let token = "doctor-token".to_string();
+    let workdir = tempdir().unwrap();
+    let project_dir = tempdir().unwrap();
+    let (server_addr, _server_handle) =
+        spawn_test_server(Some(token.clone()), workdir.path().to_path_buf()).await;
+
+    let run_doctor = |tok: String| {
+        let dir = project_dir.path().to_path_buf();
+        let addr = server_addr.clone();
+        async move {
+            tokio::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+                .current_dir(&dir)
+                .args(["--host", &addr, "--token", &tok, "doctor"])
+                .output()
+                .await
+                .unwrap()
+        }
+    };
+
+    // Healthy: exits 0 and actually reports the agent's state.
+    let ok = run_doctor(token.clone()).await;
+    let stdout = String::from_utf8_lossy(&ok.stdout);
+    assert_eq!(
+        ok.status.code(),
+        Some(0),
+        "doctor failed on a healthy agent: {stdout}{}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    assert!(stdout.contains("Connectivity"), "{stdout}");
+    assert!(stdout.contains("Disk"), "{stdout}");
+    assert!(stdout.contains("Capacity"), "{stdout}");
+    // The token value must never be echoed into the report.
+    assert!(
+        !stdout.contains(&token),
+        "the report leaked the token: {stdout}"
+    );
+
+    // Wrong token: exits with the infrastructure code and names the token as
+    // the cause, rather than telling the user to start the daemon.
+    let bad = run_doctor("not-the-right-token".to_string()).await;
+    let bad_out = String::from_utf8_lossy(&bad.stdout);
+    assert_eq!(
+        bad.status.code(),
+        Some(125),
+        "a rejected doctor should use the infra exit code: {bad_out}"
+    );
+    assert!(bad_out.contains("FAIL"), "{bad_out}");
+    assert!(
+        bad_out.contains("token"),
+        "the report should point at the token: {bad_out}"
+    );
+    assert!(
+        !bad_out.contains("is `fhd` running"),
+        "having reached the agent, it should not suggest starting it: {bad_out}"
+    );
+}

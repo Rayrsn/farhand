@@ -266,6 +266,9 @@ pub(crate) enum Subcommands {
         list: bool,
     },
 
+    /// Diagnose the connection, agent capacity, and configuration in one pass
+    Doctor,
+
     /// Explain what happens to a single path: uploaded, already on the agent, or ignored
     Why {
         /// Path to explain (relative to the project directory, or absolute)

@@ -1587,7 +1587,7 @@ async fn run_cli() {
     // command; everything else is a build, watch, shell, or exec run.
     let takes_no_command = matches!(
         cli.subcommand,
-        Some(Subcommands::Sync { .. } | Subcommands::Why { .. })
+        Some(Subcommands::Sync { .. } | Subcommands::Why { .. } | Subcommands::Doctor)
     );
     if effective_command.is_empty() && !takes_no_command {
         eprintln!("Error: no remote command specified. Usage: fh [OPTIONS] <COMMAND>... or fh watch <COMMAND>... or fh shell");
@@ -1638,6 +1638,69 @@ async fn run_cli() {
     }
 
     let effective_compression = cli.compression.or(cfg.compression);
+
+    // Handle Doctor: a read-only diagnosis of everything that commonly goes
+    // wrong, answered without syncing or running anything.
+    if let Some(Subcommands::Doctor) = cli.subcommand {
+        let declared: Vec<(String, String)> = run_toolchain
+            .iter()
+            .flat_map(|m| m.iter())
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        // A token stored as a literal in a committed config file is a real
+        // risk; the `${VAR}` form is not. Compare the raw file, not the value
+        // after interpolation, which would look identical either way.
+        let raw_config = std::fs::read_to_string(&config_path).unwrap_or_default();
+        let plaintext_token_in_config = raw_config.lines().any(|line| {
+            let line = line.trim();
+            line.starts_with("token:")
+                && !line.contains("${")
+                && !line.trim_start_matches("token:").trim().is_empty()
+        });
+
+        let checks = fh::doctor::run(fh::doctor::DoctorInput {
+            host: &host,
+            token: &token,
+            config_path: Some(config_path.as_path()),
+            project_name: &project_name,
+            project_dir: &project_dir,
+            toolchains: &declared,
+            tls: tls_config.as_ref(),
+            plaintext_token_in_config,
+        })
+        .await;
+
+        let mut failures = 0;
+        let mut warnings = 0;
+        for check in &checks {
+            let mark = match check.severity {
+                None => "ok  ",
+                Some(fh::doctor::Severity::Warn) => {
+                    warnings += 1;
+                    "warn"
+                }
+                Some(fh::doctor::Severity::Fail) => {
+                    failures += 1;
+                    "FAIL"
+                }
+            };
+            println!("[{mark}] {:<15} {}", check.name, check.detail);
+            if let Some(hint) = &check.hint {
+                println!("{:<22}-> {hint}", "");
+            }
+        }
+
+        if failures > 0 {
+            println!("\n{failures} problem(s) found, {warnings} warning(s).");
+            exit(EXIT_INFRA_ERROR);
+        }
+        if warnings > 0 {
+            println!("\nNo blocking problems, {warnings} warning(s).");
+        } else {
+            println!("\nEverything checks out.");
+        }
+        exit(0);
+    }
 
     // Handle Sync and Why subcommands. Both answer questions about the
     // transfer itself rather than running a build, so they branch out before
