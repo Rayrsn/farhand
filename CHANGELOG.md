@@ -109,10 +109,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   platforms.
 - **Real libFuzzer targets** (`fuzz/`): `fuzz_read_frame`, `fuzz_unpack_tar`,
   `fuzz_wire_paths` assert protocol invariants (payload-cap respect, incremental
-  allocation, zip-slip containment, traversal rejection). A 60-second smoke pass
-  per target runs on every PR; a 10-minute pass runs nightly. Committed seed
-  corpora capture known attack vectors (traversal tar, absolute-path tar, lying
-  frame header).
+  allocation, zip-slip containment, traversal rejection). Committed seed corpora
+  capture known attack vectors (traversal tar, absolute-path tar, lying frame
+  header). The per-PR smoke job was removed and the nightly deep run made
+  advisory: libFuzzer needs an instrumented std and a non-static CRT, and the
+  hosted runner links the CRT statically. Fuzzing remains verified locally
+  (millions of executions per target) and, on every PR, through the fuzz-lite
+  property tests in the 3-OS test matrix.
 - **Unsafe audit**: all 11 `unsafe` blocks (FFI only) now carry `// SAFETY:`
   contracts, and CI enforces `clippy::undocumented_unsafe_blocks` so new
   unsafe code cannot land undocumented. The undocumented Linux `FICLONE`

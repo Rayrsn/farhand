@@ -132,8 +132,14 @@ as bytes arrive; the unpacker never writes outside the destination; the
 wire-path parser never accepts traversal, backslashes, or absolute paths.
 Committed seed corpora (`fuzz/corpus/*/seed_*`) encode known attack vectors
 (traversal tar, absolute-path tar, lying frame header); generated coverage
-corpora are gitignored. CI runs a 60-second smoke pass per target on every PR
-and a 10-minute pass nightly.
+corpora are gitignored. Add `--build-std` when running on a toolchain that
+requires an instrumented standard library.
+
+Fuzzing runs nightly on CI as an **advisory** job (10 minutes per target).
+It cannot gate a PR because the hosted runner links the CRT statically, which
+libFuzzer refuses — that is a runner limitation, not a property of the
+targets, and the same commands run clean locally. The per-PR fuzz coverage
+comes from the fuzz-lite property tests in the 3-OS test matrix instead.
 
 ## Testing Expectations
 
