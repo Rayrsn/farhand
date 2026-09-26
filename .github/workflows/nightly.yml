@@ -81,9 +81,16 @@ jobs:
           # because cargo-fuzz passes an explicit --target.
           RUSTFLAGS: "-C target-feature=-crt-static"
         run: |
+          # --target is pinned rather than left to cargo-fuzz's default. On the
+          # runner, cc-rs was reaching for a musl C++ toolchain while building
+          # libfuzzer-sys, and no default should decide which libc a Linux
+          # sanitizer build links against. This is the same triple the local
+          # runs use, where the fuzzer works.
           for target in fuzz_read_frame fuzz_unpack_tar fuzz_wire_paths; do
             echo "::group::$target"
-            cargo +nightly fuzz run "$target" --build-std -- -max_total_time=600
+            cargo +nightly fuzz run "$target" \
+              --target x86_64-unknown-linux-gnu \
+              --build-std -- -max_total_time=600
             echo "::endgroup::"
           done
 
