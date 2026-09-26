@@ -108,7 +108,7 @@ else
   # Fallback: check if local cargo workspace is present
   if [ -f "Cargo.toml" ] && grep -q 'name = "fh"' crates/fh/Cargo.toml 2>/dev/null; then
     echo "Release tarball not found online. Building from local source via cargo..."
-    cargo build --release -p fh -p fhd
+    cargo build --release -p farhand-cli -p farhand-agent
     cp -f target/release/fh "${INSTALL_DIR}/fh"
     cp -f target/release/fhd "${INSTALL_DIR}/fhd"
   else

@@ -85,7 +85,7 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       - name: Build the binaries
-        run: cargo build -p fh -p fhd
+        run: cargo build -p farhand-cli -p farhand-agent
 
       - name: Both binaries must run within a 1 MiB stack
         run: |

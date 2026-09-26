@@ -76,6 +76,32 @@ jobs:
           path: fuzz/artifacts
           if-no-files-found: ignore
 
+  # The release workflow only runs when a tag is pushed, so a broken package
+  # selector or a renamed binary there stays invisible until a release is
+  # already cut. This runs the same build command every night.
+  release-build-check:
+    name: Release build (selector drift)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      - name: Build the release binaries with the release selectors
+        run: cargo build --release --target x86_64-unknown-linux-gnu -p farhand-cli -p farhand-agent
+
+      - name: The executables must be named fh and fhd
+        run: |
+          test -x target/x86_64-unknown-linux-gnu/release/fh
+          test -x target/x86_64-unknown-linux-gnu/release/fhd
+          ./target/x86_64-unknown-linux-gnu/release/fh --version
+          ./target/x86_64-unknown-linux-gnu/release/fhd --version
+
   benchmarks:
     name: Benchmarks (trend artifact)
     runs-on: ubuntu-latest

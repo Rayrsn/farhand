@@ -2,7 +2,7 @@
 set -e
 
 echo "=== Building Farhand Client (fh) and Daemon (fhd) ==="
-cargo build -p fhd -p fh
+cargo build -p farhand-agent -p farhand-cli
 
 PORT=9876
 TOKEN="demo-secret-123"
