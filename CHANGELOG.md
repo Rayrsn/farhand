@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+- **The Codecov upload and its badge.** No coverage service is configured for
+  this repository, so the upload was tokenless, could not fail the build
+  (`fail_ci_if_error: false`), and produced a badge nobody was reading — which
+  is worse than no badge, because it looks like coverage is being tracked. The
+  coverage job still runs: it now prints the summary into the job log and
+  archives the full `lcov.info` as a 14-day artifact, so the number is
+  readable and the data is downloadable. The dead `codecov/codecov-action`
+  ignore was dropped from `dependabot.yml` along with it.
+
 ## [1.9.0] - 2026-09-26
 
 ### Added

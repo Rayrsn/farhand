@@ -24,7 +24,6 @@
 
 <p align="center">
   <a href="https://github.com/Rayrsn/farhand/actions/workflows/ci.yml"><img src="https://github.com/Rayrsn/farhand/actions/workflows/ci.yml/badge.svg" alt="CI Status" /></a>
-  <a href="https://codecov.io/gh/Rayrsn/farhand"><img src="https://codecov.io/gh/Rayrsn/farhand/graph/badge.svg" alt="Coverage" /></a>
   <a href="https://github.com/Rayrsn/farhand/releases/latest"><img src="https://img.shields.io/github/v/release/Rayrsn/farhand?style=flat-square" alt="Release" /></a>
   <a href="LICENSE-MIT"><img src="https://img.shields.io/github/license/Rayrsn/farhand?style=flat-square" alt="License: MIT OR Apache-2.0" /></a>
   <img src="https://img.shields.io/badge/MSRV-1.88-orange?style=flat-square" alt="MSRV 1.88" />

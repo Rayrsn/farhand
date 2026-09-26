@@ -29,14 +29,6 @@ updates:
       # made deliberately and by hand instead.
       - dependency-name: "dtolnay/rust-toolchain"
 
-      # We have no CODECOV_TOKEN, so the upload is tokenless, and
-      # codecov-action v5+ changed the tokenless path for public repositories.
-      # Our job sets fail_ci_if_error: false so a flaky uploader cannot
-      # redden the matrix — which also means a v5+ action that quietly stopped
-      # uploading would stay green and freeze the badge. Revisit once a token
-      # exists and a failed upload becomes loud and testable.
-      - dependency-name: "codecov/codecov-action"
-
       # This action only runs in the Release workflow, which fires on a tag, so
       # no PR check ever exercises it — a major bump can sit green forever
       # without being run once. It is validated during a real release instead,

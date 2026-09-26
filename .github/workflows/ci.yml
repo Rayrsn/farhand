@@ -163,13 +163,12 @@ jobs:
       - name: Collect coverage (incl. e2e-spawned client/daemon processes)
         run: cargo llvm-cov --workspace --all-targets --lcov --output-path lcov.info
 
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4
-        with:
-          files: lcov.info
-          # Public repos upload tokenless; never fail the whole matrix on a
-          # flaky uploader — the lcov artifact below is the source of truth.
-          fail_ci_if_error: false
+      - name: Print the coverage summary
+        # The number is printed rather than uploaded somewhere. There is no
+        # coverage service configured for this repository, and a badge fed by an
+        # upload nobody checks is worse than no badge: it looks like coverage is
+        # being tracked and is not. The lcov artifact below is the full data.
+        run: cargo llvm-cov report --summary-only
 
       - name: Archive raw coverage file
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
