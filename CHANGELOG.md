@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **The e2e suite was not hermetic.** `FARHAND_HOST` and `FARHAND_TOKEN`
+  deliberately outrank `.farhand.yaml`, so a developer who has them exported —
+  which the README documents — had every config-resolution test silently
+  exercise their own shell instead of the fixture. The client would ignore the
+  test's config, try the real default port, and fail in a way that reads like a
+  code bug. All 27 client spawns now go through a helper that clears those two
+  variables; the eight that drive the client synchronously use a blocking
+  variant of the same. The suite passes with or without them set.
+
 ### Removed
 - **The Codecov upload and its badge.** No coverage service is configured for
   this repository, so the upload was tokenless, could not fail the build

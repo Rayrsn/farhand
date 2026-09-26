@@ -286,6 +286,32 @@ async fn client_roundtrip_with_options(
     (need, output, exit_code)
 }
 
+/// The `fh` binary under test, with farhand's own environment cleared.
+///
+/// `FARHAND_HOST` and `FARHAND_TOKEN` deliberately outrank `.farhand.yaml` —
+/// that precedence is a feature. It also means a developer who has them
+/// exported (the README documents both) silently turns every config-resolution
+/// test into a test of their own shell: the client ignores the fixture, tries
+/// the real default port, and the failure reads like a code bug. It is not; it
+/// is a test that only passes in a clean environment, which is not a property a
+/// test suite can rely on.
+///
+/// Every spawn goes through here, so the suite is hermetic. The removal is
+/// unconditional; a test that wants one of these variables sets it explicitly
+/// afterwards, which wins.
+fn fh_command() -> tokio::process::Command {
+    tokio::process::Command::from(fh_command_blocking())
+}
+
+/// The same clean environment for the plain `#[test]` functions that drive the
+/// client synchronously.
+fn fh_command_blocking() -> std::process::Command {
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_fh"));
+    cmd.env_remove("FARHAND_HOST");
+    cmd.env_remove("FARHAND_TOKEN");
+    cmd
+}
+
 #[tokio::test]
 async fn test_e2e_persistent_workspace_and_delta_sync() {
     let token = "test-token-delta".to_string();
@@ -668,7 +694,7 @@ async fn test_e2e_no_artifacts_on_command_failure() {
 
 #[test]
 fn test_cli_unreachable_agent_exit_code_125() {
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+    let output = fh_command_blocking()
         .args([
             "--host",
             "127.0.0.1:1",
@@ -720,7 +746,7 @@ async fn test_cli_config_file_resolution_and_telemetry() {
     };
 
     // Execute fh pointing to project_dir without passing --host or --token flags
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+    let output = fh_command()
         .current_dir(project_dir.path())
         .args(["--verbose", "--", shell_cmd, shell_arg, build_str])
         .output()
@@ -753,7 +779,7 @@ async fn test_cli_config_file_resolution_and_telemetry() {
 
 #[test]
 fn test_cli_templates_list_and_show() {
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+    let output = fh_command_blocking()
         .args(["templates", "list"])
         .output()
         .unwrap();
@@ -767,7 +793,7 @@ fn test_cli_templates_list_and_show() {
     assert!(stdout.contains("go"));
     assert!(stdout.contains("builtin"));
 
-    let show_out = std::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+    let show_out = fh_command_blocking()
         .args(["templates", "show", "rust"])
         .output()
         .unwrap();
@@ -782,7 +808,7 @@ fn test_cli_templates_list_and_show() {
 fn test_cli_templates_init() {
     let project_dir = tempdir().unwrap();
 
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+    let output = fh_command_blocking()
         .current_dir(project_dir.path())
         .args(["templates", "init", "rust"])
         .output()
@@ -792,7 +818,7 @@ fn test_cli_templates_init() {
     let created_file = project_dir.path().join(".farhand/templates/rust.yaml");
     assert!(created_file.exists());
 
-    let list_out = std::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+    let list_out = fh_command_blocking()
         .current_dir(project_dir.path())
         .args(["templates", "list"])
         .output()
@@ -810,7 +836,7 @@ fn test_cli_init_command() {
     let project_dir = tempdir().unwrap();
 
     // 1. Run fh init in empty project
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+    let output = fh_command_blocking()
         .current_dir(project_dir.path())
         .args(["init", "--name", "my-test-app"])
         .output()
@@ -824,7 +850,7 @@ fn test_cli_init_command() {
     assert!(cfg_str.contains("compression: zstd"));
 
     // 2. Second init without --force should fail with exit code 1
-    let output2 = std::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+    let output2 = fh_command_blocking()
         .current_dir(project_dir.path())
         .args(["init"])
         .output()
@@ -837,7 +863,7 @@ fn test_cli_init_command() {
         "[package]\nname = \"my-test-app\"\n",
     )
     .unwrap();
-    let output3 = std::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+    let output3 = fh_command_blocking()
         .current_dir(project_dir.path())
         .args(["init", "--force", "--with-template"])
         .output()
@@ -889,7 +915,7 @@ async fn test_e2e_template_monorepo_union_and_explicit_template() {
         )
     };
 
-    let output1 = tokio::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+    let output1 = fh_command()
         .current_dir(project_dir.path())
         .args([
             "--host",
@@ -912,7 +938,7 @@ async fn test_e2e_template_monorepo_union_and_explicit_template() {
     assert!(out_dir1.path().join("dist/bundle.js").exists());
 
     // 2. Run build WITH explicit --template rust -> ONLY target/release fetched, dist is NOT fetched
-    let output2 = tokio::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+    let output2 = fh_command()
         .current_dir(project_dir.path())
         .args([
             "--host",
@@ -965,7 +991,7 @@ outputs:
     fs::write(template_dir.join("zig.yaml"), zig_yaml).unwrap();
 
     // Push template using fh templates push
-    let push_out = tokio::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+    let push_out = fh_command()
         .current_dir(project_dir.path())
         .args([
             "--host",
@@ -1004,7 +1030,7 @@ outputs:
         )
     };
 
-    let run_out = tokio::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+    let run_out = fh_command()
         .current_dir(project_dir.path())
         .args([
             "--host",
@@ -1480,7 +1506,7 @@ async fn test_e2e_cli_exec_ad_hoc_command_end_to_end() {
     };
 
     // 1. The remote command sees synced files and its stdout reaches us.
-    let ok_run = tokio::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+    let ok_run = fh_command()
         .current_dir(project_dir.path())
         .args(["--host", &server_addr, "--token", &token, "exec"])
         .arg(if cfg!(windows) { "cmd.exe" } else { "sh" })
@@ -1511,7 +1537,7 @@ async fn test_e2e_cli_exec_ad_hoc_command_end_to_end() {
 
     // 2. A remote failure is mirrored verbatim (3 stays 3 — it is not an
     //    infrastructure error, which would be 125).
-    let fail_run = tokio::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+    let fail_run = fh_command()
         .current_dir(project_dir.path())
         .args(["--host", &server_addr, "--token", &token, "exec"])
         .arg(if cfg!(windows) { "cmd.exe" } else { "sh" })
@@ -1965,7 +1991,7 @@ async fn test_e2e_history_query_and_persistence() {
     assert!(!run.id.is_empty());
 
     // 3. Query history via CLI binary (text table format)
-    let cli_out = tokio::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+    let cli_out = fh_command()
         .args([
             "--host",
             &server_addr,
@@ -1985,7 +2011,7 @@ async fn test_e2e_history_query_and_persistence() {
     assert!(stdout.contains("echo hello from run 1"));
 
     // 4. Query history via CLI binary (--log-format json)
-    let json_cli_out = tokio::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+    let json_cli_out = fh_command()
         .args([
             "--host",
             &server_addr,
@@ -2057,7 +2083,7 @@ async fn test_e2e_history_unauthorized() {
     assert!(res.is_err(), "Unauthorized history request must fail");
 
     // Also via CLI binary: must exit with code 125
-    let cli_out = tokio::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+    let cli_out = fh_command()
         .args([
             "--host",
             &server_addr,
@@ -2190,7 +2216,7 @@ async fn test_e2e_workspace_clean_subcommand() {
     assert!(!dir2.exists());
 
     // 3. Test clean via CLI binary
-    let cli_out = tokio::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+    let cli_out = fh_command()
         .args([
             "--host",
             &server_addr,
@@ -2231,7 +2257,7 @@ async fn test_e2e_env_vars_forwarding_default() {
     // to the agent. An explicit -e override is the documented way to forward.
     let (no_forward, forward) = tokio::join!(
         async {
-            tokio::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+            fh_command()
                 .current_dir(project_dir.path())
                 .env(
                     "INFISICAL_DATABASE_URL",
@@ -2252,7 +2278,7 @@ async fn test_e2e_env_vars_forwarding_default() {
                 .unwrap()
         },
         async {
-            tokio::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+            fh_command()
                 .current_dir(project_dir.path())
                 .env(
                     "INFISICAL_DATABASE_URL",
@@ -2319,7 +2345,7 @@ async fn test_e2e_env_vars_disabled_via_no_env() {
     };
 
     // Execute fh with --no-env flag
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+    let output = fh_command()
         .current_dir(project_dir.path())
         .env("INFISICAL_SECRET", "super_secret_val")
         .args([
@@ -2379,7 +2405,7 @@ env:
         ("sh", "-c", "echo C=$CONFIG_KEY E=$CLI_KEY A=$AMBIENT_KEY")
     };
 
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+    let output = fh_command()
         .current_dir(project_dir.path())
         .env("AMBIENT_KEY", "ambient_should_be_skipped")
         .args([
@@ -2416,11 +2442,7 @@ env:
 
 #[tokio::test]
 async fn test_cli_tier1_help_flags() {
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_fh"))
-        .arg("--help")
-        .output()
-        .await
-        .unwrap();
+    let output = fh_command().arg("--help").output().await.unwrap();
     assert_eq!(output.status.code(), Some(0));
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
@@ -2444,7 +2466,7 @@ async fn test_cli_tier1_help_flags() {
         stdout
     );
 
-    let watch_output = tokio::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+    let watch_output = fh_command()
         .args(["watch", "--help"])
         .output()
         .await
@@ -4129,7 +4151,7 @@ async fn test_e2e_cli_sync_dry_run_and_why() {
         let tok = token.clone();
         let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
         async move {
-            tokio::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+            fh_command()
                 .current_dir(&dir)
                 .args(["--host", &addr, "--token", &tok])
                 .args(&args)
@@ -4227,7 +4249,7 @@ async fn test_e2e_cli_doctor_healthy_and_rejected() {
         let dir = project_dir.path().to_path_buf();
         let addr = server_addr.clone();
         async move {
-            tokio::process::Command::new(env!("CARGO_BIN_EXE_fh"))
+            fh_command()
                 .current_dir(&dir)
                 .args(["--host", &addr, "--token", &tok, "doctor"])
                 .output()
