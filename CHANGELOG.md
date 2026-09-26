@@ -83,6 +83,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   request `fh top` makes. Exits 125 when something is actually broken, so it is
   usable from a script.
 
+### Published
+- **The crates are on crates.io** as `farhand-cli` and `farhand-agent` (plus the
+  five library crates `farhand-protocol`, `farhand-fileset`, `farhand-config`,
+  `farhand-templates`, and `farhand-workspace`). Install with
+  `cargo install farhand-cli` and `cargo install farhand-agent`; the executables
+  are still `fh` and `fhd`. The name `farhand` is unavailable on crates.io — an
+  unrelated project owns it.
+
 ### Fixed
 - **The published packages would not have built.** `farhand-templates` embedded
   the builtin templates from a repository-level `templates/builtin/` directory,
