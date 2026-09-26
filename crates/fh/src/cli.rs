@@ -142,6 +142,16 @@ pub(crate) struct Cli {
     )]
     pub(crate) watch: bool,
 
+    /// Milliseconds to coalesce filesystem events over in watch mode.
+    /// Raise it for editors that save in bursts or on network filesystems.
+    #[arg(
+        long = "watch-debounce",
+        value_name = "MS",
+        default_value_t = 150,
+        help = "Milliseconds to coalesce file events over in watch mode"
+    )]
+    pub(crate) watch_debounce: u64,
+
     #[arg(
         long = "compression",
         help = "Wire compression algorithm ('zstd', 'gzip', or 'none')"

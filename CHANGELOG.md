@@ -25,6 +25,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - The daemon now treats a client that stops after NEED (a dry run) or after
     FILES (a sync with no command) as a completed session instead of logging a
     protocol error.
+- **Watch mode now honours each template's `ignoreExtra`**, so a template can
+  declare paths that must not trigger a rebuild (a vendored tree, snapshot
+  files), and the debounce is configurable with `--watch-debounce`
+  (default 150 ms) for editors that save in bursts or on network filesystems.
+  The built-in feedback-loop guards (`target/`, `node_modules/`, …) stay
+  unconditional: a negated template pattern cannot un-ignore them, which would
+  otherwise rebuild on our own output forever.
 - **Shell completions and man pages**: `fh completions <shell>` prints a
   completion script for bash, zsh, fish, elvish, or PowerShell, and
   `fh man --dir <dir>` writes a man page per subcommand. Both are generated

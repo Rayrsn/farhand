@@ -271,6 +271,9 @@ fh why node_modules/x.js # excluded — and by which rule
 # One-shot diagnosis: config, token handling, transport, connectivity, and agent capacity
 fh doctor
 
+# Watch mode honours each template's ignoreExtra, and the debounce is tunable
+fh --watch --watch-debounce 400 -- npm run build
+
 # Shell completions and man pages, generated from the binary's own CLI definition
 fh completions bash > /etc/bash_completion.d/fh
 fh man --dir /usr/share/man/man1

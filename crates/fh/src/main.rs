@@ -815,7 +815,7 @@ async fn run_build(p: RunParams<'_>) -> Result<i32, Box<dyn std::error::Error + 
 /// behavior itself. It takes the same `RunParams` as a one-shot build, so
 /// watch mode and `fh <build>` cannot drift apart in what they send. It does
 /// not return: it loops until the user interrupts a run, then exits.
-async fn run_watch(p: RunParams<'_>) -> ! {
+async fn run_watch(p: RunParams<'_>, debounce_ms: u64) -> ! {
     let RunParams {
         host,
         token,
@@ -835,6 +835,13 @@ async fn run_watch(p: RunParams<'_>) -> ! {
         tls_config,
         telemetry,
     } = p;
+
+    // The project's own ignore patterns (every matched template's
+    // `ignoreExtra`) are compiled once here rather than per event.
+    let mut watcher_ignores = fileset::IgnoreMatcher::new();
+    for template in templates::match_templates(project_dir, template.as_deref()) {
+        watcher_ignores.add_patterns(&template.ignore_extra);
+    }
 
     fn is_mutation_event(event: &notify::Event) -> bool {
         matches!(
@@ -880,7 +887,7 @@ async fn run_watch(p: RunParams<'_>) -> ! {
         exit(0);
     }
 
-    println!("\n👁️  Watching for changes... (debounce: 150ms)");
+    println!("\n👁️  Watching for changes... (debounce: {debounce_ms}ms)");
 
     // Bounded channel: an editor firing thousands of events fills at most
     // 256 slots (older events are dropped — the debounce tick coalesces
@@ -932,9 +939,9 @@ async fn run_watch(p: RunParams<'_>) -> ! {
         let mut relevant = first_event
             .paths
             .iter()
-            .any(|p| !should_ignore_path(p, project_dir));
+            .any(|p| !should_ignore_path(p, project_dir, &watcher_ignores));
 
-        let debounce_dur = std::time::Duration::from_millis(150);
+        let debounce_dur = std::time::Duration::from_millis(debounce_ms);
         let deadline = tokio::time::Instant::now() + debounce_dur;
 
         let mut interrupted = false;
@@ -947,7 +954,7 @@ async fn run_watch(p: RunParams<'_>) -> ! {
                 }
                 next = rx.recv() => {
                     if let Some(event) = next {
-                        if is_mutation_event(&event) && event.paths.iter().any(|p| !should_ignore_path(p, project_dir)) {
+                        if is_mutation_event(&event) && event.paths.iter().any(|p| !should_ignore_path(p, project_dir, &watcher_ignores)) {
                             relevant = true;
                         }
                     } else {
@@ -1826,25 +1833,28 @@ async fn run_cli() {
     }
 
     if is_watch {
-        Box::pin(run_watch(RunParams {
-            host: &host,
-            token: &token,
-            project_name: &project_name,
-            project_dir: &project_dir,
-            command: &effective_command,
-            outputs: outputs.clone(),
-            out_dir: &out_dir,
-            template: template.clone(),
-            no_cache,
-            run_env: run_env.clone(),
-            run_toolchain: run_toolchain.clone(),
-            tty: effective_tty,
-            forwards: &effective_forwards,
-            compression: effective_compression.clone(),
-            verbose,
-            tls_config: tls_config.as_ref(),
-            telemetry: &mut telemetry,
-        }))
+        Box::pin(run_watch(
+            RunParams {
+                host: &host,
+                token: &token,
+                project_name: &project_name,
+                project_dir: &project_dir,
+                command: &effective_command,
+                outputs: outputs.clone(),
+                out_dir: &out_dir,
+                template: template.clone(),
+                no_cache,
+                run_env: run_env.clone(),
+                run_toolchain: run_toolchain.clone(),
+                tty: effective_tty,
+                forwards: &effective_forwards,
+                compression: effective_compression.clone(),
+                verbose,
+                tls_config: tls_config.as_ref(),
+                telemetry: &mut telemetry,
+            },
+            cli.watch_debounce,
+        ))
         .await;
     }
 
