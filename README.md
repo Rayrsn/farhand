@@ -141,10 +141,24 @@ brew tap Rayrsn/farhand https://github.com/Rayrsn/farhand.git
 brew install farhand
 ```
 
-#### 🦀 Via Cargo (From Source)
+#### 🦀 Via Cargo
+
 ```bash
-cargo install --git https://github.com/Rayrsn/farhand.git fh fhd
+# The two binaries come from two crates, because the agent is published
+# separately: a client-only user should not have to build a daemon.
+cargo install farhand-cli      # provides `fh`
+cargo install farhand-agent    # provides `fhd`
 ```
+
+Or straight from the repository, if you want unreleased changes:
+
+```bash
+cargo install --git https://github.com/Rayrsn/farhand.git farhand-cli farhand-agent
+```
+
+> The crate names are `farhand-cli` and `farhand-agent`, not `fh` and `fhd`.
+> The **binaries** are `fh` and `fhd`; `cargo install` takes crate names. (`farhand`
+> itself is unavailable on crates.io — an unrelated project already owns it.)
 
 ---
 

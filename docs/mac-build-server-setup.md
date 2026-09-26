@@ -57,7 +57,9 @@ Install `fhd` (daemon) and `fh` (client):
 
 ```bash
 # Compile and install via Cargo
-cargo install --git https://github.com/Rayrsn/farhand.git fh fhd
+# `cargo install` takes crate names, not binary names: the binaries are `fh`
+# and `fhd`, but the published crates are `farhand-cli` and `farhand-agent`.
+cargo install --git https://github.com/Rayrsn/farhand.git farhand-cli farhand-agent
 
 # Ensure /usr/local/bin exists and copy binaries for global system access
 sudo mkdir -p /usr/local/bin
