@@ -19,3 +19,12 @@ updates:
     open-pull-requests-limit: 5
     commit-message:
       prefix: "ci"
+    ignore:
+      # dtolnay/rust-toolchain is pinned three times for three *different*
+      # toolchains (stable, the 1.88.0 MSRV job, nightly). Dependabot models
+      # the action as a single requirement, so an update collapses all three
+      # pins to the newest commit — the `stable` tag — while the version
+      # comments keep claiming 1.88.0/nightly. That would silently turn the
+      # MSRV gate into a duplicate of the main build, so toolchain bumps are
+      # made deliberately and by hand instead.
+      - dependency-name: "dtolnay/rust-toolchain"
