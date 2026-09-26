@@ -99,6 +99,10 @@ Logs stream directly into your terminal in real time, and build artifacts (like 
 
 ### 1. Installation
 
+> **Using cargo?** The crate is `farhand-cli` / `farhand-agent`, **not**
+> `farhand` — that name belongs to an unrelated project on crates.io. See the
+> "Via Cargo" section below for the exact commands.
+
 #### ⚡ One-Liner Install
 
 **Linux & macOS** (Terminal):
@@ -155,9 +159,13 @@ Or straight from the repository, if you want unreleased changes:
 cargo install --git https://github.com/Rayrsn/farhand.git farhand-cli farhand-agent
 ```
 
-> The crate names are `farhand-cli` and `farhand-agent`, not `fh` and `fhd`.
-> The **binaries** are `fh` and `fhd`; `cargo install` takes crate names. (`farhand`
-> itself is unavailable on crates.io — an unrelated project already owns it.)
+> **The crate is not called `farhand`.** `cargo install farhand` installs
+> someone else's project — an unrelated tool already owns that name on
+> crates.io. The crates here are **`farhand-cli`** (the `fh` client) and
+> **`farhand-agent`** (the `fhd` daemon). Note the split: `cargo install` takes
+> *crate* names, while the *binaries* you run are `fh` and `fhd`. The Homebrew
+> formula, by contrast, really is `farhand` — so `brew install farhand` is
+> correct and `cargo install farhand` is not.
 
 ---
 
