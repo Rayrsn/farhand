@@ -1053,13 +1053,17 @@ fn main() {
 
 /// Render a sync report as the summary a human actually wants: what moves,
 /// what does not, and why that is worth caring about.
-fn print_sync_report(report: &fh::sync::SyncReport, list: bool) {
+fn print_sync_report(report: &fh::sync::SyncReport, list: bool, dry_run: bool) {
     use fh::sync::human_bytes;
 
-    let verb = if report.bytes_uploaded > 0 {
-        "Uploaded"
+    let verb = if dry_run { "Would upload" } else { "Uploaded" };
+    // Whether the bytes actually moved, not whether a payload happened to be
+    // sent: a real sync of zero files is a completed sync, and calling it
+    // "would upload" would misreport it as a plan.
+    let crossed = if dry_run {
+        "would cross the network"
     } else {
-        "Would upload"
+        "crossed the network"
     };
     println!(
         "Scan      {} files, {}",
@@ -1091,7 +1095,7 @@ fn print_sync_report(report: &fh::sync::SyncReport, list: bool) {
         }
     } else if report.bytes_scanned > 0 {
         println!(
-            "          {}% of the project would cross the network",
+            "          {}% of the project {crossed}",
             report.transfer_ratio_percent()
         );
     }
@@ -1830,7 +1834,7 @@ async fn run_cli() {
 
         match report {
             Ok(report) => {
-                print_sync_report(&report, list);
+                print_sync_report(&report, list, dry_run);
                 exit(0);
             }
             Err(e) => {

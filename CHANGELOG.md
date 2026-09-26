@@ -64,6 +64,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `fh man --dir <dir>` writes a man page per subcommand. Both are generated
   from the same clap definitions the binary uses, so they cannot describe a
   stale interface. Both need no host, config, or network.
+- **`fh doctor` no longer nags on a loopback target**: a token sent to
+  `127.0.0.1` never leaves the host, so there is nothing to encrypt, and the
+  warning it used to print contradicted its own advice ("for anything but
+  loopback"). It now reports a pass with the reasoning, and still warns for a
+  real remote host. A test that had been asserting the old behaviour — its name
+  promised a loopback special case the code never implemented — now pins both
+  halves.
+- **`fh sync` reports the transfer in the right tense**: a completed sync said
+  "would cross the network", and a real sync that had nothing to do was
+  indistinguishable from a dry-run plan. The wording now follows whether the
+  bytes actually moved.
 - **`fh doctor`** — a read-only diagnosis of the things that actually break
   remote builds: where farhand is pointed, whether a token is configured and
   whether it is stored in plaintext, whether the transport is encrypted,

@@ -12,6 +12,40 @@ use protocol::StatusResponsePayload;
 
 use crate::sync::human_bytes;
 
+/// Whether a `host[:port]` target is on this machine.
+///
+/// Accepts the forms a user actually types: a bare IP, `localhost`, an IPv6
+/// literal in brackets, and any of those with a `:port` suffix.
+fn is_loopback_target(host: &str) -> bool {
+    let host = host.trim();
+    let loopback_ip = |s: &str| {
+        s.parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+    };
+
+    // Bracketed IPv6, with or without a port: `[::1]` or `[::1]:9876`.
+    if let Some(rest) = host.strip_prefix('[') {
+        return match rest.find(']') {
+            Some(close) => loopback_ip(&rest[..close]),
+            None => false,
+        };
+    }
+
+    // A bare IPv6 literal has at least two colons and must be parsed whole;
+    // treating its last group as a port would leave a fragment that never
+    // parses, and `::1` would silently stop counting as loopback.
+    if host.matches(':').count() >= 2 {
+        return loopback_ip(host);
+    }
+
+    // Otherwise `host` or `host:port`.
+    let host_only = match host.rsplit_once(':') {
+        Some((head, port)) if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) => head,
+        _ => host,
+    };
+    host_only.eq_ignore_ascii_case("localhost") || loopback_ip(host_only)
+}
+
 /// How bad a finding is. Only `Fail` is worth a non-zero exit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Severity {
@@ -121,11 +155,23 @@ fn local_checks(input: &DoctorInput<'_>) -> Vec<Check> {
     // A token over cleartext is the other common surprise.
     let tls_on = input.tls.map(|t| t.enabled).unwrap_or(false);
     if !tls_on && !input.token.is_empty() {
-        checks.push(Check::warn(
-            "Transport",
-            "token will cross the network unencrypted",
-            "enable TLS (--tls, or tls: true in config) for anything but loopback",
-        ));
+        // A loopback target never leaves the host, so there is nothing to
+        // encrypt. Warning anyway would contradict this check's own advice —
+        // and a doctor that nags about a non-problem teaches people to ignore
+        // it. Say what it concluded instead of staying silent, so it is clear
+        // the check ran.
+        if is_loopback_target(input.host) {
+            checks.push(Check::ok(
+                "Transport",
+                "target is loopback; the token never leaves this host, so TLS is not required",
+            ));
+        } else {
+            checks.push(Check::warn(
+                "Transport",
+                "token will cross the network unencrypted",
+                "enable TLS (--tls, or tls: true in config) for anything but loopback",
+            ));
+        }
     } else if tls_on {
         let mode = if input.tls.is_some_and(|t| t.insecure) {
             "enabled, certificate verification DISABLED (--tls-insecure)"
@@ -437,8 +483,28 @@ mod tests {
 
     #[test]
     fn token_over_cleartext_is_flagged_unless_loopback_is_obvious() {
+        // The shared fixture targets 127.0.0.1, so the token never leaves the
+        // host and there is nothing to encrypt.
         let clear = local_checks(&input("secret", &[], false, None));
-        assert_eq!(find(&clear, "Transport").severity, Some(Severity::Warn));
+        // `severity: None` is how a passing check is represented.
+        assert_eq!(find(&clear, "Transport").severity, None);
+        assert!(
+            !find(&clear, "Transport")
+                .hint
+                .as_deref()
+                .unwrap_or_default()
+                .contains("--tls"),
+            "a loopback target should not be told to enable TLS"
+        );
+
+        // A real remote host still gets the warning.
+        let mut remote = input("secret", &[], false, None);
+        remote.host = "build.example.com:9876";
+        let remote_checks = local_checks(&remote);
+        assert_eq!(
+            find(&remote_checks, "Transport").severity,
+            Some(Severity::Warn)
+        );
 
         let tls = config::TlsConfig {
             enabled: true,
@@ -476,5 +542,42 @@ mod tests {
         let fail = Some(Severity::Fail);
         assert!(clean < warn);
         assert!(warn < fail);
+    }
+}
+
+#[cfg(test)]
+mod loopback_tests {
+    use super::is_loopback_target;
+
+    #[test]
+    fn loopback_targets_are_recognised_in_every_form_a_user_types() {
+        for host in [
+            "127.0.0.1",
+            "127.0.0.1:9876",
+            "127.0.0.53:9876",
+            "localhost",
+            "localhost:9876",
+            "LOCALHOST:9876",
+            "[::1]",
+            "[::1]:9876",
+            "::1",
+        ] {
+            assert!(is_loopback_target(host), "{host} should be loopback");
+        }
+    }
+
+    #[test]
+    fn remote_targets_are_not_loopback() {
+        for host in [
+            "192.168.1.10",
+            "192.168.1.10:9876",
+            "10.0.0.5:9876",
+            "build.example.com",
+            "build.example.com:9876",
+            "0.0.0.0:9876",
+            "example.com:443",
+        ] {
+            assert!(!is_loopback_target(host), "{host} should not be loopback");
+        }
     }
 }
