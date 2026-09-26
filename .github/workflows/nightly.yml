@@ -102,6 +102,52 @@ jobs:
           ./target/x86_64-unknown-linux-gnu/release/fh --version
           ./target/x86_64-unknown-linux-gnu/release/fhd --version
 
+  # The Homebrew formula was left pointing at v1.7.0 while v1.8.0 and v1.8.1
+  # shipped, so `brew install farhand` handed people two releases of bugs —
+  # including the Windows stack overflow. Nothing caught it because the
+  # formula is not exercised by any test. This compares it against what is
+  # actually published.
+  homebrew-formula:
+    name: Homebrew formula (version + checksums)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: The formula must match the latest published release
+        run: |
+          set -euo pipefail
+          latest=$(gh release view --json tagName --jq '.tagName' | sed 's/^v//')
+          formula_version=$(sed -n 's/^  version "\(.*\)"$/\1/p' Formula/farhand.rb)
+          echo "latest release: ${latest}"
+          echo "formula version: ${formula_version}"
+          if [ "${latest}" != "${formula_version}" ]; then
+            echo "::error::Formula/farhand.rb is at ${formula_version} but the latest release is ${latest}. Update the version and its checksums." >&2
+            exit 1
+          fi
+
+      - name: Every formula checksum must match the published artifact
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^  version "\(.*\)"$/\1/p' Formula/farhand.rb)
+          failures=0
+          while read -r url digest; do
+            asset=$(basename "${url}")
+            published=$(curl -sL --max-time 60 \
+              "https://github.com/Rayrsn/farhand/releases/download/v${version}/${asset}.sha256" \
+              | awk '{print $1}')
+            if [ "${published}" != "${digest}" ]; then
+              echo "::error::${asset}: formula says ${digest}, release publishes ${published}" >&2
+              failures=$((failures + 1))
+            else
+              echo "${asset}: checksum matches"
+            fi
+          done < <(awk '
+            /url "/     { u=$0; sub(/^.*url "/, "", u);     sub(/"$/, "", u) }
+            /sha256 "/  { d=$0; sub(/^.*sha256 "/, "", d); sub(/"$/, "", d); print u, d }
+          ' Formula/farhand.rb)
+          exit "${failures}"
+
   benchmarks:
     name: Benchmarks (trend artifact)
     runs-on: ubuntu-latest
