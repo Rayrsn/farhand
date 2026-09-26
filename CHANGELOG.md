@@ -25,6 +25,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - The daemon now treats a client that stops after NEED (a dry run) or after
     FILES (a sync with no command) as a completed session instead of logging a
     protocol error.
+- **Nix packaging**: a `flake.nix` exposing `fh` and `fhd` plus a dev shell
+  with `rust-analyzer`, `cargo-audit`, and `cargo-deny`, and a `default.nix` for
+  non-flake consumers. Not evaluated in this repository's CI (no Nix
+  available), so treat it as unverified until someone runs `nix flake check`
+  once.
+- **crates.io publishing is ready**: the crates publish under the `farhand-*`
+  namespace (the name `farhand` is taken on crates.io by an unrelated project)
+  while the executables remain `fh` and `fhd`. See CONTRIBUTING.md for the
+  publish order — a dependency chain can only be published leaf-first.
 - **Opt-in Prometheus metrics on `fhd`** (`--metrics-port`): run/slot
   gauges, queue depth, active builds per project, disk, load, and memory, plus
   `/healthz` for container probes. Hand-rolled over a `TcpListener` — this is

@@ -274,6 +274,11 @@ fh doctor
 # Watch mode honours each template's ignoreExtra, and the debounce is tunable
 fh --watch --watch-debounce 400 -- npm run build
 
+# Nix (flake or plain nix-build)
+nix build .#fh && ./result/bin/fh --help
+nix build .#fhd
+nix develop          # dev shell with rust-analyzer, cargo-audit, cargo-deny
+
 # Shell completions and man pages, generated from the binary's own CLI definition
 fh completions bash > /etc/bash_completion.d/fh
 fh man --dir /usr/share/man/man1
