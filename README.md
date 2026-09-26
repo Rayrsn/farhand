@@ -54,10 +54,6 @@ Logs stream directly into your terminal in real time, and build artifacts (like 
 ## Why Farhand?
 
 | Feature | Farhand (`fh`) | `ssh` + `rsync` scripts | Remote Desktop / SSH VSCode |
-
-> Comparing only against DIY scripts and remote desktops undersells both.
-> The honest comparison — including where [mutagen, Remote-SSH, and
-> `cargo-remote` are the better choice](docs/comparison.md) — is in the docs.
 | :--- | :---: | :---: | :---: |
 | **No External System Binaries** | **Yes** (pure static Rust) | No (requires `rsync`, `ssh`, `tar`) | No (heavy daemon) |
 | **Zstandard (zstd) Wire Compression** | **Yes** (negotiated, 3–5x faster) | No (gzip or none) | N/A |

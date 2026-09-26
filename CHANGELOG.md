@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-09-26
+
 ### Added
 - **`fh sync` / `fh why` — see exactly what crosses the wire.** A build reports
   its sync as a side effect; these make the transfer the subject.
@@ -25,15 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - The daemon now treats a client that stops after NEED (a dry run) or after
     FILES (a sync with no command) as a completed session instead of logging a
     protocol error.
-- **[An honest competitive comparison](docs/comparison.md)**: against mutagen,
-  Remote-SSH, `cargo-remote`, and rsync scripts — including a section on where
-  each of those is the better tool, and a maturity note that admits the
-  Windows support is recent and adoption is small.
 - **Nix packaging**: a `flake.nix` exposing `fh` and `fhd` plus a dev shell
   with `rust-analyzer`, `cargo-audit`, and `cargo-deny`, and a `default.nix` for
-  non-flake consumers. Not evaluated in this repository's CI (no Nix
-  available), so treat it as unverified until someone runs `nix flake check`
-  once.
+  non-flake consumers. Both read the version from `Cargo.toml` rather than
+  carrying a copy that can go stale.
 - **crates.io publishing is ready**: the crates publish under the `farhand-*`
   namespace (the name `farhand` is taken on crates.io by an unrelated project)
   while the executables remain `fh` and `fhd`. See CONTRIBUTING.md for the
@@ -85,6 +82,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   synced and no run slot is used; the only remote traffic is the same STATUS
   request `fh top` makes. Exits 125 when something is actually broken, so it is
   usable from a script.
+
+### Fixed
+- **`brew install farhand` served v1.7.0 while v1.8.0 and v1.8.1 had shipped.**
+  The formula's URLs interpolate its own version, so it quietly pointed at
+  1.7.0's artifacts with a version string that matched its own checksum — no
+  error, just old binaries, including the Windows stack overflow that made the
+  client crash before printing its version. Bumped to 1.8.1 with checksums read
+  from the published `.sha256` files. A nightly job now compares the formula
+  against the latest release so this cannot go unnoticed again.
+- **`fh --help` described `sync` as "Clean remote project workspaces or
+  caches."** The subcommand had been inserted between `Clean` and its doc
+  comment, so clap attached the wrong description. Each subcommand now carries
+  its own, and two tests assert none is undocumented or described as another
+  command.
+- **The Prometheus endpoint emitted duplicate `# HELP`/`# TYPE` pairs** for the
+  load-average family, which is a scrape-time parse error rather than a
+  cosmetic one. An exposition builder now declares each family exactly once,
+  and label values escape quotes, backslashes, and newlines — a project name
+  comes from a directory name, and Unix allows newlines in those.
 
 ## [1.8.1] - 2026-09-26
 
@@ -341,7 +357,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Run observability (`fh history`) and packaging/distribution (release workflow, Homebrew, install scripts, systemd/launchd units)
 - APFS Copy-on-Write workspace branching, two-tier LRU + emergency disk GC, `fh clean`
 
-[Unreleased]: https://github.com/Rayrsn/farhand/compare/v1.8.1...HEAD
+[Unreleased]: https://github.com/Rayrsn/farhand/compare/v1.9.0...HEAD
+[1.9.0]: https://github.com/Rayrsn/farhand/compare/v1.8.1...v1.9.0
 [1.8.1]: https://github.com/Rayrsn/farhand/compare/v1.8.0...v1.8.1
 [1.8.0]: https://github.com/Rayrsn/farhand/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/Rayrsn/farhand/compare/v1.6.0...v1.7.0
