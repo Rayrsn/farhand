@@ -21,7 +21,7 @@ esac
 TARGET="${TARGET:-${ARCH}-${OS}}"
 
 echo "Building release binaries for target: ${TARGET}..."
-cargo build --release -p fh -p fhd
+cargo build --release -p farhand-cli -p farhand-agent
 
 RELEASE_DIR="${ROOT_DIR}/dist/releases/v${VERSION}"
 mkdir -p "${RELEASE_DIR}"

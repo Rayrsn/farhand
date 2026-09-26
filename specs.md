@@ -325,7 +325,7 @@ farhand/
 ### Phase 2 — Minimal end-to-end (no delta, no presets)
 - `crates/fhd`: Async TCP listener on Tokio, `HELLO`/`HELLO_ACK` token validation, receive full `FILES` tar.gz, extract to temporary directory, spawn command with `tokio::process::Command`, stream live `LOG` frames, send `RESULT`.
 - `crates/fh`: Dial agent, handshake, pack full directory into `FILES`, send `RUN`, stream `LOG` to stdout/stderr, return remote exit code.
-- **Acceptance:** `cargo run -p fh -- --host 127.0.0.1:9876 --token secret -- echo "pipe works"` streams output live and exits cleanly.
+- **Acceptance:** `cargo run -p farhand-cli -- --host 127.0.0.1:9876 --token secret -- echo "pipe works"` streams output live and exits cleanly.
 
 ### Phase 3 — Persistent workspaces + delta sync
 - `crates/workspace`: Deterministic workspace directory hashing (`~/.farhand/workspaces/<project>-<hash>/`).

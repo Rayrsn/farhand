@@ -38,6 +38,36 @@ jobs:
       - name: Run Workspace Tests
         run: cargo test --workspace --verbose
 
+  # The install and packaging scripts are how most people install farhand, and
+  # nothing executes them: a package rename left `-p fh -p fhd` in
+  # dist/package_release.sh and a stale name check in install.sh, and both sat
+  # unnoticed because the scripts are never run. `bash -n` is the cheapest gate
+  # that at least refuses a broken script.
+  scripts:
+    name: Shell scripts (syntax)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Every shell script must parse
+        run: |
+          set -euo pipefail
+          for script in scripts/*.sh dist/*.sh; do
+            echo "checking ${script}"
+            bash -n "${script}"
+          done
+
+      - name: The install script's source fallback must be reachable
+        run: |
+          # install.sh falls back to building from a local checkout when no
+          # release tarball is reachable. That fallback is guarded by a shell
+          # condition, so nothing but executing it proves the guard still
+          # matches this repository's layout.
+          test -f crates/fh/Cargo.toml
+          test -f crates/fhd/Cargo.toml
+          test -f Cargo.toml
+
   # The release ships musl binaries, but the test matrix only covers glibc,
   # macOS, and Windows. libc types differ between the two C libraries (e.g.
   # ioctl's request parameter is c_ulong on glibc and c_int on musl), so a

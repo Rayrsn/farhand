@@ -106,7 +106,10 @@ if [ "$DOWNLOADED" = "true" ]; then
   cp -f "$FHD_BIN" "${INSTALL_DIR}/fhd"
 else
   # Fallback: check if local cargo workspace is present
-  if [ -f "Cargo.toml" ] && grep -q 'name = "fh"' crates/fh/Cargo.toml 2>/dev/null; then
+  # Detect a farhand source checkout by its layout, not by a package name: the
+  # published crate names (farhand-cli / farhand-agent) are not the directory
+  # names, and a name-based check rots the next time either one changes.
+  if [ -f "Cargo.toml" ] && [ -f "crates/fh/Cargo.toml" ] && [ -f "crates/fhd/Cargo.toml" ]; then
     echo "Release tarball not found online. Building from local source via cargo..."
     cargo build --release -p farhand-cli -p farhand-agent
     cp -f target/release/fh "${INSTALL_DIR}/fh"
