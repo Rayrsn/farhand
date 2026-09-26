@@ -100,11 +100,30 @@ done
 
 `cargo publish --dry-run` only fully succeeds for crates whose dependencies
 are already published, so expect `no matching package named farhand-protocol
-found` for everything after the first until the chain exists. That is the
-expected pre-publish state, not a packaging defect.
+found` for everything after the first until the chain exists. That is
+expected, not a packaging defect.
+
+**crates.io rate-limits new crates per time window.** Publishing a new version
+of an already-published crate is not affected, but the *first* publish of each
+crate is. If you hit `429 Too Many Requests`, wait for the timestamp the error
+gives you and resume from the crate that failed — the ones before it are
+already live and must not be re-published.
 
 The release workflow builds the binaries from the tag; publishing is
 deliberately a separate, manual step so a bad package cannot ship on its own.
+
+### Traps that cost a whole chain
+
+- **An `include_str!` must not reach above its own crate directory.** Cargo
+  packages only the files under the crate, then verifies by building that
+  tarball. A crate that reads a repository-level file compiles fine in-tree and
+  passes every test, then fails for every user who installs it. The builtin
+  templates used to live in a root-level `templates/` and would have broken
+  exactly this way; a test in `farhand-templates` now prevents it.
+- **`cargo install` takes crate names, not binary names.** The binaries are `fh`
+  and `fhd`; the packages are `farhand-cli` and `farhand-agent`.
+- **A published version is permanent.** It can be yanked but never deleted or
+  replaced, so a metadata mistake ships as-is until someone notices.
 
 ## Commit & PR Style
 
