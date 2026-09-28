@@ -36,7 +36,7 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings -D clippy::undocumented_unsafe_blocks
 
       - name: Run Workspace Tests
-        run: cargo test --workspace --verbose
+        run: cargo test --workspace --locked --verbose
 
   # The install and packaging scripts are how most people install farhand, and
   # nothing executes them: a package rename left `-p fh -p fhd` in
@@ -94,7 +94,7 @@ jobs:
           key: musl
 
       - name: Type-check workspace for musl
-        run: cargo check --workspace --all-targets --target x86_64-unknown-linux-musl
+        run: cargo check --workspace --all-targets --target x86_64-unknown-linux-musl --locked
 
   # Windows gives the main thread a 1 MiB stack; Linux gives it 8 MiB. Both
   # binaries used to need more than 1 MiB before doing any work, so on Windows
@@ -115,7 +115,7 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       - name: Build the binaries
-        run: cargo build -p farhand-cli -p farhand-agent
+        run: cargo build --locked -p farhand-cli -p farhand-agent
 
       - name: Both binaries must run within a 1 MiB stack
         run: |
@@ -137,10 +137,10 @@ jobs:
           components: clippy, rustfmt
 
       - name: Check workspace compiles on MSRV
-        run: cargo check --workspace --all-targets
+        run: cargo check --workspace --all-targets --locked
 
       - name: Run library tests on MSRV
-        run: cargo test --workspace --lib
+        run: cargo test --workspace --lib --locked
 
   coverage:
     name: Coverage
@@ -193,3 +193,75 @@ jobs:
         uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+
+  # The two binaries publish to crates.io as farhand-cli / farhand-agent, and
+  # CONTRIBUTING documents a manual publish order. A manual procedure is not a
+  # check: this repo carried path-dependency versions pinned a full minor
+  # behind the workspace (1.8 while the workspace was 1.9) and nothing noticed.
+  #
+  # A `cargo publish --dry-run` over every crate is NOT the fix, and this job
+  # previously was that. A crate cannot be dry-run until its intra-workspace
+  # dependency is actually on the registry, so on any version bump every
+  # non-leaf crate fails with "candidate versions found which didn't match" —
+  # a gate that is red by construction. What actually catches the drift is
+  # asserting the path-dependency versions match the workspace version, which
+  # is offline, instant, and runs on every PR.
+  packaging:
+    name: Packaging (path-dep versions)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+
+      - name: Every path dependency must carry the workspace version
+        run: |
+          set -euo pipefail
+          # Compared at major.minor, because a path dep is normally written
+          # `1.10` while the workspace says `1.10.0`. Those are the same
+          # requirement; a string compare would report drift on every release.
+          workspace_version="$(awk -F'"' '/^version = /{print $2; exit}' Cargo.toml | cut -d. -f1,2)"
+          echo "workspace version: ${workspace_version}"
+          failed=0
+          checked=0
+
+          # A line carrying both `version =` and `path =` is an
+          # intra-workspace reference. Its version becomes the published
+          # requirement, so it has to track the workspace version.
+          for manifest in crates/*/Cargo.toml fuzz/Cargo.toml; do
+            matches="$(grep 'path = ' "$manifest" | grep 'version = ' || true)"
+            [ -n "$matches" ] || continue
+            while IFS= read -r line; do
+              [ -n "$line" ] || continue
+              dep_version="$(printf '%s' "$line" | sed -n 's/.*version = "\([^"]*\)".*/\1/p' | cut -d. -f1,2)"
+              dep_name="$(printf '%s' "$line" | sed -n 's/^ *\([A-Za-z0-9_-]*\) *=.*/\1/p')"
+              checked=$((checked + 1))
+              if [ "$dep_version" != "$workspace_version" ]; then
+                echo "::error file=${manifest}::${dep_name} is pinned to ${dep_version} but the workspace is ${workspace_version}"
+                failed=1
+              fi
+            done <<< "$matches"
+          done
+
+          if [ "$checked" -eq 0 ]; then
+            echo "::error::found no path dependencies to check — the check is inert"
+            exit 1
+          fi
+          if [ "$failed" -ne 0 ]; then
+            echo "::error::path-dependency versions drifted from the workspace version"
+            exit 1
+          fi
+          echo "All ${checked} path dependencies track ${workspace_version}."
+
+      # Only the crates with no intra-workspace dependency can be dry-run
+      # without their siblings already being published.
+      - name: Dry-run the crates that have no path dependencies
+        run: |
+          set -euo pipefail
+          for crate in farhand-protocol farhand-config; do
+            echo "::group::$crate"
+            cargo publish --dry-run --locked -p "$crate"
+            echo "::endgroup::"
+          done

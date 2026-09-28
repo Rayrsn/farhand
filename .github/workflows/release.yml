@@ -53,14 +53,14 @@ jobs:
 
       - name: Install cross (if required)
         if: matrix.use_cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
+        run: cargo install cross --git https://github.com/cross-rs/cross --tag v0.2.5 --locked
 
       - name: Build release binaries
         run: |
           if [ "${{ matrix.use_cross }}" = "true" ]; then
             cross build --release --target ${{ matrix.target }} -p farhand-cli -p farhand-agent
           else
-            cargo build --release --target ${{ matrix.target }} -p farhand-cli -p farhand-agent
+            cargo build --release --target ${{ matrix.target }} --locked -p farhand-cli -p farhand-agent
           fi
         env:
           RUSTFLAGS: ${{ matrix.os == 'windows-latest' && '-C target-feature=+crt-static' || '' }}
@@ -80,6 +80,10 @@ jobs:
           [ -f "README.md" ] && cp "README.md" "${STAGE_DIR}/"
           [ -f "specs.md" ] && cp "specs.md" "${STAGE_DIR}/"
           [ -f "CHANGELOG.md" ] && cp "CHANGELOG.md" "${STAGE_DIR}/"
+          # MIT requires the licence text to travel with the distribution, and
+          # these live at the workspace root so nothing else stages them.
+          [ -f "LICENSE-MIT" ] && cp "LICENSE-MIT" "${STAGE_DIR}/"
+          [ -f "LICENSE-APACHE" ] && cp "LICENSE-APACHE" "${STAGE_DIR}/"
           [ -f "dist/services/fhd.service" ] && cp "dist/services/fhd.service" "${STAGE_DIR}/services/"
           [ -f "dist/services/com.farhand.fhd.plist" ] && cp "dist/services/com.farhand.fhd.plist" "${STAGE_DIR}/services/"
           tar -czf "${ARCHIVE_NAME}" "${STAGE_DIR}"
@@ -106,6 +110,8 @@ jobs:
           if (Test-Path "README.md") { Copy-Item "README.md" -Destination "$StageDir/" }
           if (Test-Path "specs.md") { Copy-Item "specs.md" -Destination "$StageDir/" }
           if (Test-Path "CHANGELOG.md") { Copy-Item "CHANGELOG.md" -Destination "$StageDir/" }
+          if (Test-Path "LICENSE-MIT") { Copy-Item "LICENSE-MIT" -Destination "$StageDir/" }
+          if (Test-Path "LICENSE-APACHE") { Copy-Item "LICENSE-APACHE" -Destination "$StageDir/" }
           Compress-Archive -Path $StageDir -DestinationPath $ArchiveName
           Copy-Item $ArchiveName -Destination $DirectName
           $Hash = (Get-FileHash -Algorithm SHA256 -Path $ArchiveName).Hash.ToLower()
