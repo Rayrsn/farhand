@@ -72,6 +72,7 @@ Logs stream directly into your terminal in real time, and build artifacts (like 
 - 🚀 **High-Speed Zstandard (zstd) Wire Compression**: Automatic handshake negotiation chooses `zstd` (level 3) for delta and artifact transfers, delivering 3–5× faster compression throughput than gzip with minimal CPU overhead.
 - 🗄️ **Global Content-Addressable Storage (CAS)**: Files with matching SHA-256 hashes are deduplicated globally on the agent host across all branches and projects, hydrated instantly via zero-copy CoW reflinks (`clonefile` on macOS / `FICLONE` ioctl on Linux). Zero-byte uploads for known files!
 - 📁 **Persistent Workspace Cache**: Remote dependencies (`node_modules/`, `target/`, `.venv/`) remain on the agent host across runs. Only changed source files are transferred.
+- ⚡ **Stat-Gated Warm Sync**: the agent keeps a digest index (`.farhand-hashindex.json`) in each workspace, so an unchanged build re-stats the tree instead of re-reading it. A warm no-op sync costs ~1.1 ms on a 320-file tree rather than a full re-hash. Cold scans hash in parallel across all cores.
 - 🍏 **Instant APFS Copy-on-Write (CoW) Forking**: When working across different branches on shared hosts, new branch workspaces are cloned from canonical seeds (`main`/`master`) in **< 100ms using 0 additional disk blocks**.
 - 🧹 **Automated Two-Tier LRU & Emergency GC**: Daemon automatically soft-prunes intermediate caches, performs pre-flight emergency GC when disk space is tight (`--min-disk-gb`), and evicts stale branch workspaces.
 - 👁️ **Continuous Watch Mode (`fh watch`)**: Automatically debounces local file changes, syncs source deltas, and re-triggers remote builds with zero manual intervention.
@@ -124,17 +125,19 @@ powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.c
 
 ---
 
-#### 📦 Pre-Built Release Packages (v1.7.0)
+#### 📦 Pre-Built Release Packages
 
-Pre-compiled static release packages and checksums are available on the [**Farhand v1.7.0 Release**](https://github.com/Rayrsn/farhand/releases/tag/v1.7.0):
+Pre-compiled static release packages, each published with a `.sha256`
+alongside it. These `latest` links always resolve to the newest release, so
+this table cannot go stale:
 
 | Platform | Architecture | Package Archive |
 | :--- | :--- | :--- |
-| **Linux** | x86_64 (64-bit) | [`farhand-v1.7.0-x86_64-unknown-linux-musl.tar.gz`](https://github.com/Rayrsn/farhand/releases/download/v1.7.0/farhand-v1.7.0-x86_64-unknown-linux-musl.tar.gz) |
-| **Linux** | aarch64 (ARM64) | [`farhand-v1.7.0-aarch64-unknown-linux-musl.tar.gz`](https://github.com/Rayrsn/farhand/releases/download/v1.7.0/farhand-v1.7.0-aarch64-unknown-linux-musl.tar.gz) |
-| **macOS** | Apple Silicon (M1/M2/M3/M4) | [`farhand-v1.7.0-aarch64-apple-darwin.tar.gz`](https://github.com/Rayrsn/farhand/releases/download/v1.7.0/farhand-v1.7.0-aarch64-apple-darwin.tar.gz) |
-| **macOS** | Intel x86_64 | [`farhand-v1.7.0-x86_64-apple-darwin.tar.gz`](https://github.com/Rayrsn/farhand/releases/download/v1.7.0/farhand-v1.7.0-x86_64-apple-darwin.tar.gz) |
-| **Windows** | x86_64 (Standalone Static) | [`farhand-v1.7.0-x86_64-pc-windows-msvc.zip`](https://github.com/Rayrsn/farhand/releases/download/v1.7.0/farhand-v1.7.0-x86_64-pc-windows-msvc.zip) |
+| **Linux** | x86_64 (64-bit) | [`farhand-x86_64-unknown-linux-musl.tar.gz`](https://github.com/Rayrsn/farhand/releases/latest/download/farhand-x86_64-unknown-linux-musl.tar.gz) |
+| **Linux** | aarch64 (ARM64) | [`farhand-aarch64-unknown-linux-musl.tar.gz`](https://github.com/Rayrsn/farhand/releases/latest/download/farhand-aarch64-unknown-linux-musl.tar.gz) |
+| **macOS** | Apple Silicon (M1/M2/M3/M4) | [`farhand-aarch64-apple-darwin.tar.gz`](https://github.com/Rayrsn/farhand/releases/latest/download/farhand-aarch64-apple-darwin.tar.gz) |
+| **macOS** | Intel x86_64 | [`farhand-x86_64-apple-darwin.tar.gz`](https://github.com/Rayrsn/farhand/releases/latest/download/farhand-x86_64-apple-darwin.tar.gz) |
+| **Windows** | x86_64 (Standalone Static) | [`farhand-x86_64-pc-windows-msvc.zip`](https://github.com/Rayrsn/farhand/releases/latest/download/farhand-x86_64-pc-windows-msvc.zip) |
 
 ---
 
@@ -353,12 +356,12 @@ reproduction steps in **[BENCHMARKS.md](BENCHMARKS.md)**:
 
 | Metric | Result |
 | :--- | ---: |
-| Delta tar pack, zstd-3 vs gzip (2.4 MiB payload) | **77 ms vs 322 ms → 4.2× faster** |
-| Delta tar unpack, zstd vs gzip | **19 ms vs 60 ms → 3.1× faster** |
-| Scan + SHA-256 hash, 320 files (~2.4 MiB) | **7.3 ms** |
+| Delta tar pack, zstd-3 vs gzip (2.4 MiB payload) | **74 ms vs 312 ms → 4.2× faster** |
+| Delta tar unpack, zstd vs gzip | **18 ms vs 57 ms → 3.1× faster** |
+| Scan + SHA-256 hash, 320 files (~2.4 MiB) | **3.1 ms** (parallel across cores) |
+| Warm sync of an unchanged workspace | **1.1 ms** — stats only, reads no file content |
 | CAS hydration (CoW reflink), 256 KiB file | **~24 µs** (flat vs payload size) |
 | Workspace branch clone (CoW, 100-file tree) | **~4 ms** |
-| Manifest diff, warm workspace (nothing changed) | **~1.1 ms** |
 
 Reproduce: `scripts/run_benchmarks.sh` regenerates `BENCHMARKS.md` from
 criterion's saved estimates.

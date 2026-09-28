@@ -14,8 +14,6 @@ fh --host tunnel.example.com:443 --token mysecret -- cargo build --release
 ```
 
 The remote machine only needs the `fhd` binary running
-and a port reachable — either directly on the LAN, or tunneled in from
-the internet via `ssh -L`/`-R` or `cloudflared tunnel`. The remote machine only needs the `fhd` binary running
 and a port reachable — either directly on the LAN, over a private network
 (Tailscale/WireGuard), or tunneled in from the internet via `ssh -L` or
 `cloudflared tunnel`. TLS is built in (`rustls`): `fhd --tls-auto` can

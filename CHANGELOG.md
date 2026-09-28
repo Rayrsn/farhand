@@ -7,7 +7,101 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **The agent no longer re-hashes the whole workspace on every request.** Every
+  delta sync re-scanned the remote tree and re-read every byte of it, so a
+  warm no-op sync was O(total workspace bytes) — the largest latency cost in
+  the product, and entirely avoidable. `fileset::scan` now walks and stats
+  first, then hashes only what changed, and the digests are persisted to a
+  `.farhand-hashindex.json` in the workspace root. A warm sync is now
+  stat-only. Reuse is gated on `(size, mtime, change token)`: the kernel change
+  time is included because a `(size, mtime)` gate is blind to a same-size
+  overwrite with a preserved mtime, which is precisely what `rsync -a`, `tar
+  -p`, and `cp -p` produce. The remaining hole in the gate — a modification
+  landing in the same filesystem timestamp tick as the cached `stat` — is
+  closed with git's "racily clean" rule: any entry whose mtime is not strictly
+  older than the moment the index was written is re-hashed.
+- **The change token works on Windows too.** `std::os::windows::fs::MetadataExt`
+  exposes no change time on stable, so a straight port of the gate would have
+  silently degraded to `(size, mtime)` there — and Windows is exactly where
+  `robocopy` and archive extraction preserve timestamps. The agent now reads
+  the NTFS change time through `GetFileInformationByHandleEx`, which the
+  filesystem maintains and `SetFileTime` cannot forge. It costs one
+  `CreateFileW` per file requesting only `FILE_READ_ATTRIBUTES` with full
+  sharing, so it neither blocks nor is blocked by a concurrent build. The
+  probe lives in `workspace::change_token` because `fileset` is
+  `#![forbid(unsafe_code)]`; `workspace` already carries the audited-FFI
+  pattern used by the CoW and `statvfs` sites. The `windows-sys` dependency is
+  target-gated to Windows and pulls in no new crates on other platforms.
+- **Cold scans hash in parallel.** The walk and the hashing are now separate
+  phases, and the hashing phase runs across all cores via `rayon`.
+- **`bench_scan_stat_gate` and `bench_hash_file`.** The existing
+  `scan_and_hash_320_files` blended traversal with SHA-256 and could not
+  attribute a regression to either. The new pair isolates hashing from
+  walking, and puts a stat-only scan next to a full re-hash so the gate's
+  effect is a number rather than a claim.
+
 ### Fixed
+- **The Homebrew formula shipped a published token.** `Formula/farhand.rb`
+  carried a `service do` block that started `fhd --listen 0.0.0.0:9876` with
+  `FARHAND_TOKEN: "replace-with-your-token"`, so a plain
+  `brew services start farhand` produced an agent on all interfaces whose only
+  credential was readable in this repository — and an fhd token authorises
+  arbitrary command execution in every workspace. The `service` block is gone:
+  a formula service starts with no prompt and no way to supply a secret, so
+  any token baked into it is a published one. The daemon now also refuses its
+  own documentation placeholders outright, which covers the launchd plist,
+  hand-written units, and anything copy-pasted from the README.
+- **Non-UTF-8 build output silently truncated the log.** Both non-PTY paths
+  used `AsyncBufReadExt::lines()`, which returns `Err` on invalid UTF-8 — and
+  `while let Ok(Some(line))` treats that as end-of-stream, so one bad byte from
+  a compiler discarded the rest of the output with no error anywhere. The
+  reader now splits fixed-size chunks on `\n` and decodes lossily, and holds no
+  more than 64 KiB for a line, so a child emitting one enormous unterminated
+  line can no longer exhaust the agent's memory.
+- **GC could delete a workspace with an active run.** Locks are keyed by the
+  client's project name, but GC compared the on-disk *directory* name, which
+  `resolve_workspace_dir` sanitises and hash-suffixes. The check could never
+  match, so the documented "never destroy a running build" guarantee was
+  silently false. The project name is now persisted in the workspace state
+  file and read back by `scan_workspaces`; the same bug affected `fh clean`.
+  The existing test passed a predicate matching the *directory* name, which is
+  why it never caught this.
+- **An ignored path was re-uploaded on every run.** The client scans with no
+  extra ignores while the agent scans with the template's `ignoreExtra`, so a
+  file present in both trees was missing from the agent's scan, fell into the
+  "not present" arm of the diff, uploaded, stayed excluded from the next scan,
+  and was uploaded again — a sync that never reaches zero bytes. The agent now
+  skips any path its own ignore rules exclude.
+- **`fh lsp` always exited 0.** The remote language server's exit code was bound
+  to a variable, the statement dropped, and `Ok(0)` returned, so an editor was
+  told the server had exited cleanly even when it crashed.
+- **`install.sh` installed unverified binaries, and could install the wrong
+  ones.** It never checked the SHA-256 it publishes beside every release, and
+  if the download failed it silently `cargo build`ed whatever was in the
+  current directory and installed that as Farhand. It now verifies the
+  published checksum and refuses to install without it, and the implicit
+  build-whatever-is-here fallback is gone with a pointer to `cargo install`.
+- **Agent bookkeeping could ship back as a build artifact.**
+  `.farhand-state.json`, `.farhand-runs/`, and the new digest index live at the
+  workspace root, so an output pattern broad enough to cover the root streamed
+  them to the client. `resolve_artifact_paths` now excludes them.
+- **`release.yml` built with an unpinned `cross` and no `--locked`.** The
+  release pipeline installed `cross` from `main`, contradicting this
+  repository's own `unknown-git = "deny"`, and no build passed `--locked`, so
+  the committed lockfile — and the RustSec audit of it — was advisory rather
+  than binding. `cross` is pinned to a tag and every build, test, and bench
+  now uses `--locked`. A new CI job asserts every path dependency carries the
+  workspace version, which is what lets the lockfile be trusted.
+- **`specs.md` shipped a duplicated, cut-off paragraph** inside the release
+  tarball, **`CONTRIBUTING.md` still described nightly fuzzing as advisory**
+  with a diagnosis the changelog records as wrong and fixed, and
+  **`LICENSE-MIT` / `LICENSE-APACHE` were not packaged** into any artifact.
+- **`README.md`'s install table pointed at v1.7.0** artifacts while the crate
+  was at 1.9.0, and **`SECURITY.md` listed `1.7.x` as supported**, so a visitor
+  installed three releases of bugs and a current reporter was told their
+  version was unsupported. The table now uses `releases/latest` links, which
+  cannot go stale.
 - **The nightly fuzz job now runs.** It had been red on every nightly run for
   weeks and was annotated as unfixable from a workflow, which was wrong on both
   counts. Three separate causes: `--build-std` compiles `compiler_builtins` with

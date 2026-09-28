@@ -7,8 +7,9 @@ security updates.
 
 | Version | Supported |
 | :--- | :--- |
-| 1.7.x | ✅ |
-| < 1.7 | ❌ (upgrade) |
+| 1.10.x (latest) | ✅ |
+| 1.9.x | ❌ (upgrade) |
+| < 1.9 | ❌ (upgrade) |
 
 ## Reporting a Vulnerability
 

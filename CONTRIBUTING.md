@@ -178,11 +178,18 @@ Committed seed corpora (`fuzz/corpus/*/seed_*`) encode known attack vectors
 corpora are gitignored. Add `--build-std` when running on a toolchain that
 requires an instrumented standard library.
 
-Fuzzing runs nightly on CI as an **advisory** job (10 minutes per target).
-It cannot gate a PR because the hosted runner links the CRT statically, which
-libFuzzer refuses — that is a runner limitation, not a property of the
-targets, and the same commands run clean locally. The per-PR fuzz coverage
-comes from the fuzz-lite property tests in the 3-OS test matrix instead.
+Fuzzing runs nightly on CI as a **blocking** job for that workflow. It is
+deliberately not a PR gate — a nightly fuzzer gates nothing downstream, so a
+failure there is information rather than noise — but it is no longer
+`continue-on-error`. The earlier note here claimed the job was red forever
+because "the hosted runner links the CRT statically, which libFuzzer refuses";
+that diagnosis was wrong. It had three independent causes, all fixed: the
+`--build-std` build compiles `compiler_builtins` with `crt-static`, which
+libFuzzer's sanitizer rejects (rustc names the fix in the error), `musl-tools`
+was missing for the C shims, and `cc-rs` was reaching for a musl C++ toolchain
+on a glibc runner, so the target triple is now pinned. See the job comment in
+`.github/workflows/nightly.yml`. Per-PR fuzz coverage comes from the fuzz-lite
+property tests in the 3-OS test matrix.
 
 ## Testing Expectations
 
