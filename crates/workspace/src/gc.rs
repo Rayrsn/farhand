@@ -26,6 +26,13 @@ pub struct CasGcReport {
 pub struct WorkspaceMetadata {
     pub path: PathBuf,
     pub name: String,
+    /// The project name this workspace serves, as the client spells it.
+    ///
+    /// This is *not* `name`: `name` is the on-disk directory, which is
+    /// sanitised and hash-suffixed. Locks are keyed by the client's project
+    /// name, so the lock predicate must be given this field. Passing `name`
+    /// made every lock check silently false.
+    pub project: String,
     pub last_used_at: SystemTime,
     pub size_bytes: u64,
     pub is_canonical: bool,
@@ -148,9 +155,19 @@ pub fn scan_workspaces(workspaces_root: &Path) -> Vec<WorkspaceMetadata> {
                 || file_name.contains(":main")
                 || file_name.contains(":master");
 
+            // Prefer the project name recorded when the workspace was last
+            // used; fall back to the directory name for workspaces created
+            // before this field existed, which is the pre-fix behaviour and
+            // therefore no worse.
+            let project = read_state(&path)
+                .map(|s| s.project)
+                .filter(|p| !p.is_empty())
+                .unwrap_or_else(|| file_name.clone());
+
             workspaces.push(WorkspaceMetadata {
                 path,
                 name: file_name,
+                project,
                 last_used_at: last_used,
                 size_bytes: size,
                 is_canonical,
@@ -182,7 +199,7 @@ pub fn run_garbage_collection(
     if let Some(ttl_dur) = ttl {
         workspaces.retain(|ws| {
             if !ws.is_canonical {
-                if skip_locked(&ws.name) {
+                if skip_locked(&ws.project) {
                     debug!("GC: skipping locked workspace {} (active run)", ws.name);
                     return true;
                 }
@@ -219,7 +236,7 @@ pub fn run_garbage_collection(
                 if current_usage <= max_bytes {
                     break;
                 }
-                if !ws.is_canonical && !skip_locked(&ws.name) {
+                if !ws.is_canonical && !skip_locked(&ws.project) {
                     let trimmed = trim_workspace_caches(&ws.path);
                     report.caches_trimmed_bytes += trimmed;
                     current_usage = current_usage.saturating_sub(trimmed);
@@ -232,7 +249,7 @@ pub fn run_garbage_collection(
                 if current_usage <= max_bytes {
                     break;
                 }
-                if !ws.is_canonical && !skip_locked(&ws.name) {
+                if !ws.is_canonical && !skip_locked(&ws.project) {
                     info!(
                         "Quota exceeded. Purging LRU workspace {} (size {} bytes)...",
                         ws.path.display(),
@@ -275,7 +292,7 @@ pub fn run_emergency_disk_gc(
         if freed_bytes >= target_bytes_to_free {
             break;
         }
-        if !ws.is_canonical && !skip_locked(&ws.name) {
+        if !ws.is_canonical && !skip_locked(&ws.project) {
             let trimmed = trim_workspace_caches(&ws.path);
             report.caches_trimmed_bytes += trimmed;
             freed_bytes += trimmed;
@@ -288,7 +305,7 @@ pub fn run_emergency_disk_gc(
         if freed_bytes >= target_bytes_to_free {
             break;
         }
-        if !ws.is_canonical && !skip_locked(&ws.name) {
+        if !ws.is_canonical && !skip_locked(&ws.project) {
             info!(
                 "Emergency GC: Purging LRU workspace {} (size {} bytes)...",
                 ws.path.display(),
@@ -458,6 +475,79 @@ mod tests {
 
         assert_eq!(report.workspaces_deleted, 0);
         assert!(feat_ws.exists(), "locked workspace must survive GC");
+    }
+
+    /// Reproduces the production wiring, which the test above does not.
+    ///
+    /// The daemon does not hand GC a name predicate — it hands it a `HashSet`
+    /// of *client project names* taken from `locked_projects()`. The test above
+    /// instead matched on the on-disk directory name, so it passed while the
+    /// real check compared `my-repo:feat1` against `my-repo__feat1-87654321`,
+    /// never matched, and let GC delete workspaces out from under live runs.
+    #[test]
+    fn test_gc_lock_check_matches_the_project_name_not_the_directory() {
+        let temp = tempdir().unwrap();
+        let root = temp.path();
+
+        // Directory name is sanitised and hash-suffixed, as resolve_workspace_dir
+        // produces it.
+        let feat_ws = root.join("my-repo__feat1-87654321");
+        fs::create_dir_all(&feat_ws).unwrap();
+        fs::write(feat_ws.join("data.bin"), vec![0u8; 2000]).unwrap();
+
+        // The workspace records the name the client actually used.
+        write_state(
+            &feat_ws,
+            &crate::state::WorkspaceState {
+                version: 1,
+                last_success_lockfile_hash: String::new(),
+                last_installed_at: SystemTime::now(),
+                template: "npm".to_string(),
+                project: "my-repo:feat1".to_string(),
+            },
+        )
+        .unwrap();
+
+        // Exactly what fhd passes: a set of locked *project* names.
+        let locked: std::collections::HashSet<String> =
+            ["my-repo:feat1".to_string()].into_iter().collect();
+
+        let report = run_garbage_collection(root, Some(500), None, &|name| locked.contains(name));
+
+        assert_eq!(report.workspaces_deleted, 0, "GC deleted a live workspace");
+        assert!(
+            feat_ws.exists(),
+            "a workspace with an active run was evicted by quota"
+        );
+    }
+
+    /// The negative control for the test above: with nothing locked, the very
+    /// same setup must be evicted. Without this, a GC that ignored locks
+    /// entirely would also pass.
+    #[test]
+    fn test_gc_still_evicts_when_no_run_holds_the_lock() {
+        let temp = tempdir().unwrap();
+        let root = temp.path();
+
+        let feat_ws = root.join("my-repo__feat1-87654321");
+        fs::create_dir_all(&feat_ws).unwrap();
+        fs::write(feat_ws.join("data.bin"), vec![0u8; 2000]).unwrap();
+        write_state(
+            &feat_ws,
+            &crate::state::WorkspaceState {
+                version: 1,
+                last_success_lockfile_hash: String::new(),
+                last_installed_at: SystemTime::now(),
+                template: "npm".to_string(),
+                project: "my-repo:feat1".to_string(),
+            },
+        )
+        .unwrap();
+
+        let report = run_garbage_collection(root, Some(500), None, &|_| false);
+
+        assert_eq!(report.workspaces_deleted, 1);
+        assert!(!feat_ws.exists());
     }
 
     #[test]

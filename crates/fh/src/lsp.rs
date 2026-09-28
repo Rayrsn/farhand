@@ -356,16 +356,19 @@ pub async fn run_lsp(
         }
     });
 
-    tokio::select! {
-        code = stdout_task => {
-            code.unwrap_or(0)
-        }
-        _ = stdin_task => {
-            0
-        }
+    // The remote exit code is the answer to "did the language server die?", so
+    // it must reach the caller. The old code bound it to `code`, dropped the
+    // statement on the floor, and returned `Ok(0)` — so an editor that
+    // launched `fh lsp` was told the server had exited cleanly even when it
+    // crashed with code 2.
+    let remote_exit = tokio::select! {
+        code = stdout_task => code.unwrap_or(0),
+        // stdin ended first: the editor closed the pipe, which is a normal
+        // shutdown rather than a failure.
+        _ = stdin_task => 0,
     };
 
-    Ok(0)
+    Ok(remote_exit)
 }
 
 #[cfg(test)]

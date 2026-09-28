@@ -125,6 +125,23 @@ pub fn resolve_artifact_paths(
     resolved_paths
 }
 
+/// Whether any component of a relative path is agent bookkeeping.
+///
+/// These files sit at the workspace root alongside the project, so an output
+/// pattern broad enough to cover the root — `outputs: ["."]`, or a directory
+/// that happens to contain them — would otherwise stream them to the client as
+/// build artifacts. They are not project files and the client cannot use them;
+/// the largest, `.farhand-hashindex.json`, also scales with the project's file
+/// count.
+///
+/// Checked per component rather than as a prefix so it holds for nested
+/// entries too, not only ones at the root.
+fn is_agent_internal(rel_path: &str) -> bool {
+    rel_path
+        .split('/')
+        .any(|c| c == crate::state::STATE_FILENAME || c.starts_with(".farhand-"))
+}
+
 fn is_artifact_ignored(rel_str: &str, output_ignores: &[String]) -> bool {
     let clean = rel_str.trim().trim_matches('/');
     if clean.is_empty() {
@@ -205,6 +222,13 @@ fn add_path_or_dir(
                     continue;
                 }
 
+                if is_agent_internal(&rel_str) {
+                    if entry.file_type().is_dir() {
+                        it.skip_current_dir();
+                    }
+                    continue;
+                }
+
                 if is_artifact_ignored(&rel_str, output_ignores) {
                     if entry.file_type().is_dir() {
                         it.skip_current_dir();
@@ -217,7 +241,10 @@ fn add_path_or_dir(
         }
     } else if let Ok(rel) = canonical_target.strip_prefix(canonical_root) {
         let rel_str = rel.to_string_lossy().replace('\\', "/");
-        if !rel_str.is_empty() && !is_artifact_ignored(&rel_str, output_ignores) {
+        if !rel_str.is_empty()
+            && !is_agent_internal(&rel_str)
+            && !is_artifact_ignored(&rel_str, output_ignores)
+        {
             out.push(rel_str);
         }
     }
@@ -307,6 +334,39 @@ mod tests {
 
         let paths = resolve_artifact_paths(root, Some(&["out/*.log".to_string()]), None);
         assert_eq!(paths, vec!["out/test1.log", "out/test2.log"]);
+    }
+
+    /// Agent bookkeeping sits at the workspace root, so an output pattern that
+    /// covers it used to stream it back to the client as a build artifact.
+    /// These are not project files and the client cannot use them.
+    #[test]
+    fn test_agent_internal_state_is_never_returned_as_an_artifact() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+
+        // A real artifact, which must still be returned.
+        let pkg = root.join("pkg");
+        fs::create_dir_all(&pkg).unwrap();
+        fs::write(pkg.join("app.txt"), b"real").unwrap();
+
+        // Agent-internal state sitting alongside it, which must not.
+        fs::write(pkg.join(fileset::HASH_INDEX_FILENAME), b"{}").unwrap();
+        fs::write(pkg.join(crate::state::STATE_FILENAME), b"{}").unwrap();
+        fs::create_dir_all(pkg.join(".farhand-runs")).unwrap();
+        fs::write(pkg.join(".farhand-runs/run.json"), b"{}").unwrap();
+
+        let paths = resolve_artifact_paths(root, Some(&["pkg".to_string()]), None);
+
+        assert!(
+            paths.contains(&"pkg/app.txt".to_string()),
+            "the real artifact was filtered: {paths:?}"
+        );
+        assert!(
+            !paths
+                .iter()
+                .any(|p| p.contains(".farhand-") || p.contains(".json")),
+            "agent-internal state leaked into the artifact set: {paths:?}"
+        );
     }
 
     #[test]

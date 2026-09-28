@@ -16,6 +16,14 @@ pub struct WorkspaceState {
     #[serde(rename = "lastInstalledAt")]
     pub last_installed_at: SystemTime,
     pub template: String,
+    /// The project name the client used, e.g. `my-repo:feat/payments`.
+    ///
+    /// The workspace *directory* name is sanitised and hash-suffixed
+    /// (`my-repo__feat-payments-1a2b3c4d`), so the original cannot be
+    /// recovered from it. Locks are keyed by this raw name, so GC and CLEAN
+    /// have to read it back from here or their lock check can never match.
+    #[serde(default)]
+    pub project: String,
 }
 
 fn default_version() -> u32 {
@@ -123,6 +131,7 @@ mod tests {
             last_success_lockfile_hash: "abcd1234ef".to_string(),
             last_installed_at: SystemTime::now(),
             template: "npm".to_string(),
+            project: "my-repo:feat/payments".to_string(),
         };
 
         write_state(dir.path(), &state).unwrap();
@@ -133,5 +142,6 @@ mod tests {
             state.last_success_lockfile_hash
         );
         assert_eq!(loaded.template, state.template);
+        assert_eq!(loaded.project, state.project);
     }
 }

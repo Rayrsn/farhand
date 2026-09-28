@@ -275,7 +275,7 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
             for ws in workspaces {
                 if !ws.is_canonical && ws.name.starts_with(base_name) {
                     // Never delete a workspace whose project is mid-run.
-                    if ctx.lock_manager.is_locked(&ws.name).await {
+                    if ctx.lock_manager.is_locked(&ws.project).await {
                         skipped_busy += 1;
                         continue;
                     }
@@ -1008,6 +1008,10 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
                 last_success_lockfile_hash: current_lock_hash.unwrap_or_default(),
                 last_installed_at: std::time::SystemTime::now(),
                 template: template.name.clone(),
+                // Locks are keyed by the client's project name and GC reads it
+                // back from here, so this is what makes the "never delete a
+                // workspace with an active run" check able to match at all.
+                project: hello.project.clone(),
             };
             if let Err(e) = workspace::state::write_state(&workspace_dir, &new_state) {
                 warn!("Failed to write workspace state: {}", e);

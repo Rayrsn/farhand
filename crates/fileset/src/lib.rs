@@ -8,6 +8,7 @@ pub mod scan;
 pub mod tar;
 
 pub use ignore::{is_default_ignored, IgnoreMatcher, IgnoreRule, DEFAULT_IGNORES};
+pub use scan::would_ignore;
 pub use scan::{
     explain_ignore, get_file_mode, hash_file, load_hash_cache, save_hash_cache, scan, scan_cached,
     scan_cached_with, ChangeToken, FileMeta, FilesetError, HashCache, ScanStats,

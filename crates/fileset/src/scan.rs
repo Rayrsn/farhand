@@ -110,6 +110,18 @@ pub fn explain_ignore(root: &Path, rel_path: &str, extra_ignores: &[String]) -> 
         .map(|pattern| format!("ignore rule: {pattern}"))
 }
 
+/// Whether a path is excluded by the same rules [`scan`] would apply.
+///
+/// Callers that need to know "would the agent's scan ever see this file?"
+/// must ask through here rather than testing a path against `extra_ignores`
+/// themselves: the ignore set is built from built-in defaults, `.gitignore`,
+/// `.farhand-ignore`, and the caller's patterns, and only the matcher built
+/// here is guaranteed to be the one the walk uses. This is the same reason
+/// [`explain_ignore`] shares [`build_matcher`] rather than re-deriving rules.
+pub fn would_ignore(root: &Path, rel_path: &str, is_dir: bool, extra_ignores: &[String]) -> bool {
+    build_matcher(root, extra_ignores).should_ignore(rel_path, is_dir)
+}
+
 /// Supplies a per-file change token: a value the kernel advances on every
 /// modification and that userspace cannot set back.
 ///

@@ -159,6 +159,17 @@ pub fn diff_manifests(
 
     let mut want = Vec::new();
     for (rel_path, client_entry) in &client_map {
+        // A path the agent's own ignore rules exclude is not a file the agent
+        // will ever scan, so it must never be requested. The client scans with
+        // no extra ignores while the agent scans with the template's
+        // `ignoreExtra`, so without this a path present in both trees is
+        // absent from `remote_files`, lands in the `None` arm below, uploads,
+        // is excluded from the next scan, and is requested again — every run,
+        // forever.
+        if fileset::would_ignore(workspace_root, rel_path, false, extra_ignores) {
+            continue;
+        }
+
         match remote_files.get(*rel_path) {
             Some(remote_meta) => {
                 if remote_meta.hash != client_entry.hash {
@@ -457,6 +468,78 @@ mod tests {
             vec!["file.txt"],
             "the cached digest masked a remote edit"
         );
+    }
+
+    /// A path the template ignores on the agent must never be requested, no
+    /// matter how many times the same manifest is replayed.
+    ///
+    /// The client scans with no extra ignores and the agent scans with the
+    /// template's `ignoreExtra`, so before this was fixed the file was absent
+    /// from `remote_files`, fell into the "not present" arm, was uploaded,
+    /// stayed excluded from the next scan, and was uploaded again on the next
+    /// run — a permanent re-upload that showed up as a sync which never
+    /// reaches zero bytes.
+    #[test]
+    fn test_ignored_path_is_never_requested_however_often_the_manifest_replays() {
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("ws");
+        fs::create_dir_all(&ws).unwrap();
+
+        // The file exists on the client and is in its manifest.
+        let client_side = dir.path().join("client");
+        fs::create_dir_all(&client_side).unwrap();
+        fs::write(client_side.join("build.log"), b"chatter").unwrap();
+
+        let manifest = ManifestPayload {
+            files: vec![FileEntry {
+                path: "build.log".into(),
+                hash: fileset::hash_file(&client_side.join("build.log")).unwrap(),
+                size: 7,
+                mode: 0o644,
+            }],
+        };
+
+        let ignored = vec!["*.log".to_string()];
+
+        // First run: the file is not on the agent and must not be requested.
+        let first = diff_manifests(&ws, &manifest, &ignored).unwrap();
+        assert!(
+            !first.want.contains(&"build.log".to_string()),
+            "an ignored path was requested: {:?}",
+            first.want
+        );
+
+        // Second run: nothing was uploaded, so the tree is unchanged and the
+        // answer must be identical. A regression here is what turned into an
+        // upload-forever loop.
+        let second = diff_manifests(&ws, &manifest, &ignored).unwrap();
+        assert_eq!(first.want, second.want, "the want set is not stable");
+        assert!(!second.want.contains(&"build.log".to_string()));
+    }
+
+    /// The negative control: a file the template does *not* ignore is still
+    /// transferred, so the fix cannot be satisfied by requesting nothing.
+    #[test]
+    fn test_unignored_new_file_is_still_requested() {
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("ws");
+        fs::create_dir_all(&ws).unwrap();
+
+        let client_side = dir.path().join("client");
+        fs::create_dir_all(&client_side).unwrap();
+        fs::write(client_side.join("main.rs"), b"fn main() {}").unwrap();
+
+        let manifest = ManifestPayload {
+            files: vec![FileEntry {
+                path: "main.rs".into(),
+                hash: fileset::hash_file(&client_side.join("main.rs")).unwrap(),
+                size: 12,
+                mode: 0o644,
+            }],
+        };
+
+        let diff = diff_manifests(&ws, &manifest, &["*.log".to_string()]).unwrap();
+        assert_eq!(diff.want, vec!["main.rs"]);
     }
 
     /// The blind spot a `(size, mtime)` gate cannot see, exercised through the

@@ -15,10 +15,95 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::Mutex;
 use tracing::warn;
+
+/// Longest single line forwarded before it is split across frames.
+///
+/// A build that emits one enormous line with no newline — a minified bundle, a
+/// base64 blob, a `cargo` diagnostic on a pathological path — must not be
+/// buffered whole in the agent's memory.
+const MAX_LOG_LINE: usize = 64 * 1024;
+
+/// Reads a child's output and yields one log payload per line.
+///
+/// `AsyncBufReadExt::lines()` is the obvious choice here and is wrong twice
+/// over. It returns `Err` on invalid UTF-8, so `while let Ok(Some(line))`
+/// *ends the loop* — one non-UTF-8 byte from a compiler and the rest of the
+/// build's output is silently discarded, with no error anywhere. And it
+/// buffers without bound, so a child emitting a 1 GiB line with no newline
+/// exhausts the agent's memory.
+///
+/// Reading fixed-size chunks and splitting on `\n` fixes both: invalid bytes
+/// become U+FFFD instead of ending the stream, and no more than `MAX_LOG_LINE`
+/// is ever held for a line. A trailing fragment with no newline yet is
+/// buffered until the next read completes it.
+async fn stream_lines<R>(mut reader: R, stream: &'static str) -> Vec<LogPayload>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    use tokio::io::AsyncReadExt;
+
+    let mut payloads = Vec::new();
+    let mut pending: Vec<u8> = Vec::new();
+    let mut buf = vec![0u8; 8192];
+
+    loop {
+        let n = match reader.read(&mut buf).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => n,
+        };
+
+        let mut start = 0;
+        for (i, b) in buf[..n].iter().enumerate() {
+            if *b == b'\n' {
+                pending.extend_from_slice(&buf[start..i]);
+                payloads.push(LogPayload {
+                    stream: stream.into(),
+                    data: line_to_payload(&pending),
+                });
+                pending.clear();
+                start = i + 1;
+            } else if pending.len() >= MAX_LOG_LINE {
+                // Emit an over-long line rather than growing without bound.
+                pending.extend_from_slice(&buf[start..=i]);
+                payloads.push(LogPayload {
+                    stream: stream.into(),
+                    data: line_to_payload(&pending),
+                });
+                pending.clear();
+                start = i + 1;
+            }
+        }
+        pending.extend_from_slice(&buf[start..n]);
+
+        if payloads.is_empty() {
+            continue;
+        }
+    }
+
+    if !pending.is_empty() {
+        payloads.push(LogPayload {
+            stream: stream.into(),
+            data: line_to_payload(&pending),
+        });
+    }
+
+    payloads
+}
+
+/// Decode one line's bytes into a log payload, trimming the `\r` of a CRLF and
+/// re-adding exactly one `\n`.
+fn line_to_payload(line: &[u8]) -> String {
+    let mut text = String::from_utf8_lossy(line).into_owned();
+    if text.ends_with('\r') {
+        text.pop();
+    }
+    text.push('\n');
+    text
+}
 
 pub async fn handle_port_open<W: AsyncWrite + Unpin + Send + 'static>(
     writer: Arc<Mutex<W>>,
@@ -134,13 +219,7 @@ pub async fn run_child_and_stream<
                     }
                 }
             } else {
-                let mut reader = BufReader::new(out).lines();
-                while let Ok(Some(line)) = reader.next_line().await {
-                    let clean_line = line.trim_end_matches('\r');
-                    let payload = LogPayload {
-                        stream: "stdout".into(),
-                        data: format!("{}\n", clean_line),
-                    };
+                for payload in stream_lines(BufReader::new(out), "stdout").await {
                     let mut w = writer_out.lock().await;
                     if write_json_frame(&mut *w, MsgType::Log, &payload)
                         .await
@@ -177,13 +256,7 @@ pub async fn run_child_and_stream<
                     }
                 }
             } else {
-                let mut reader = BufReader::new(err).lines();
-                while let Ok(Some(line)) = reader.next_line().await {
-                    let clean_line = line.trim_end_matches('\r');
-                    let payload = LogPayload {
-                        stream: "stderr".into(),
-                        data: format!("{}\n", clean_line),
-                    };
+                for payload in stream_lines(BufReader::new(err), "stderr").await {
                     let mut w = writer_err.lock().await;
                     if write_json_frame(&mut *w, MsgType::Log, &payload)
                         .await
@@ -589,5 +662,75 @@ pub async fn execute_and_stream<
         }
         apply_toolchain_env(&mut cmd, toolchain);
         run_child_and_stream(writer, reader, cmd, raw_stdio).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn joined(payloads: &[LogPayload]) -> String {
+        payloads.iter().map(|p| p.data.as_str()).collect()
+    }
+
+    /// The defect this replaced: `AsyncBufReadExt::lines()` returns `Err` on
+    /// invalid UTF-8, and `while let Ok(Some(line))` treats that as
+    /// end-of-stream. One bad byte silently discarded everything after it.
+    #[tokio::test]
+    async fn invalid_utf8_does_not_truncate_the_stream() {
+        let mut bytes: Vec<u8> = Vec::new();
+        bytes.extend_from_slice(b"before\n");
+        bytes.extend_from_slice(&[0xff, 0xfe, 0x80]); // not valid UTF-8
+        bytes.extend_from_slice(b"\n");
+        bytes.extend_from_slice(b"after\n");
+
+        let payloads = stream_lines(bytes.as_slice(), "stdout").await;
+        let text = joined(&payloads);
+
+        assert!(
+            text.contains("before"),
+            "lost the output before the bad byte: {text:?}"
+        );
+        assert!(
+            text.contains("after"),
+            "output after an invalid byte was silently dropped: {text:?}"
+        );
+    }
+
+    /// CRLF is trimmed and normalised to a single `\n`, as before.
+    #[tokio::test]
+    async fn crlf_is_normalised() {
+        let payloads = stream_lines(&b"one\r\ntwo\r\n"[..], "stdout").await;
+        assert_eq!(joined(&payloads), "one\ntwo\n");
+    }
+
+    /// A final line with no trailing newline must still be delivered.
+    #[tokio::test]
+    async fn trailing_line_without_newline_is_delivered() {
+        let payloads = stream_lines(&b"a\nb"[..], "stdout").await;
+        assert_eq!(joined(&payloads), "a\nb\n");
+    }
+
+    /// A child emitting one enormous line with no newline must not be
+    /// buffered whole in the agent's memory.
+    #[tokio::test]
+    async fn an_unterminated_huge_line_is_split_rather_than_buffered() {
+        let huge = vec![b'x'; MAX_LOG_LINE * 3];
+
+        let payloads = stream_lines(huge.as_slice(), "stdout").await;
+
+        assert!(
+            payloads.len() >= 3,
+            "expected the line to be split, got {} payload(s)",
+            payloads.len()
+        );
+        let total: usize = payloads.iter().map(|p| p.data.len()).sum();
+        assert_eq!(total, huge.len() + 3, "no bytes lost or duplicated");
+    }
+
+    /// Empty input produces nothing rather than one empty line.
+    #[tokio::test]
+    async fn empty_output_produces_no_payloads() {
+        assert!(stream_lines(&b""[..], "stdout").await.is_empty());
     }
 }
