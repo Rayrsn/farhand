@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use tracing::debug;
 
 pub mod presets;
 pub use presets::{detect_preset_outputs, resolve_artifact_paths, Preset, DEFAULT_PRESETS};
@@ -37,6 +38,9 @@ pub use gc::{
 
 pub mod disk;
 pub use disk::{get_disk_space, DiskSpace};
+
+pub mod change_token;
+pub use change_token::change_token;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffResult {
@@ -121,8 +125,34 @@ pub fn diff_manifests(
         client_map.insert(&f.path, f);
     }
 
+    // The digest index lives in the workspace root, so it must be excluded from
+    // the walk or the scan would hash it and the diff would treat it as a
+    // stray file. `fileset::scan` already skips ignored names, and the
+    // Section 5.1 delete guard below independently skips `.farhand-*`, so the
+    // index cannot be deleted even if this exclusion were dropped.
+    let index_path = workspace_root.join(fileset::HASH_INDEX_FILENAME);
+    let mut ignores = extra_ignores.to_vec();
+    ignores.push(fileset::HASH_INDEX_FILENAME.to_string());
+
     let remote_files = if workspace_root.exists() {
-        fileset::scan(workspace_root, extra_ignores)?
+        let mut cache = fileset::load_hash_cache(&index_path);
+        let (files, stats) =
+            fileset::scan_cached_with(workspace_root, &ignores, &mut cache, &change_token)?;
+
+        // A failed index write costs a full re-hash next run and nothing else,
+        // so it must not fail the diff.
+        if let Err(e) = fileset::save_hash_cache(&index_path, &cache) {
+            debug!("Could not write digest index: {e}");
+        }
+
+        debug!(
+            "Workspace scan reused {} of {} digests ({} re-hashed)",
+            stats.reused,
+            stats.reused + stats.hashed,
+            stats.hashed
+        );
+
+        files
     } else {
         HashMap::new()
     };
@@ -135,6 +165,7 @@ pub fn diff_manifests(
                     want.push((*rel_path).to_string());
                 }
             }
+            // Not on the agent yet, and not ignored: genuinely new.
             None => {
                 want.push((*rel_path).to_string());
             }
@@ -349,5 +380,149 @@ mod tests {
         // Verify node_modules and target survived untouched
         assert!(ws.join("node_modules/react/index.js").exists());
         assert!(ws.join("target/release/binary").exists());
+    }
+
+    /// The digest index lives inside the scanned root, so it is the one file
+    /// most likely to be mistaken for project state. It must never be
+    /// transferred, never be deleted, and must not perturb the diff.
+    #[test]
+    fn test_digest_index_is_never_transferred_or_deleted() {
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("ws");
+        fs::create_dir_all(&ws).unwrap();
+        fs::write(ws.join("file.txt"), b"content").unwrap();
+
+        let manifest = ManifestPayload {
+            files: vec![FileEntry {
+                path: "file.txt".into(),
+                hash: fileset::hash_file(&ws.join("file.txt")).unwrap(),
+                size: 7,
+                mode: 0o644,
+            }],
+        };
+
+        let first = diff_manifests(&ws, &manifest, &[]).unwrap();
+        assert!(first.want.is_empty());
+        assert!(first.delete_extraneous.is_empty());
+
+        let index = ws.join(fileset::HASH_INDEX_FILENAME);
+        assert!(index.is_file(), "the diff did not persist a digest index");
+
+        // A second diff, driven entirely by the on-disk index, must agree.
+        let second = diff_manifests(&ws, &manifest, &[]).unwrap();
+        assert!(second.want.is_empty());
+        assert!(
+            second.delete_extraneous.is_empty(),
+            "the index was treated as project state: {:?}",
+            second.delete_extraneous
+        );
+
+        // And it must survive the deletions the diff asked for.
+        fs::write(ws.join("stray.txt"), b"stray").unwrap();
+        let third = diff_manifests(&ws, &manifest, &[]).unwrap();
+        assert_eq!(third.delete_extraneous, vec!["stray.txt"]);
+        apply_deletions(&ws, &third.delete_extraneous).unwrap();
+        assert!(index.is_file(), "the digest index was deleted");
+    }
+
+    /// A file edited on the agent between two diffs must be re-detected even
+    /// though the second diff reads its digest from the index rather than
+    /// hashing the file again.
+    #[test]
+    fn test_digest_index_does_not_mask_a_remote_edit() {
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("ws");
+        fs::create_dir_all(&ws).unwrap();
+        fs::write(ws.join("file.txt"), b"first").unwrap();
+
+        let stale = ManifestPayload {
+            files: vec![FileEntry {
+                path: "file.txt".into(),
+                hash: fileset::hash_file(&ws.join("file.txt")).unwrap(),
+                size: 5,
+                mode: 0o644,
+            }],
+        };
+
+        // Populate the index.
+        assert!(diff_manifests(&ws, &stale, &[]).unwrap().want.is_empty());
+
+        // The agent rewrites the file. Same length, so only a content change
+        // distinguishes it.
+        fs::write(ws.join("file.txt"), b"other").unwrap();
+
+        let diff = diff_manifests(&ws, &stale, &[]).unwrap();
+        assert_eq!(
+            diff.want,
+            vec!["file.txt"],
+            "the cached digest masked a remote edit"
+        );
+    }
+
+    /// The blind spot a `(size, mtime)` gate cannot see, exercised through the
+    /// real platform change token and the real `diff_manifests` path. A build
+    /// tool that silently misses this ships stale code, so the guarantee is
+    /// worth pinning.
+    #[test]
+    fn test_diff_detects_a_same_size_overwrite_that_preserves_the_mtime() {
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("ws");
+        fs::create_dir_all(&ws).unwrap();
+        let path = ws.join("file.txt");
+        fs::write(&path, b"aaaa").unwrap();
+
+        let original_mtime = fs::metadata(&path).unwrap().modified().unwrap();
+
+        // The client's copy: same bytes the agent already has.
+        let manifest = ManifestPayload {
+            files: vec![FileEntry {
+                path: "file.txt".into(),
+                hash: fileset::hash_file(&path).unwrap(),
+                size: 4,
+                mode: 0o644,
+            }],
+        };
+        assert!(
+            diff_manifests(&ws, &manifest, &[]).unwrap().want.is_empty(),
+            "the first diff should see no change"
+        );
+
+        // Something on the agent rewrote the file to different content of the
+        // same length, then restored the original mtime — what an `rsync -a`
+        // or `tar -p` extraction onto the workspace does.
+        fs::write(&path, b"bbbb").unwrap();
+        restore_mtime(&path, original_mtime);
+
+        let diff = diff_manifests(&ws, &manifest, &[]).unwrap();
+        assert_eq!(
+            diff.want,
+            vec!["file.txt"],
+            "a preserved-mtime same-size rewrite was masked by the digest cache"
+        );
+    }
+
+    #[cfg(unix)]
+    fn restore_mtime(path: &Path, mtime: std::time::SystemTime) {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(path).unwrap().permissions().mode();
+        fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+        fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+    }
+
+    #[cfg(windows)]
+    fn restore_mtime(path: &Path, mtime: std::time::SystemTime) {
+        // Windows does let userspace forge LastWriteTime, which is exactly why
+        // the digest gate reads the change time separately.
+        fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
     }
 }

@@ -553,7 +553,7 @@ dependencies = [
 
 [[package]]
 name = "farhand-agent"
-version = "1.9.0"
+version = "1.10.0"
 dependencies = [
  "clap",
  "farhand-fileset",
@@ -571,7 +571,7 @@ dependencies = [
 
 [[package]]
 name = "farhand-cli"
-version = "1.9.0"
+version = "1.10.0"
 dependencies = [
  "clap",
  "clap_complete",
@@ -596,7 +596,7 @@ dependencies = [
 
 [[package]]
 name = "farhand-config"
-version = "1.9.0"
+version = "1.10.0"
 dependencies = [
  "serde",
  "serde_yaml",
@@ -606,13 +606,16 @@ dependencies = [
 
 [[package]]
 name = "farhand-fileset"
-version = "1.9.0"
+version = "1.10.0"
 dependencies = [
  "criterion",
  "farhand-protocol",
  "flate2",
  "glob",
  "hex",
+ "rayon",
+ "serde",
+ "serde_json",
  "sha2",
  "tar",
  "tempfile",
@@ -624,7 +627,7 @@ dependencies = [
 
 [[package]]
 name = "farhand-protocol"
-version = "1.9.0"
+version = "1.10.0"
 dependencies = [
  "byteorder",
  "hex",
@@ -642,7 +645,7 @@ dependencies = [
 
 [[package]]
 name = "farhand-templates"
-version = "1.9.0"
+version = "1.10.0"
 dependencies = [
  "farhand-protocol",
  "glob",
@@ -655,7 +658,7 @@ dependencies = [
 
 [[package]]
 name = "farhand-workspace"
-version = "1.9.0"
+version = "1.10.0"
 dependencies = [
  "criterion",
  "farhand-fileset",
@@ -672,6 +675,7 @@ dependencies = [
  "tokio",
  "tracing",
  "walkdir",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

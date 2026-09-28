@@ -16,11 +16,14 @@ be reproducible from this table: run `scripts/run_benchmarks.sh`
 
 | Benchmark | Mean | ± |
 | :--- | ---: | ---: |
-| Scan + SHA-256 hash of 320 files (~2.4 MiB) | `7.34 ms` | `±302.6 µs` |
-| Pack delta tar with gzip (~2.4 MiB payload) | `322.28 ms` | `±9.16 ms` |
-| Pack delta tar with zstd-3 (~2.4 MiB) | `77.16 ms` | `±2.49 ms` |
-| Unpack gzip tar (~2.4 MiB) | `59.70 ms` | `±2.11 ms` |
-| Unpack zstd tar (~2.4 MiB) | `19.32 ms` | `±740.1 µs` |
+| Scan + SHA-256 hash of 320 files (~2.4 MiB) | `3.08 ms` | `±233.6 µs` |
+| Pack delta tar with gzip (~2.4 MiB payload) | `311.81 ms` | `±2.15 ms` |
+| Pack delta tar with zstd-3 (~2.4 MiB) | `73.77 ms` | `±695.7 µs` |
+| Unpack gzip tar (~2.4 MiB) | `57.33 ms` | `±317.8 µs` |
+| Unpack zstd tar (~2.4 MiB) | `18.32 ms` | `±156.1 µs` |
+| SHA-256 of 320 files in isolation (no walk) | `6.17 ms` | `±116.1 µs` |
+| Scan with cold digest cache: walk + full re-hash (parallel) | `3.11 ms` | `±234.5 µs` |
+| Scan with warm digest cache: walk + stat only, no content read | `1.13 ms` | `±64.9 µs` |
 
 ## Workspace / CAS, CoW, diff
 
@@ -40,6 +43,12 @@ be reproducible from this table: run `scripts/run_benchmarks.sh`
   `pack_tar_zstd_2mib` means above.
 - **CAS hydration is effectively free** (nanoseconds-per-KiB): see
   `cas_materialize_*` — reflink/hardlink cost is independent of payload size.
+- **Parallel hashing**: `hash_file_320_files` is the same SHA-256 work
+  done one file at a time; `scan_full_rehash` is that work spread across
+  cores, so the gap between the two is the rayon speedup.
+- **The stat gate**: `scan_full_rehash` vs `scan_stat_only` is what the
+  digest index saves — the warm scan stats every file and reads none, so
+  the residual cost is pure walk, not I/O.
 - **Warm-workspace diff cost** is the price of the manifest protocol: the
-  agent rescans the workspace to verify hashes every run.
-
+  agent still has to walk the workspace to prove nothing changed. What it
+  no longer does is re-read every byte to do it.

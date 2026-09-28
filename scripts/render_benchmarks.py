@@ -19,6 +19,9 @@ TARGETS = {
         "sync/pack_tar_zstd_2mib",
         "sync/unpack_tar_gzip_2mib",
         "sync/unpack_tar_zstd_2mib",
+        "hash/hash_file_320_files",
+        "scan_gate/scan_full_rehash",
+        "scan_gate/scan_stat_only",
     ],
     "storage": [
         "cas/cas_put_64k",
@@ -33,6 +36,9 @@ TARGETS = {
 
 LABELS = {
     "sync/scan_and_hash_320_files": "Scan + SHA-256 hash of 320 files (~2.4 MiB)",
+    "hash/hash_file_320_files": "SHA-256 of 320 files in isolation (no walk)",
+    "scan_gate/scan_full_rehash": "Scan with cold digest cache: walk + full re-hash (parallel)",
+    "scan_gate/scan_stat_only": "Scan with warm digest cache: walk + stat only, no content read",
     "sync/pack_tar_gzip_2mib": "Pack delta tar with gzip (~2.4 MiB payload)",
     "sync/pack_tar_zstd_2mib": "Pack delta tar with zstd-3 (~2.4 MiB)",
     "sync/unpack_tar_gzip_2mib": "Unpack gzip tar (~2.4 MiB)",
@@ -118,8 +124,15 @@ def main() -> None:
         "  `pack_tar_zstd_2mib` means above.",
         "- **CAS hydration is effectively free** (nanoseconds-per-KiB): see",
         "  `cas_materialize_*` — reflink/hardlink cost is independent of payload size.",
+        "- **Parallel hashing**: `hash_file_320_files` is the same SHA-256 work",
+        "  done one file at a time; `scan_full_rehash` is that work spread across",
+        "  cores, so the gap between the two is the rayon speedup.",
+        "- **The stat gate**: `scan_full_rehash` vs `scan_stat_only` is what the",
+        "  digest index saves — the warm scan stats every file and reads none, so",
+        "  the residual cost is pure walk, not I/O.",
         "- **Warm-workspace diff cost** is the price of the manifest protocol: the",
-        "  agent rescans the workspace to verify hashes every run.",
+        "  agent still has to walk the workspace to prove nothing changed. What it",
+        "  no longer does is re-read every byte to do it.",
         "",
     ]
 

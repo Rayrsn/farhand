@@ -77,6 +77,61 @@ fn bench_scan_hash(c: &mut Criterion, root: &Path) {
     group.finish();
 }
 
+/// Isolates the SHA-256 work from the walk, so a regression can be attributed
+/// to hashing rather than to syscall count. `scan_and_hash_320_files` blends
+/// the two and cannot tell them apart.
+fn bench_hash_file(c: &mut Criterion, root: &Path) {
+    let paths = fixture_paths(root);
+    let mut group = c.benchmark_group("hash");
+    group.throughput(Throughput::Elements(paths.len() as u64));
+    group.bench_function("hash_file_320_files", |b| {
+        b.iter(|| {
+            for p in &paths {
+                fileset::hash_file(&root.join(p)).expect("hash");
+            }
+        })
+    });
+    group.finish();
+}
+
+/// The pair that quantifies the stat gate: on an unchanged tree, a cached scan
+/// stats every file but reads none of them, so it should approach
+/// `scan_stat_only` and stay far below `scan_full_rehash`.
+fn bench_scan_stat_gate(c: &mut Criterion, root: &Path) {
+    let n_files = fixture_paths(root).len();
+    let mut group = c.benchmark_group("scan_gate");
+    group.throughput(Throughput::Elements(n_files as u64));
+
+    // Cold: a fresh cache every iteration, so every file is re-hashed.
+    group.bench_function("scan_full_rehash", |b| {
+        b.iter(|| {
+            let mut cache = fileset::HashCache::default();
+            fileset::scan_cached(root, &[], &mut cache).expect("scan")
+        })
+    });
+
+    // Warm: one cache reused across iterations, so nothing is re-hashed.
+    let mut warm = fileset::HashCache::default();
+    fileset::scan_cached(root, &[], &mut warm).expect("warm the cache");
+    group.bench_function("scan_stat_only", |b| {
+        b.iter(|| fileset::scan_cached(root, &[], &mut warm).expect("scan"))
+    });
+
+    group.finish();
+
+    // Guard the premise: if the warm path ever starts re-hashing, the numbers
+    // above stop meaning anything.
+    let (_, stats) = fileset::scan_cached(root, &[], &mut warm).expect("scan");
+    assert_eq!(
+        stats,
+        fileset::ScanStats {
+            reused: n_files,
+            hashed: 0
+        },
+        "the warm fixture stopped being warm"
+    );
+}
+
 fn fixture_bytes(root: &Path) -> u64 {
     let scanned = fileset::scan(root, &[]).expect("scan");
     scanned.values().map(|m| m.size).sum()
@@ -145,6 +200,8 @@ fn main() {
     bench_scan_hash(&mut crit, fixture.path());
     bench_pack(&mut crit, fixture.path(), &paths);
     bench_unpack(&mut crit, &archives);
+    bench_hash_file(&mut crit, fixture.path());
+    bench_scan_stat_gate(&mut crit, fixture.path());
 
     let _ = fs::remove_dir_all(fixture.path());
     crit.final_summary();
