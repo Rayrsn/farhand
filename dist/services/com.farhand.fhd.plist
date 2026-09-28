@@ -16,6 +16,9 @@
     </array>
     <key>EnvironmentVariables</key>
     <dict>
+        <!-- REPLACE THIS before loading the plist. The placeholder is
+             published in this repository and fhd refuses to start with it.
+             Generate one with: openssl rand -hex 32 -->
         <key>FARHAND_TOKEN</key>
         <string>replace-with-your-secret-token</string>
         <key>PATH</key>

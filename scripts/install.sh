@@ -84,14 +84,67 @@ else
   )
 fi
 
+# Verify the download against the SHA-256 published next to the asset. Without
+# this the script installs whatever the network returned, and the checksum that
+# ships with every release is never checked by the one thing that downloads it.
+verify_checksum() {
+  local archive="$1" expected_file="$2" expected=""
+
+  if [ ! -f "$expected_file" ]; then
+    echo "Error: no published checksum alongside the asset; refusing to install unverified." >&2
+    return 1
+  fi
+
+  # The file is "<sha256>  <filename>"; take the first field.
+  expected="$(awk 'NR==1{print $1}' "$expected_file")"
+  if [ -z "$expected" ]; then
+    echo "Error: could not read a SHA-256 from the published checksum file." >&2
+    return 1
+  fi
+
+  local actual
+  if command -v sha256sum >/dev/null 2>&1; then
+    actual="$(sha256sum "$archive" | awk '{print $1}')"
+  elif command -v shasum >/dev/null 2>&1; then
+    actual="$(shasum -a 256 "$archive" | awk '{print $1}')"
+  else
+    echo "Error: no sha256sum or shasum available; cannot verify the download." >&2
+    return 1
+  fi
+
+  if [ "$actual" != "$expected" ]; then
+    echo "Error: SHA-256 mismatch for the downloaded archive." >&2
+    echo "  expected: ${expected}" >&2
+    echo "  actual:   ${actual}" >&2
+    echo "Refusing to install. The download may be corrupt or tampered with." >&2
+    return 1
+  fi
+
+  echo "Checksum verified."
+  return 0
+}
+
+
 DOWNLOADED=false
 for URL in "${CANDIDATE_URLS[@]}"; do
   echo "Attempting download from: ${URL}"
   if curl -fsSL "$URL" -o "${TMP_DIR}/farhand.tar.gz" 2>/dev/null; then
+    # The checksum asset is published beside the archive under the same name.
+    CHECKSUM_URL="${URL}.sha256"
+    echo "Fetching checksum from: ${CHECKSUM_URL}"
+    if ! curl -fsSL "$CHECKSUM_URL" -o "${TMP_DIR}/farhand.tar.gz.sha256" 2>/dev/null; then
+      echo "Error: could not fetch the published SHA-256 for this asset." >&2
+      echo "Refusing to install an unverified binary." >&2
+      exit 1
+    fi
+    if ! verify_checksum "${TMP_DIR}/farhand.tar.gz" "${TMP_DIR}/farhand.tar.gz.sha256"; then
+      exit 1
+    fi
     DOWNLOADED=true
     break
   fi
 done
+
 
 if [ "$DOWNLOADED" = "true" ]; then
   echo "Extracting binary package..."
@@ -105,19 +158,24 @@ if [ "$DOWNLOADED" = "true" ]; then
   cp -f "$FH_BIN" "${INSTALL_DIR}/fh"
   cp -f "$FHD_BIN" "${INSTALL_DIR}/fhd"
 else
-  # Fallback: check if local cargo workspace is present
-  # Detect a farhand source checkout by its layout, not by a package name: the
-  # published crate names (farhand-cli / farhand-agent) are not the directory
-  # names, and a name-based check rots the next time either one changes.
-  if [ -f "Cargo.toml" ] && [ -f "crates/fh/Cargo.toml" ] && [ -f "crates/fhd/Cargo.toml" ]; then
-    echo "Release tarball not found online. Building from local source via cargo..."
-    cargo build --release -p farhand-cli -p farhand-agent
-    cp -f target/release/fh "${INSTALL_DIR}/fh"
-    cp -f target/release/fhd "${INSTALL_DIR}/fhd"
-  else
-    echo "Error: unable to download pre-built release binary and no local Rust workspace detected." >&2
-    exit 1
-  fi
+  # There is deliberately no "build from whatever is in the current directory"
+  # fallback. One existed, and it meant a failed download silently installed
+  # the binaries of whatever unrelated farhand checkout happened to be the
+  # working directory, under the name "Farhand", with no message. A build from
+  # source is an explicit act: use `cargo install farhand-cli farhand-agent`.
+  echo "Error: could not download or verify a pre-built release binary." >&2
+  echo "" >&2
+  echo "  Tried:" >&2
+  for URL in "${CANDIDATE_URLS[@]}"; do
+    echo "    ${URL}" >&2
+  done
+  echo "" >&2
+  echo "  Install from source instead:" >&2
+  echo "    cargo install farhand-cli      # provides fh" >&2
+  echo "    cargo install farhand-agent    # provides fhd" >&2
+  echo "" >&2
+  echo "  Or pin a specific release:  bash <(curl -sL $0) --version 1.10.0" >&2
+  exit 1
 fi
 
 chmod 755 "${INSTALL_DIR}/fh" "${INSTALL_DIR}/fhd"

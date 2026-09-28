@@ -1193,6 +1193,40 @@ mod tests {
         assert!(empty.contains("empty string"));
     }
 
+    /// The Homebrew formula used to ship a `service` block that started
+    /// `fhd` on `0.0.0.0` with the literal token `replace-with-your-token`, so
+    /// `brew services start farhand` produced an agent whose only credential
+    /// was published in this repository. Any authenticated client could then
+    /// run arbitrary commands in every workspace. The formula no longer ships
+    /// that block, and the daemon refuses the placeholder outright so the
+    /// same mistake cannot be reintroduced through a plist, a hand-written
+    /// unit, or a copy-paste from the README.
+    #[test]
+    fn validate_start_config_rejects_published_placeholder_tokens() {
+        for placeholder in [
+            "replace-with-your-token",
+            "replace-with-your-secret-token",
+            "changeme",
+            "token",
+        ] {
+            let err = validate_start_config(Some(placeholder), false)
+                .expect_err("a published placeholder must not be accepted");
+            assert!(
+                err.contains("placeholder"),
+                "unhelpful message for {placeholder:?}: {err}"
+            );
+        }
+
+        // Case and surrounding whitespace are not a way around it: the value
+        // would still be the published one in practice.
+        assert!(validate_start_config(Some("  Replace-With-Your-Token  "), false).is_err());
+
+        // A real token is unaffected, including one that merely contains a
+        // placeholder as a substring.
+        assert!(validate_start_config(Some("s3cret-token"), false).is_ok());
+        assert!(validate_start_config(Some("my-changeme-but-longer"), false).is_ok());
+    }
+
     #[test]
     fn is_exposed_bind_classifies_addresses() {
         assert!(is_exposed_bind("0.0.0.0:9876"));

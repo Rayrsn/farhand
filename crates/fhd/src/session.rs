@@ -82,16 +82,52 @@ impl ServerContext {
     }
 }
 
+/// Tokens that appear in this repository's own service templates and
+/// documentation. Shipping one of these in a formula or a plist that a user
+/// installs without editing leaves a publicly known token guarding a daemon
+/// that executes arbitrary commands, so the daemon refuses them outright. The
+/// check lives here rather than in the templates because it then covers every
+/// deployment path — formula, launchd, a hand-written unit, a copy-paste from
+/// the README — instead of only the files in this repository.
+const PLACEHOLDER_TOKENS: &[&str] = &[
+    "replace-with-your-token",
+    "replace-with-your-secret-token",
+    "replace-me",
+    "changeme",
+    "your-token-here",
+    "token",
+];
+
 /// Validate daemon startup authentication configuration.
 ///
 /// The daemon refuses to start without a token unless unauthenticated mode is
 /// explicitly requested: an unauthenticated `fhd` is remote code execution by
-/// design. An empty token string is also rejected as a misconfiguration.
+/// design. An empty token string is also rejected as a misconfiguration, as is
+/// any token this repository ships as a documentation placeholder.
 pub fn validate_start_config(
     token: Option<&str>,
     allow_unauthenticated: bool,
 ) -> Result<(), String> {
     match token {
+        Some(t) if t.trim().is_empty() => Err(
+            "--token was set to an empty string. Set a real token via --token or the \
+             FARHAND_TOKEN environment variable, or pass --allow-unauthenticated to \
+             intentionally disable authentication."
+                .to_string(),
+        ),
+        Some(t)
+            if PLACEHOLDER_TOKENS
+                .iter()
+                .any(|p| p.eq_ignore_ascii_case(t.trim())) =>
+        {
+            Err(format!(
+                "Refusing to start: the configured token is the placeholder {t:?}.\n  \
+                 That exact value is published in this repository's Homebrew formula and \
+                 launchd template, so anyone can read it. An fhd token guards remote \
+                 command execution.\n  \
+                 Generate a real one:  openssl rand -hex 32"
+            ))
+        }
         Some(t) if t.trim().is_empty() => Err(
             "--token was set to an empty string. Set a real token via --token or the \
              FARHAND_TOKEN environment variable, or pass --allow-unauthenticated to \

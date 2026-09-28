@@ -1,7 +1,7 @@
 class Farhand < Formula
   desc "Remote build and test offloader with zero external system binaries"
   homepage "https://github.com/Rayrsn/farhand"
-  version "1.9.0"
+  version "1.10.0"
   license "MIT OR Apache-2.0"
 
   on_macos do
@@ -29,13 +29,15 @@ class Farhand < Formula
     bin.install "fhd"
   end
 
-  service do
-    run [opt_bin/"fhd", "--listen", "0.0.0.0:9876"]
-    keep_alive true
-    environment_variables FARHAND_TOKEN: "replace-with-your-token"
-    log_path var/"log/fhd.log"
-    error_log_path var/"log/fhd.err.log"
-  end
+  # Deliberately no `service do` block. A formula service definition is
+  # started by a plain `brew services start farhand`, with no prompt and no
+  # chance to supply a secret — so any token baked into it is a published
+  # token guarding a daemon that executes arbitrary commands. The one that was
+  # here bound 0.0.0.0:9876 with FARHAND_TOKEN "replace-with-your-token".
+  #
+  # For a long-running agent, install one of the units in dist/services/ and
+  # set a real token (openssl rand -hex 32) first. See
+  # docs/mac-build-server-setup.md.
 
   test do
     assert_match "Farhand client", shell_output("#{bin}/fh --help")
