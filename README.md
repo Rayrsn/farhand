@@ -381,8 +381,9 @@ criterion's saved estimates.
 
 Deep-dive guides covering architecture, server setup, and configuration:
 
+- 🖥️ **[CLI Reference](docs/cli.md)** — Every command, subcommand, and flag, plus the exit-code contract.
+- 📦 **[Templates](docs/templates.md)** — How build templates detect projects and drive dependency installs, and how to override them.
 - 📈 **[Observability](docs/observability.md)** — live `fh top`, plus an opt-in Prometheus endpoint (`fhd --metrics-port`) with an importable Grafana dashboard.
-- 📖 **[Internal Architecture & Wire Protocol](docs/architecture.md)** — Binary framing specs, frame layouts, state machines, and Section 5.1 deletion safety.
 - 🍏 **[Apple Silicon Mac Mini Setup Guide](docs/mac-build-server-setup.md)** — Production step-by-step guide for turning a Mac Mini into a multi-developer build server (`launchd`, firewalls, network access).
 - 💾 **[Storage Optimization & Caching Guide](docs/storage-and-caching.md)** — Deep dive into APFS Copy-on-Write cloning, LRU garbage collection, and shared toolchain caches (`sccache`).
 - ⚙️ **[Configuration Guide (`.farhand.yaml`)](docs/configuration.md)** — Complete reference for config discovery, field definitions, and environment variable interpolation.

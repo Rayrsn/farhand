@@ -40,6 +40,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   attribute a regression to either. The new pair isolates hashing from
   walking, and puts a stat-only scan next to a full re-hash so the gate's
   effect is a number rather than a claim.
+- **A complete CLI reference (`docs/cli.md`)** covering every subcommand and
+  global flag, plus the exit-code contract and the `fhd` options. Eight global
+  flags were documented nowhere at all: `--insecure-skip-token`, `--log-level`,
+  `--log-format`, `--branch`, `--no-branch-scope`, `--out-dir`, `--no-cache`,
+  and `--force`.
+- **A templates guide (`docs/templates.md`)** for the `fh templates`
+  subcommands — `list`, `show`, `init`, `push` — which shipped without a
+  single mention in any user-facing document, along with the template YAML
+  schema, the project/user/builtin resolution order, and the distinction
+  between `ignoreExtra`, `outputs`, and `outputsIgnore`.
 
 ### Fixed
 - **Documented reverse port forwarding, and fixed its config validation.** `-L/--forward`
@@ -58,6 +68,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Verified end to end against a live agent: bidirectional traffic including
   POST bodies, multiple simultaneous forwards with independent port mappings,
   the `.farhand.yaml` form, and re-establishment across `fh watch` rebuilds.
+- **Seven `.farhand.yaml` keys were undocumented**, including `tls` — a
+  headline security feature with no entry in the configuration reference at
+  all. The field table now covers `forward`, `toolchain`, `tty`,
+  `compression`, `tls`, `agents`, and `tags`, with a new Transport Security
+  section covering certificate pinning, custom CAs, and mutual TLS.
+
+  All of it was verified against the built binary rather than written from the
+  source: the template commands were run live (including pushing to a running
+  agent), and the documented configuration parses, with `doctor` confirming
+  the TLS and toolchain fields resolve.
 - **The Homebrew formula shipped a published token.** `Formula/farhand.rb`
   carried a `service do` block that started `fhd --listen 0.0.0.0:9876` with
   `FARHAND_TOKEN: "replace-with-your-token"`, so a plain

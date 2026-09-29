@@ -41,6 +41,47 @@ Both **`camelCase`** and **`snake_case`** keys are supported.
 | `noCache` / `no_cache` | `boolean` | `false` | If `true`, instructs agent to bypass dependency caching hooks. |
 | `forwardEnv` / `forward_env` | `boolean` | `true` | If `true`, forwards ambient local environment variables (secrets, build flags) to the remote process. Set to `false` or pass `--no-env` to disable. |
 | `env` | `map of string: string` | `{}` | Key-value map of explicit environment variables to pass to the remote command. |
+| `forward` | `list of strings` | `[]` | Reverse port forwards as `LOCAL:REMOTE`, repeatable. Equivalent to repeating `-L`. See [Port Forwarding](port-forwarding.md). |
+| `toolchain` | `map of string: string` | `{}` | Language toolchain pins, e.g. `{ rust: "nightly", node: "22" }`. Equivalent to repeating `-T`. |
+| `tty` | `boolean` | `false` | If `true`, always allocate a PTY for the remote command. |
+| `compression` | `string` | *negotiated* | Wire compression: `zstd`, `gzip`, or `none`. Left unset, client and agent negotiate. |
+| `tls` | `object` | `false` | TLS settings. See [Transport Security](#transport-security). |
+| `agents` | `list of objects` | `[]` | Named agents for multi-agent pools, each with `host` and `tags`. See [Multi-Agent Pool](multi-agent-pool.md). |
+| `tags` | `list of strings` | `[]` | Tags this local client advertises, used to match against an agent pool. |
+
+### Transport Security
+
+TLS is built in with `rustls` — no OpenSSL, no system libraries, works the
+same on every platform. The agent generates a self-signed certificate with
+`fhd --tls-auto`, or you can supply your own.
+
+```yaml
+tls:
+  enabled: true
+  fingerprint: "7f9a8b1c2d3e4f50..."   # pin the agent's SHA-256 certificate fingerprint
+  # ca: /path/to/ca.pem                # or verify against your own CA
+  # cert: /path/to/client.pem          # for mutual TLS
+  # key: /path/to/client.key
+```
+
+| Field | Meaning |
+| :--- | :--- |
+| `enabled` | Turn on TLS for this project. |
+| `fingerprint` | Expected SHA-256 fingerprint of the agent's certificate. |
+| `ca` | PEM CA certificate to verify the agent against. |
+| `cert` / `key` | Client certificate and key, for mutual TLS. |
+| `insecure` | Accept any certificate. **Provides encryption but no authentication.** |
+
+Prefer `fingerprint` or `ca`. `insecure` defeats the point of TLS and should
+only ever be used against a dev agent on loopback.
+
+Every field has a command-line equivalent — `--tls`, `--tls-fingerprint`,
+`--tls-ca`, `--tls-cert`, `--tls-key`, `--tls-insecure` — which take precedence
+over the config file.
+
+> **Note:** with raw TCP and no TLS, the token travels in cleartext. `fhd`
+> warns when bound to a non-loopback address. On an untrusted network use TLS
+> or a tunnel; see [Cloudflare Tunnel](cloudflared-tunnel.md).
 
 ---
 
