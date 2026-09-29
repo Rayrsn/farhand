@@ -255,6 +255,8 @@ mod tests {
     #[test]
     fn exposition_is_well_formed_for_every_series() {
         let ctx = crate::session::ServerContext {
+            timeouts: crate::session::Timeouts::default(),
+            forward_allowlist: Vec::new(),
             expected_token: None,
             workdir_root: std::env::temp_dir(),
             custom_shell: None,
@@ -315,6 +317,8 @@ mod tests {
     #[test]
     fn active_builds_are_reported_per_project() {
         let ctx = crate::session::ServerContext {
+            timeouts: crate::session::Timeouts::default(),
+            forward_allowlist: Vec::new(),
             expected_token: None,
             workdir_root: std::env::temp_dir(),
             custom_shell: None,
@@ -458,6 +462,8 @@ mod tests {
     fn test_context() -> crate::session::ServerContext {
         use std::collections::HashMap;
         crate::session::ServerContext {
+            timeouts: crate::session::Timeouts::default(),
+            forward_allowlist: Vec::new(),
             expected_token: None,
             workdir_root: std::env::temp_dir(),
             custom_shell: None,

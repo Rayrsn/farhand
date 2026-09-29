@@ -110,7 +110,23 @@ pub async fn handle_port_open<W: AsyncWrite + Unpin + Send + 'static>(
     channels: Arc<Mutex<HashMap<u32, tokio::sync::mpsc::Sender<Vec<u8>>>>>,
     channel_id: u32,
     target_port: u16,
+    allowlist: &[u16],
 ) {
+    // Default deny. A client-supplied port is a request for the agent to dial
+    // its own loopback: without this, any authenticated client can reach any
+    // TCP service on the agent host — a locally-bound admin API, a metrics
+    // endpoint, a database — which is a far larger capability than "run this
+    // build". The operator opts individual ports in explicitly.
+    if !allowlist.contains(&target_port) {
+        warn!(
+            "Refusing port forward to {}: not in the agent's --forward-allow list",
+            target_port
+        );
+        let close = PortClosePayload { channel_id };
+        let mut w = writer.lock().await;
+        let _ = write_json_frame(&mut *w, MsgType::PortClose, &close).await;
+        return;
+    }
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(128);
     channels.lock().await.insert(channel_id, tx);
     let writer_clone = writer.clone();
@@ -174,6 +190,7 @@ pub async fn run_child_and_stream<
     reader: &mut R,
     mut cmd: Command,
     raw_stdio: bool,
+    allowlist: &[u16],
 ) -> Result<i32, Box<dyn std::error::Error>> {
     if raw_stdio {
         cmd.stdin(Stdio::piped());
@@ -291,7 +308,14 @@ pub async fn run_child_and_stream<
                     }
                     Ok((MsgType::PortOpen, payload)) => {
                         if let Ok(po) = serde_json::from_slice::<PortOpenPayload>(&payload) {
-                            handle_port_open(writer.clone(), port_channels.clone(), po.channel_id, po.target_port).await;
+                            handle_port_open(
+                                writer.clone(),
+                                port_channels.clone(),
+                                po.channel_id,
+                                po.target_port,
+                                allowlist,
+                            )
+                            .await;
                         }
                     }
                     Ok((MsgType::PortData, payload)) => {
@@ -336,6 +360,7 @@ pub async fn run_pty_child_and_stream<
     toolchain: Option<&std::collections::HashMap<String, String>>,
     cols: Option<u16>,
     rows: Option<u16>,
+    allowlist: &[u16],
 ) -> Result<i32, Box<dyn std::error::Error>> {
     let pty_system = portable_pty::native_pty_system();
     let initial_size = portable_pty::PtySize {
@@ -554,7 +579,14 @@ pub async fn run_pty_child_and_stream<
                     }
                     Ok((MsgType::PortOpen, payload)) => {
                         if let Ok(po) = serde_json::from_slice::<PortOpenPayload>(&payload) {
-                            handle_port_open(writer.clone(), port_channels.clone(), po.channel_id, po.target_port).await;
+                            handle_port_open(
+                                writer.clone(),
+                                port_channels.clone(),
+                                po.channel_id,
+                                po.target_port,
+                                allowlist,
+                            )
+                            .await;
                         }
                     }
                     Ok((MsgType::PortData, payload)) => {
@@ -602,6 +634,7 @@ pub async fn run_pty_child_and_stream<
     Ok(exit_code)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn execute_raw_command_and_stream<
     W: AsyncWrite + Unpin + Send + 'static,
     R: tokio::io::AsyncRead + Unpin + Send,
@@ -613,13 +646,14 @@ pub async fn execute_raw_command_and_stream<
     custom_shell: Option<&str>,
     env: Option<&std::collections::HashMap<String, String>>,
     toolchain: Option<&std::collections::HashMap<String, String>>,
+    allowlist: &[u16],
 ) -> Result<i32, Box<dyn std::error::Error>> {
     let mut cmd = build_raw_shell_command(cwd, raw_cmd, custom_shell, toolchain);
     if let Some(envs) = env {
         cmd.envs(envs);
     }
     apply_toolchain_env(&mut cmd, toolchain);
-    run_child_and_stream(writer, reader, cmd, false).await
+    run_child_and_stream(writer, reader, cmd, false, allowlist).await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -638,6 +672,7 @@ pub async fn execute_and_stream<
     cols: Option<u16>,
     rows: Option<u16>,
     raw_stdio: bool,
+    allowlist: &[u16],
 ) -> Result<i32, Box<dyn std::error::Error>> {
     if argv.is_empty() {
         return Ok(0);
@@ -653,6 +688,7 @@ pub async fn execute_and_stream<
             toolchain,
             cols,
             rows,
+            allowlist,
         )
         .await
     } else {
@@ -661,7 +697,7 @@ pub async fn execute_and_stream<
             cmd.envs(envs);
         }
         apply_toolchain_env(&mut cmd, toolchain);
-        run_child_and_stream(writer, reader, cmd, raw_stdio).await
+        run_child_and_stream(writer, reader, cmd, raw_stdio, allowlist).await
     }
 }
 

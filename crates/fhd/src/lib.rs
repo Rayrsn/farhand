@@ -16,9 +16,9 @@ mod session;
 mod stream;
 
 pub use exec::parse_custom_shell;
-pub use session::{get_hostname, is_exposed_bind, validate_start_config, ServerContext};
+pub use session::{get_hostname, is_exposed_bind, validate_start_config, ServerContext, Timeouts};
 
-use active::{next_run_id, ActiveBuildGuard};
+use active::{next_run_id, ActiveBuildGuard, QueueSlotGuard};
 use session::{deny_control_request, DEFAULT_MAX_CONNECTIONS, UNLIMITED_CONNECTIONS};
 use stream::{execute_and_stream, execute_raw_command_and_stream};
 
@@ -59,6 +59,15 @@ pub async fn run_server(
     // When set, serve Prometheus metrics on this port, alongside the agent
     // protocol on the main listener.
     metrics_port: Option<u16>,
+    // Address the metrics endpoint binds to. Defaults to loopback: the
+    // endpoint is unauthenticated, so binding it publicly would publish
+    // hostnames, project names, and disk sizes to anyone who asks.
+    metrics_bind: Option<String>,
+    // Ports a client may ask the agent to forward to via `-L`. Empty refuses
+    // every request.
+    forward_allowlist: Vec<u16>,
+    // Deadlines for the TLS handshake and for each pre-RUN frame read.
+    timeouts: Timeouts,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let max_runs = max_concurrent_runs.unwrap_or_else(|| {
         std::thread::available_parallelism()
@@ -82,6 +91,8 @@ pub async fn run_server(
     };
 
     let ctx = Arc::new(ServerContext {
+        timeouts,
+        forward_allowlist,
         expected_token,
         workdir_root: workdir,
         custom_shell,
@@ -99,8 +110,17 @@ pub async fn run_server(
     });
 
     if let Some(port) = metrics_port {
-        match tokio::net::TcpListener::bind(("0.0.0.0", port)).await {
+        // Loopback unless the operator says otherwise. This endpoint has no
+        // authentication and exposes hostnames, project names, disk usage and
+        // per-project build counts, so binding it on every interface by
+        // default published all of that to anyone who could reach the port.
+        let host = metrics_bind.as_deref().unwrap_or("127.0.0.1");
+        let metrics_addr = format!("{host}:{port}")
+            .parse::<std::net::SocketAddr>()
+            .map_err(|e| format!("invalid --metrics-bind address {host:?}: {e}"))?;
+        match tokio::net::TcpListener::bind(metrics_addr).await {
             Ok(metrics_listener) => {
+                info!("Metrics listening on {}", metrics_addr);
                 let metrics_ctx = Arc::clone(&ctx);
                 tokio::spawn(async move {
                     metrics_server::serve_metrics(metrics_listener, metrics_ctx).await;
@@ -109,7 +129,7 @@ pub async fn run_server(
             Err(e) => {
                 // A metrics port that cannot bind must not take the agent down
                 // with it: the agent is what people depend on.
-                error!("failed to bind metrics port {port} ({e}); metrics disabled");
+                error!("failed to bind metrics address {metrics_addr} ({e}); metrics disabled");
             }
         }
     }
@@ -132,11 +152,23 @@ pub async fn run_server(
                 info!("Accepted connection from {}", addr);
                 let ctx_clone = Arc::clone(&ctx);
                 let tls_acceptor_clone = tls_acceptor.clone();
-                tokio::spawn(async move {
+                // Boxed: this future transitively holds all of
+                // `handle_connection`'s state, which is large enough that
+                // inlining it here pushed `run_server`'s own future past a
+                // 2 MiB test thread. Moving it to the heap keeps the accept
+                // loop's footprint flat however much the handler grows, which
+                // is also what protects the 1 MiB main-thread budget the CI
+                // stack job guards.
+                tokio::spawn(Box::pin(async move {
                     let _permit = permit; // released when the connection task ends
                     let res = match tls_acceptor_clone {
-                        Some(acceptor) => match acceptor.accept(stream).await {
-                            Ok(tls_stream) => {
+                        Some(acceptor) => match tokio::time::timeout(
+                            ctx_clone.timeouts.handshake,
+                            acceptor.accept(stream),
+                        )
+                        .await
+                        {
+                            Ok(Ok(tls_stream)) => {
                                 handle_connection(
                                     protocol::MaybeTlsStream::Server(tls_stream),
                                     ctx_clone,
@@ -144,9 +176,21 @@ pub async fn run_server(
                                 )
                                 .await
                             }
-                            Err(e) => {
+                            Ok(Err(e)) => {
                                 error!("TLS handshake failed with {}: {}", addr, e);
                                 Err(e.into())
+                            }
+                            Err(_) => {
+                                // The connection permit is already held, so a
+                                // stalled handshake is a denial of service:
+                                // without this, `--max-connections` slow-loris
+                                // handshakes make the agent refuse everything
+                                // forever.
+                                warn!(
+                                    "TLS handshake with {} timed out after {:?}",
+                                    addr, ctx_clone.timeouts.handshake
+                                );
+                                Err("TLS handshake timed out".into())
                             }
                         },
                         None => {
@@ -161,8 +205,9 @@ pub async fn run_server(
                     if let Err(e) = res {
                         error!("Connection from {} error: {}", addr, e);
                     }
+
                     info!("Connection from {} closed", addr);
-                });
+                }));
             }
             Err(e) => {
                 warn!("Accept failed: {}", e);
@@ -178,8 +223,17 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
 ) -> Result<(), Box<dyn std::error::Error>> {
     // 1. First frame: can be STATUS probe, HISTORY query, or HELLO handshake.
     //    Pre-authentication, so a strict size cap applies (see MAX_PRE_AUTH_PAYLOAD).
-    let (msg_type, payload) =
-        read_frame_limited(&mut stream, protocol::MAX_PRE_AUTH_PAYLOAD).await?;
+    let (msg_type, payload) = tokio::time::timeout(
+        ctx.timeouts.handshake,
+        read_frame_limited(&mut stream, protocol::MAX_PRE_AUTH_PAYLOAD),
+    )
+    .await
+    .map_err(|_| {
+        format!(
+            "timed out after {:?} waiting for HELLO from client",
+            ctx.timeouts.handshake
+        )
+    })??;
 
     if msg_type == MsgType::Status {
         let status_req: protocol::StatusRequestPayload = decode_json(&payload)?;
@@ -496,7 +550,17 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
     let mut queued_frames: Vec<(MsgType, Vec<u8>)> = Vec::new();
 
     // 2. Receive next frame: PUT_TEMPLATE or MANIFEST
-    let (msg_type, payload) = read_frame(&mut read_half).await?;
+    let (msg_type, payload) =
+        match tokio::time::timeout(ctx.timeouts.io, Box::pin(read_frame(&mut read_half))).await {
+            Ok(res) => res?,
+            Err(_) => {
+                return Err(format!(
+                    "timed out after {:?} waiting for MANIFEST from client",
+                    ctx.timeouts.io
+                )
+                .into())
+            }
+        };
     let manifest: ManifestPayload = if msg_type == MsgType::PutTemplate {
         let put_req: protocol::PutTemplatePayload = decode_json(&payload)?;
         info!(
@@ -646,8 +710,7 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
                 write_json_frame(&mut *w, MsgType::HelloAck, &ack).await?;
                 return Err("queue full".into());
             }
-            ctx.queue_depth
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let slot = QueueSlotGuard::take(&ctx.queue_depth);
             let pos = ctx.queue_depth.load(std::sync::atomic::Ordering::SeqCst);
             let queued = protocol::QueuedPayload {
                 position: pos,
@@ -663,16 +726,14 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
             let (rh, guard, frames) = match outcome {
                 Some(t) => t,
                 None => {
-                    ctx.queue_depth
-                        .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                    drop(slot);
                     info!("Client disconnected while queued (project busy); freeing slot");
                     return Ok(());
                 }
             };
             read_half = rh;
             queued_frames.extend(frames);
-            ctx.queue_depth
-                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            drop(slot);
             guard
         }
     };
@@ -696,8 +757,7 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
                 write_json_frame(&mut *w, MsgType::HelloAck, &ack).await?;
                 return Err("queue full".into());
             }
-            ctx.queue_depth
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let slot = QueueSlotGuard::take(&ctx.queue_depth);
             let pos = ctx.queue_depth.load(std::sync::atomic::Ordering::SeqCst);
             let queued = protocol::QueuedPayload {
                 position: pos,
@@ -713,16 +773,14 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
             let (rh, permit_res, frames) = match outcome {
                 Some(t) => t,
                 None => {
-                    ctx.queue_depth
-                        .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                    drop(slot);
                     info!("Client disconnected while queued (concurrency limit); freeing slot");
                     return Ok(());
                 }
             };
             read_half = rh;
             queued_frames.extend(frames);
-            ctx.queue_depth
-                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            drop(slot);
             permit_res.map_err(|e| e.to_string())?
         }
     };
@@ -807,7 +865,19 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
             );
             continue;
         }
-        match read_frame(&mut read_half).await {
+        let frame =
+            match tokio::time::timeout(ctx.timeouts.io, Box::pin(read_frame(&mut read_half))).await
+            {
+                Ok(res) => res,
+                Err(_) => {
+                    return Err(format!(
+                        "timed out after {:?} waiting for FILES from client",
+                        ctx.timeouts.io
+                    )
+                    .into())
+                }
+            };
+        match frame {
             Ok(frame) => break frame,
             Err(e) => {
                 // `fh sync --dry-run` reads NEED to learn what would move and
@@ -868,7 +938,19 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
             );
             continue;
         }
-        match read_frame(&mut read_half).await {
+        let frame =
+            match tokio::time::timeout(ctx.timeouts.io, Box::pin(read_frame(&mut read_half))).await
+            {
+                Ok(res) => res,
+                Err(_) => {
+                    return Err(format!(
+                        "timed out after {:?} waiting for RUN from client",
+                        ctx.timeouts.io
+                    )
+                    .into())
+                }
+            };
+        match frame {
             Ok(frame) => break frame,
             Err(e) => {
                 // A client that sent its files and then hung up has finished a
@@ -959,6 +1041,7 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
                 ctx.custom_shell.as_deref(),
                 run.env.as_ref(),
                 run.toolchain.as_ref(),
+                &ctx.forward_allowlist,
             )
             .await?;
 
@@ -1049,6 +1132,7 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
         run.cols,
         run.rows,
         run.raw_stdio.unwrap_or(false),
+        &ctx.forward_allowlist,
     )
     .await?;
 
@@ -1126,6 +1210,8 @@ mod tests {
 
     fn ctx_with(token: Option<&str>) -> ServerContext {
         ServerContext {
+            timeouts: Timeouts::default(),
+            forward_allowlist: Vec::new(),
             expected_token: token.map(str::to_string),
             workdir_root: std::env::temp_dir(),
             custom_shell: None,

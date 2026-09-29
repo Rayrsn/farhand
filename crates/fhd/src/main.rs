@@ -57,6 +57,37 @@ struct Cli {
     metrics_port: Option<u16>,
 
     #[arg(
+        long = "metrics-bind",
+        value_name = "ADDR",
+        default_value = "127.0.0.1",
+        help = "Address the metrics endpoint binds to. The endpoint is unauthenticated, so it defaults to loopback"
+    )]
+    metrics_bind: String,
+
+    #[arg(
+        long = "forward-allow",
+        value_name = "PORT",
+        help = "Allow clients to reverse-forward this agent-side port (repeatable). Nothing is allowed by default"
+    )]
+    forward_allow: Vec<u16>,
+
+    #[arg(
+        long = "handshake-timeout-secs",
+        value_name = "SECS",
+        default_value_t = 30,
+        help = "Seconds to wait for a TLS handshake and the pre-auth first frame"
+    )]
+    handshake_timeout_secs: u64,
+
+    #[arg(
+        long = "io-timeout-secs",
+        value_name = "SECS",
+        default_value_t = 300,
+        help = "Seconds to wait for each pre-run frame. Does not apply once the command is running"
+    )]
+    io_timeout_secs: u64,
+
+    #[arg(
         long = "tag",
         action = clap::ArgAction::Append,
         help = "Agent capability tags (repeatable, e.g. '--tag lan --tag gpu')"
@@ -373,6 +404,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cli.max_queued_runs,
         Some(lock_manager),
         cli.metrics_port,
+        Some(cli.metrics_bind),
+        cli.forward_allow,
+        fhd::Timeouts {
+            handshake: std::time::Duration::from_secs(cli.handshake_timeout_secs),
+            io: std::time::Duration::from_secs(cli.io_timeout_secs),
+        },
     )
     .await?;
     Ok(())

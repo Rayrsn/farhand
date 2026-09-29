@@ -43,8 +43,42 @@ pub fn get_hostname() -> String {
     "fhd-agent".to_string()
 }
 
+/// How long the agent waits for a client at each stage of the protocol.
+///
+/// The connection limiter is acquired *before* the TLS handshake, so without
+/// these a client that connects and then stalls holds a permit indefinitely.
+/// With `--max-connections 32`, 32 stalled handshakes are enough to make the
+/// agent permanently refuse legitimate work.
+#[derive(Debug, Clone, Copy)]
+pub struct Timeouts {
+    /// TLS handshake and the pre-authentication first frame.
+    pub handshake: std::time::Duration,
+    /// Each subsequent frame before the command is dispatched.
+    ///
+    /// Generous by default because the FILES frame is a delta upload: a client
+    /// on a slow link legitimately takes minutes to deliver one. Note this
+    /// never covers the run itself — once a command starts, the connection is
+    /// allowed to be silent for as long as the build takes.
+    pub io: std::time::Duration,
+}
+
+impl Default for Timeouts {
+    fn default() -> Self {
+        Self {
+            handshake: std::time::Duration::from_secs(30),
+            io: std::time::Duration::from_secs(300),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct ServerContext {
+    pub timeouts: Timeouts,
+    /// Ports a client may ask the agent to forward to via `-L`. Empty refuses
+    /// every request: an authenticated client could otherwise reach any TCP
+    /// service on the agent's loopback, which is a much larger blast radius
+    /// than "run this build command".
+    pub forward_allowlist: Vec<u16>,
     pub expected_token: Option<String>,
     pub workdir_root: PathBuf,
     pub custom_shell: Option<String>,

@@ -57,6 +57,22 @@ impl CasStore {
                 format!("Source file does not exist: {}", src_path.display()),
             ));
         }
+        // Verify the content before trusting the key. A content-addressable
+        // store's one guarantee is that an object can be fetched by its digest
+        // and get the bytes that digest names; storing without checking breaks
+        // that permanently, because the poisoned object is what every later
+        // lookup for that hash finds.
+        let actual = fileset::hash_file(src_path)?;
+        if !actual.eq_ignore_ascii_case(sha256) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "content does not match the supplied hash for {}: \
+                     declared {sha256}, actual {actual}",
+                    src_path.display()
+                ),
+            ));
+        }
 
         let dst_path = self.object_path(sha256);
         if dst_path.is_file() {
@@ -140,7 +156,10 @@ mod tests {
         let file_path = src_dir.path().join("code.rs");
         fs::write(&file_path, b"fn main() { println!(\"cas\"); }").unwrap();
 
-        let hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        // A real digest: put_file verifies the content against the key, which
+        // is the one guarantee a content-addressable store exists to provide.
+        let hash = fileset::hash_file(&file_path).unwrap();
+        let hash = hash.as_str();
 
         assert!(!cas.has_object(hash));
 
@@ -178,7 +197,8 @@ mod concurrency_tests {
         let src = tempdir().unwrap();
         let src_file = src.path().join("data.bin");
         fs::write(&src_file, vec![42u8; 8192]).unwrap();
-        let hash = "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234";
+        // Real digest: put_file rejects content that does not match its key.
+        let hash = fileset::hash_file(&src_file).unwrap();
 
         let mut handles = Vec::new();
         for _ in 0..32 {
@@ -193,7 +213,7 @@ mod concurrency_tests {
             h.join().unwrap();
         }
 
-        let stored = fs::read(cas.object_path(hash)).unwrap();
+        let stored = fs::read(cas.object_path(&hash)).unwrap();
         assert_eq!(
             stored,
             vec![42u8; 8192],
@@ -208,10 +228,10 @@ mod concurrency_tests {
         let src = tempdir().unwrap();
         let src_file = src.path().join("f.bin");
         fs::write(&src_file, b"touch-me").unwrap();
-        let hash = "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234";
-        cas.put_file(hash, &src_file).unwrap();
+        let hash = fileset::hash_file(&src_file).unwrap();
+        cas.put_file(&hash, &src_file).unwrap();
 
-        let before = fs::metadata(cas.object_path(hash))
+        let before = fs::metadata(cas.object_path(&hash))
             .unwrap()
             .modified()
             .unwrap();
@@ -220,16 +240,16 @@ mod concurrency_tests {
         {
             let f = fs::File::options()
                 .write(true)
-                .open(cas.object_path(hash))
+                .open(cas.object_path(&hash))
                 .unwrap();
             f.set_modified(old).unwrap();
         }
 
         let dest = tempdir().unwrap();
-        cas.materialize_to(hash, &dest.path().join("out.bin"))
+        cas.materialize_to(&hash, &dest.path().join("out.bin"))
             .unwrap();
 
-        let after = fs::metadata(cas.object_path(hash))
+        let after = fs::metadata(cas.object_path(&hash))
             .unwrap()
             .modified()
             .unwrap();
@@ -238,5 +258,45 @@ mod concurrency_tests {
             "materialize_to must touch the object mtime for LRU accounting"
         );
         let _ = before;
+    }
+}
+
+#[cfg(test)]
+mod integrity_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    /// A content-addressable store's whole guarantee is that fetching by
+    /// digest returns the bytes that digest names. Storing without checking
+    /// breaks that permanently: the poisoned object is what every later
+    /// lookup for that hash finds.
+    #[test]
+    fn put_file_rejects_content_that_does_not_match_the_hash() {
+        let workdir = tempdir().unwrap();
+        let cas = CasStore::new(workdir.path());
+        let src = tempdir().unwrap();
+        let file = src.path().join("payload.bin");
+        fs::write(&file, b"the real content").unwrap();
+
+        let wrong = "0000000000000000000000000000000000000000000000000000000000000000";
+        let err = cas.put_file(wrong, &file).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(
+            !cas.has_object(wrong),
+            "a mismatched object must not be stored at all"
+        );
+
+        // The correct digest still works afterwards, and the store is not
+        // poisoned by the rejected attempt.
+        let right = fileset::hash_file(&file).unwrap();
+        cas.put_file(&right, &file).unwrap();
+        let dest = tempdir().unwrap();
+        assert!(cas
+            .materialize_to(&right, &dest.path().join("out.bin"))
+            .unwrap());
+        assert_eq!(
+            fs::read(dest.path().join("out.bin")).unwrap(),
+            b"the real content"
+        );
     }
 }

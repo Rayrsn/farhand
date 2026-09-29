@@ -21,7 +21,15 @@ async fn spawn_test_server_with_tags(
     max_concurrent_runs: Option<usize>,
     tags: Vec<String>,
 ) -> (String, tokio::task::JoinHandle<()>) {
-    spawn_test_server_full(token, workdir, max_concurrent_runs, tags, Some(0)).await
+    spawn_test_server_full(
+        token,
+        workdir,
+        max_concurrent_runs,
+        tags,
+        Some(0),
+        Vec::new(),
+    )
+    .await
 }
 
 async fn spawn_test_server_full(
@@ -30,6 +38,7 @@ async fn spawn_test_server_full(
     max_concurrent_runs: Option<usize>,
     tags: Vec<String>,
     min_disk_bytes: Option<u64>,
+    forward_allow: Vec<u16>,
 ) -> (String, tokio::task::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap().to_string();
@@ -50,6 +59,10 @@ async fn spawn_test_server_full(
             None,
             None,
             None, // metrics port: unused by the test server
+            None, // metrics bind: unused
+            // Default deny unless the test explicitly opts a port in.
+            forward_allow,
+            fhd::Timeouts::default(),
         )
         .await;
     });
@@ -94,6 +107,10 @@ async fn spawn_test_server_with_lock(
             None,
             Some(server_locks),
             None, // metrics port: unused by the test server
+            None, // metrics bind: unused
+            // Default deny, exactly as a real agent ships.
+            Vec::new(),
+            fhd::Timeouts::default(),
         )
         .await;
     });
@@ -145,6 +162,12 @@ async fn spawn_agent_tls(
             None,
             None,
             None, // metrics port: unused by the test server
+            None, // metrics bind: unused
+            // These tests drive raw protocol frames and never ask for a port
+            // forward, so the default-deny allowlist is both correct here and
+            // the posture worth exercising.
+            Vec::new(),
+            fhd::Timeouts::default(),
         )
         .await;
     });
@@ -2692,8 +2715,17 @@ async fn test_e2e_reverse_port_forwarding_tunnel() {
 
     let token = "port-fwd-secret".to_string();
     let workdir = tempdir().unwrap();
-    let (server_addr, _handle) =
-        spawn_test_server(Some(token.clone()), workdir.path().to_path_buf()).await;
+    let (server_addr, _handle) = spawn_test_server_full(
+        Some(token.clone()),
+        workdir.path().to_path_buf(),
+        None,
+        Vec::new(),
+        None,
+        // The agent refuses to forward to a port the operator has not allowed,
+        // so the test has to opt this one in explicitly.
+        vec![mock_port],
+    )
+    .await;
 
     let mut stream = TcpStream::connect(&server_addr).await.unwrap();
 
@@ -2803,6 +2835,7 @@ async fn test_e2e_preflight_disk_guard_rejection_and_status() {
         None,
         vec![],
         Some(0),
+        Vec::new(),
     )
     .await;
 
@@ -2834,6 +2867,7 @@ async fn test_e2e_preflight_disk_guard_rejection_and_status() {
         None,
         vec![],
         Some(u64::MAX),
+        Vec::new(),
     )
     .await;
 
@@ -3712,6 +3746,12 @@ async fn test_connection_limit_closes_excess_connections() {
             None,
             None,
             None, // metrics port: unused by the test server
+            None, // metrics bind: unused
+            // These tests drive raw protocol frames and never ask for a port
+            // forward, so the default-deny allowlist is both correct here and
+            // the posture worth exercising.
+            Vec::new(),
+            fhd::Timeouts::default(),
         )
         .await;
     });
@@ -4046,6 +4086,12 @@ async fn test_e2e_queue_full_rejection() {
             Some(1), // max_queued_runs = 1
             None,
             None, // metrics port: unused by the test server
+            None, // metrics bind: unused
+            // These tests drive raw protocol frames and never ask for a port
+            // forward, so the default-deny allowlist is both correct here and
+            // the posture worth exercising.
+            Vec::new(),
+            fhd::Timeouts::default(),
         )
         .await;
     });
