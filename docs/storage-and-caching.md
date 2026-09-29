@@ -152,8 +152,14 @@ reason cannot be forged by `SetFileTime`.
 
 **When it is not.** A file modified in the same filesystem timestamp tick as
 the cached `stat` cannot move its mtime, so it is re-hashed rather than
-trusted — the same "racily clean" rule git uses. This costs a re-hash and
+trusted — the same "racially clean" rule git uses. This costs a re-hash and
 never a stale result.
+
+On Windows the change time has a coarser floor: file times there are stamped
+from the system clock, which ticks at roughly 15.6 ms by default, so two writes
+to the same file within one tick share a `ChangeTime`. The residual window is
+milliseconds rather than unbounded, but it is real — the Windows CI job is
+what surfaced it.
 
 **Is it safe to delete?** Yes. It is a cache, not state: deleting it costs one
 full re-hash on the next sync and nothing else. It is excluded from the

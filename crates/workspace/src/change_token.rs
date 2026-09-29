@@ -35,8 +35,16 @@ pub fn change_token(_path: &Path, meta: &std::fs::Metadata) -> i64 {
 /// unless this is read directly.
 ///
 /// `ChangeTime` is maintained by the filesystem and, unlike `LastWriteTime`,
-/// cannot be set through `SetFileTime`, which is what makes it a usable
-/// change token. It is a `LARGE_INTEGER` of 100-nanosecond intervals since
+/// cannot be set through `SetFileTime`, which is what makes it a usable change
+/// token.
+///
+/// One caveat, found by the Windows CI job: Windows stamps file times from the
+/// system clock, whose default tick is about 15.6 ms. Two writes to the same
+/// file within one tick therefore carry the same `ChangeTime`, however far
+/// apart they are in nanoseconds. The window this leaves is far narrower than
+/// the one `(size, mtime)` has on its own — it is milliseconds rather than
+/// unbounded — but it is real, and it is why `settle_timestamp_clock` exists
+/// in the tests below. It is a `LARGE_INTEGER` of 100-nanosecond intervals since
 /// 1601, so it is returned verbatim: the value only has to be stable and
 /// change on every write, never meaningful on its own.
 ///
@@ -134,6 +142,12 @@ mod tests {
         let original_mtime = fs::metadata(&path).unwrap().modified().unwrap();
         let first = change_token(&path, &fs::metadata(&path).unwrap());
 
+        // Windows stamps file times from the system clock, whose default tick
+        // is ~15.6 ms, so two writes microseconds apart land on the same tick
+        // and the change time does not move. Cross a tick first, or the test
+        // asserts a precision Windows cannot provide.
+        settle_timestamp_clock();
+
         // Same length, and the mtime restored to its original value.
         fs::write(&path, b"bbbb").unwrap();
         restore_mtime(&path, original_mtime);
@@ -163,6 +177,14 @@ mod tests {
         let second = change_token(&path, &fs::metadata(&path).unwrap());
 
         assert_eq!(first, second, "an untouched file must not invalidate");
+    }
+
+    /// Wait long enough for a coarse file-timestamp clock to tick.
+    ///
+    /// A no-op on Unix, where `ctime` has nanosecond resolution, but required
+    /// on Windows where the system clock ticks at roughly 15.6 ms by default.
+    fn settle_timestamp_clock() {
+        std::thread::sleep(std::time::Duration::from_millis(30));
     }
 
     #[cfg(unix)]
