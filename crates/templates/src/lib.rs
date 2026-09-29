@@ -24,8 +24,40 @@ pub enum TemplateError {
     #[error("Invalid template scope '{0}', must be 'user' or 'project'")]
     InvalidScope(String),
 
+    #[error(
+        "Invalid template name '{0}': must be 1-64 characters of letters, digits, '.', '_' or '-'"
+    )]
+    InvalidName(String),
+
     #[error("Workspace directory is required for project-scoped template operations")]
     MissingWorkspace,
+}
+
+/// Longest template name accepted by [`save_template`].
+const MAX_NAME_LEN: usize = 64;
+
+/// Whether `name` is safe to use as a filename component.
+///
+/// The name ends up in `templates/<name>.yaml`, and the caller may be a remote
+/// client uploading YAML whose `name` field it chose. Without a character
+/// whitelist a name like `../../../../etc/cron.d/evil` walks out of the
+/// templates directory entirely, so the check is on the *characters* rather
+/// than on specific bad patterns: no separator, no `..`, no absolute path and
+/// no NUL can be expressed at all in this set.
+///
+/// This is deliberately stricter than the sanitiser in
+/// `workspace::resolve_workspace_dir`, which maps offending characters to `_`
+/// because a workspace name is hashed into a directory name and only needs to
+/// be unique. Here the name is user-visible and doubles as a filename, so
+/// silently rewriting it would write somewhere the caller did not ask for.
+fn is_valid_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_NAME_LEN
+        && name != "."
+        && name != ".."
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -315,6 +347,14 @@ pub fn save_template(
     let parsed: Template =
         serde_yaml::from_str(yaml).map_err(|e| TemplateError::Yaml(name.to_string(), e))?;
 
+    // The filename comes from the *YAML*, not from the `name` argument, so a
+    // caller uploading YAML with a hostile `name:` field controls the path
+    // that gets written. It is validated rather than sanitised: silently
+    // rewriting it would write somewhere the caller did not name.
+    if !is_valid_name(&parsed.name) {
+        return Err(TemplateError::InvalidName(parsed.name));
+    }
+
     let target_dir = match scope {
         "project" => {
             let ws = workspace_root.ok_or(TemplateError::MissingWorkspace)?;
@@ -333,6 +373,15 @@ pub fn save_template(
         .map_err(|e| TemplateError::Io(target_dir.display().to_string(), e))?;
 
     let target_file = target_dir.join(format!("{}.yaml", parsed.name));
+
+    // Defence in depth. The character whitelist above already makes escape
+    // impossible, but this is the invariant the project actually cares about
+    // (a write must stay inside the templates directory), and a future change
+    // to the whitelist should not be able to violate it silently.
+    if target_file.parent() != Some(target_dir.as_path()) {
+        return Err(TemplateError::InvalidName(parsed.name));
+    }
+
     fs::write(&target_file, yaml)
         .map_err(|e| TemplateError::Io(target_file.display().to_string(), e))?;
 
@@ -437,6 +486,121 @@ outputs:
         let loaded = load_templates(Some(ws.path()));
         assert!(loaded.contains_key("zig"));
         assert_eq!(loaded["zig"].source, TemplateSource::Project);
+    }
+
+    /// The filename is built from the `name` field *inside the uploaded YAML*,
+    /// not from the name the caller passed, and that YAML can arrive from a
+    /// remote client via `PUT_TEMPLATE`. Before this was validated, a name
+    /// like `../../../../etc/whatever` wrote straight out of the templates
+    /// directory — confirmed to escape the workdir entirely.
+    ///
+    /// Asserts the *specific* rejection rather than merely "it errored":
+    /// without the check, a traversal whose parent directory happens to exist
+    /// would succeed outright, and one whose parent does not would fail with a
+    /// generic I/O error, so a naive `is_err()` assertion would pass for
+    /// entirely the wrong reason.
+    #[test]
+    fn test_save_template_rejects_names_that_escape_the_templates_dir() {
+        let ws = tempdir().unwrap();
+        for hostile in [
+            "../escaped",
+            "../../escaped",
+            "../../../../../tmp/ESCAPED",
+            "sub/dir",
+            "..",
+            ".",
+            "",
+            "/etc/passwd",
+        ] {
+            // Single-quoted so the name reaches the validator verbatim rather
+            // than being mangled by YAML's own escaping rules first.
+            let yaml = format!("name: '{hostile}'\ndescription: x\n");
+            match save_template(Some(ws.path()), "ignored", &yaml, "project") {
+                Ok(p) => panic!("name {hostile:?} was accepted, wrote {}", p.display()),
+                Err(TemplateError::InvalidName(n)) => assert_eq!(n, hostile),
+                Err(other) => panic!(
+                    "name {hostile:?} failed for the wrong reason: {other} \
+                     (an I/O error means the write was merely blocked by a \
+                     missing parent directory, not validated)"
+                ),
+            }
+        }
+
+        // Nothing at all may have been written under the templates directory.
+        let mut written: Vec<_> = std::fs::read_dir(ws.path().join(".farhand/templates"))
+            .map(|d| d.flatten().map(|e| e.file_name()).collect())
+            .unwrap_or_default();
+        written.sort();
+        assert!(
+            written.is_empty(),
+            "a template file was written: {written:?}"
+        );
+    }
+
+    /// Character-level coverage for the validator itself, kept separate so
+    /// YAML escaping cannot mask a case.
+    #[test]
+    fn test_is_valid_name_rejects_unsafe_characters() {
+        for bad in [
+            "",
+            ".",
+            "..",
+            "/",
+            "/etc/passwd",
+            "a/b",
+            "a\\b",
+            "a b",
+            "a\0b",
+            "a:b",
+            "a*b",
+            "a?b",
+            "a|b",
+            "a\nb",
+            "héllo",
+            "日本語",
+        ] {
+            assert!(!is_valid_name(bad), "{bad:?} should be rejected");
+        }
+        for good in [
+            "a",
+            "zig",
+            "rust2",
+            "my-template",
+            "my_template",
+            "a.b.c",
+            ".hidden",
+        ] {
+            assert!(is_valid_name(good), "{good:?} should be accepted");
+        }
+        assert!(is_valid_name(&"a".repeat(MAX_NAME_LEN)));
+        assert!(!is_valid_name(&"a".repeat(MAX_NAME_LEN + 1)));
+    }
+
+    /// The negative control: ordinary names, including ones with dots,
+    /// hyphens, and underscores, must still work.
+    #[test]
+    fn test_save_template_accepts_ordinary_names() {
+        let ws = tempdir().unwrap();
+        for name in ["zig", "my-template", "my_template", "rust2", "a.b.c"] {
+            let yaml = format!("name: {name}\ndescription: x\n");
+            let saved = save_template(Some(ws.path()), name, &yaml, "project")
+                .unwrap_or_else(|e| panic!("name {name:?} rejected: {e}"));
+            assert!(saved.exists());
+            assert_eq!(
+                saved.parent().unwrap(),
+                ws.path().join(".farhand/templates")
+            );
+        }
+    }
+
+    /// A name that is too long is rejected rather than truncated, so the file
+    /// written always matches the name the caller asked for.
+    #[test]
+    fn test_save_template_rejects_overlong_names() {
+        let ws = tempdir().unwrap();
+        let name = "a".repeat(MAX_NAME_LEN + 1);
+        let yaml = format!("name: {name}\ndescription: x\n");
+        assert!(save_template(Some(ws.path()), &name, &yaml, "project").is_err());
     }
 }
 

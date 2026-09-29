@@ -98,6 +98,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the first version of the CLI reference claimed otherwise. Verified
   against a live agent: `exit 3` → `3`, a nonexistent command → `127`, a
   non-executable file → `127`, `kill -TERM $$` → `1`, `kill -KILL $$` → `1`.
+
+- **Path traversal in `templates::save_template`.** The template filename was
+  built from the `name` field *inside the uploaded YAML* with no validation,
+  so a name like `../../../../../tmp/evil` walked out of the templates
+  directory and wrote wherever the daemon user could write — confirmed
+  empirically, escaping the workdir entirely.
+
+  This was reachable over the network: the agent passes a client-supplied YAML
+  string from `PUT_TEMPLATE` straight into the function, so any authenticated
+  client could write arbitrary paths on the agent host. It granted no new
+  capability given that a valid token already permits arbitrary command
+  execution, but it violated the project's own path-traversal rule, wrote
+  files the template feature has no business writing, and would become a real
+  escalation the moment tokens are ever scoped.
+
+  The name is now validated against a character whitelist — no separator, no
+  `..`, no absolute path and no NUL is expressible — plus a containment check
+  on the resulting path as defence in depth. It is rejected rather than
+  sanitised, so a write can never land somewhere the caller did not name.
+
+  Verified end to end: a hostile `fh templates push` is refused by the agent
+  with a clear error and nothing is written, while ordinary names — including
+  ones with dots, hyphens, and underscores — still work. The regression test
+  asserts the specific rejection, because without the fix a traversal would
+  either succeed or fail with a generic I/O error, and a naive `is_err()`
+  check would have passed for the wrong reason.
 - **The Homebrew formula shipped a published token.** `Formula/farhand.rb`
   carried a `service do` block that started `fhd --listen 0.0.0.0:9876` with
   `FARHAND_TOKEN: "replace-with-your-token"`, so a plain
