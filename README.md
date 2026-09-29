@@ -63,6 +63,7 @@ Logs stream directly into your terminal in real time, and build artifacts (like 
 | **Clean Process Cancellation** | **Yes** (kills remote process tree) | No (orphans compiler processes) | Yes |
 | **Offline Multi-Agent Failover**| **Yes** (automatic load-balancing) | No | No |
 | **Works with Any Local Editor** | **Yes** (pure CLI wrapper) | Yes | No |
+| **Remote Dev Server Reachable at `localhost`** | **Yes** (`-L`, rides the build connection) | Needs a separate `ssh -L` | Yes (full remote desktop) |
 
 ---
 
@@ -80,6 +81,7 @@ Logs stream directly into your terminal in real time, and build artifacts (like 
 - 🔀 **Branch-Aware Project Addressing**: Automatically detects git branches and scopes workspaces as `<repo>__<branch>` so multiple developers never collide.
 - 🛡️ **Section 5.1 Deletion Safety**: Strictly protects remote dependencies and build outputs from being deleted during manifest synchronization.
 - 🛑 **Process Group Isolation**: Spawns compilation inside isolated process groups (`setpgid`). If you `Ctrl+C` locally, the entire remote compiler hierarchy is gracefully terminated.
+- 🔌 **Reverse Port Forwarding (`-L`)**: run the dev server on the build box and open it on your laptop as if it were local — `fh -L 3000:3000 -- npm run dev`, then browse `http://localhost:3000`. Repeatable, loopback-only, and multiplexed over the existing build connection, so there is no second tunnel to keep alive and no extra inbound port on the agent. See [the guide](docs/port-forwarding.md).
 - 🌐 **Multi-Agent Pool & Tag Routing**: Automatically discovers, health-checks, and load-balances jobs across a cluster of build agents.
 - 🔒 **Native Zero-Config TLS & Mutual TLS (mTLS)**: Pure-Rust, memory-safe TLS via `rustls` (zero OpenSSL / C library dependencies). Supports automatic self-signed cert generation (`fhd --tls-auto`), SHA-256 fingerprint verification (`fh --tls-fingerprint <sha256>`), CA verification (`--tls-ca`), and mutual TLS client certificates (`--tls-cert`, `--tls-key`).
 - 🛠️ **Declarative Toolchain Manager Hooks**: Declare language versions per project in `.farhand.yaml` or via CLI (`-T rust=nightly`). Farhand automatically configures `RUSTUP_TOOLCHAIN`, `PYENV_VERSION`, `NODE_VERSION`, and wraps remote invocations with `nvm`, `fnm`, `pyenv`, or `goenv`.
@@ -258,6 +260,13 @@ fh cargo build --release
 # Continuous watch mode: sync and rebuild on local file saves
 fh watch cargo check
 
+# Run the dev server on the build box, browse it at localhost:3000
+fh -L 3000:3000 -- npm run dev
+
+# Or declare it once in .farhand.yaml, then just run the build:
+#   forward:
+#     - "3000:3000"
+
 # Interactive remote workspace shell (allocated PTY inside remote repo)
 fh shell
 
@@ -379,6 +388,7 @@ Deep-dive guides covering architecture, server setup, and configuration:
 - ⚙️ **[Configuration Guide (`.farhand.yaml`)](docs/configuration.md)** — Complete reference for config discovery, field definitions, and environment variable interpolation.
 - 🌐 **[Multi-Agent Pool & Dynamic Load Balancing](docs/multi-agent-pool.md)** — Setup guide for multi-agent clusters, health probing, and hardware tag routing (`--agent-tag`).
 - ⚡ **[Language Server Protocol (LSP) Offloading Guide](docs/lsp-integration.md)** — Offload `rust-analyzer`, `pyright`, `gopls`, and `clangd` to remote agent with VS Code, Neovim, Helix, and Zed.
+- 🔌 **[Reverse Port Forwarding Guide](docs/port-forwarding.md)** — Run a dev server, database, or any port on the build box and reach it at `localhost` with `-L`, multiplexed over the existing build connection.
 - ☁️ **[Remote Access via Cloudflare Tunnel](docs/cloudflared-tunnel.md)** — Connect securely over the internet with `cloudflared access tcp` without opening inbound router ports.
 - 📏 **[Benchmarks](BENCHMARKS.md)** — Reproducible criterion numbers behind the performance claims above.
 

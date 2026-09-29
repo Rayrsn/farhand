@@ -42,6 +42,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   effect is a number rather than a claim.
 
 ### Fixed
+- **Documented reverse port forwarding, and fixed its config validation.** `-L/--forward`
+  has shipped since 1.0.0 and appears in no user-facing documentation: not the
+  README, and not one of the guides. The only mention anywhere was in a
+  gitignored roadmap file that described it as a *proposed* capability, so a
+  feature that works was both invisible and documented as unbuilt. Added
+  `docs/port-forwarding.md` and wired it into the README's feature list,
+  quickstart, comparison table, and documentation index.
+  While writing the guide, a related gap turned up: `-L` validated its spec
+  strictly, but a `forward:` list in `.farhand.yaml` was never checked, so a
+  typo there meant the tunnel silently did not exist and surfaced as a
+  baffling "my dev server is unreachable". Both are now validated against the
+  effective list, with the error naming which source was at fault.
+
+  Verified end to end against a live agent: bidirectional traffic including
+  POST bodies, multiple simultaneous forwards with independent port mappings,
+  the `.farhand.yaml` form, and re-establishment across `fh watch` rebuilds.
 - **The Homebrew formula shipped a published token.** `Formula/farhand.rb`
   carried a `service do` block that started `fhd --listen 0.0.0.0:9876` with
   `FARHAND_TOKEN: "replace-with-your-token"`, so a plain

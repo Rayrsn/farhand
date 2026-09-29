@@ -1319,13 +1319,8 @@ async fn run_cli() {
 
     let verbose = cli.verbose || cfg.verbose;
 
-    // Validate flag payloads that used to be silently ignored.
-    for spec in &cli.forward {
-        if let Err(e) = fh::parse_forward_spec(spec) {
-            eprintln!("Error: invalid --forward '{}': {}", spec, e);
-            exit(EXIT_INFRA_ERROR);
-        }
-    }
+    // `--forward` payloads are validated further down, against the effective
+    // list, once the `.farhand.yaml` fallback has been resolved.
     if let Some(compression) = &cli.compression {
         let lowered = compression.to_ascii_lowercase();
         if !matches!(
@@ -1693,11 +1688,28 @@ async fn run_cli() {
     } else {
         cli.tty || cfg.tty
     };
-    let effective_forwards = if !cli.forward.is_empty() {
+    // CLI flags replace the config list rather than adding to it, so validation
+    // has to happen on whichever list actually wins. Validating only
+    // `cli.forward` (as this used to) left a malformed entry in `.farhand.yaml`
+    // silently dropped, so a typo meant the tunnel simply did not exist and
+    // surfaced as a baffling "my dev server is unreachable".
+    let forwards_from_cli = !cli.forward.is_empty();
+    let effective_forwards = if forwards_from_cli {
         cli.forward
     } else {
         cfg.forward
     };
+    for spec in &effective_forwards {
+        if let Err(e) = fh::parse_forward_spec(spec) {
+            let source = if forwards_from_cli {
+                "--forward"
+            } else {
+                ".farhand.yaml"
+            };
+            eprintln!("Error: invalid forward '{spec}' from {source}: {e}");
+            exit(EXIT_INFRA_ERROR);
+        }
+    }
     let mut run_env = collect_forward_env(cli.no_env, cfg.forward_env, &cfg.env, &cli.env);
     if effective_tty {
         let env_map = run_env.get_or_insert_with(std::collections::HashMap::new);
