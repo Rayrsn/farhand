@@ -1,7 +1,7 @@
 class Farhand < Formula
   desc "Remote build and test offloader with zero external system binaries"
   homepage "https://github.com/Rayrsn/farhand"
-  version "1.10.0"
+  version "1.9.0"
   license "MIT OR Apache-2.0"
 
   on_macos do
