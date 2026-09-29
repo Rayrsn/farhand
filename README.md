@@ -383,6 +383,8 @@ Deep-dive guides covering architecture, server setup, and configuration:
 
 - 🖥️ **[CLI Reference](docs/cli.md)** — Every command, subcommand, and flag, plus the exit-code contract.
 - 📦 **[Templates](docs/templates.md)** — How build templates detect projects and drive dependency installs, and how to override them.
+- 🖧 **[The Agent (`fhd`)](docs/agent.md)** — Every daemon flag, the security posture, resource limits, GC and CAS tuning, and running it as a service.
+- 🙈 **[Ignore Rules](docs/ignores.md)** — What gets synced and what does not: built-in defaults, `.gitignore`, `.farhand-ignore`, and template rules.
 - 📈 **[Observability](docs/observability.md)** — live `fh top`, plus an opt-in Prometheus endpoint (`fhd --metrics-port`) with an importable Grafana dashboard.
 - 🍏 **[Apple Silicon Mac Mini Setup Guide](docs/mac-build-server-setup.md)** — Production step-by-step guide for turning a Mac Mini into a multi-developer build server (`launchd`, firewalls, network access).
 - 💾 **[Storage Optimization & Caching Guide](docs/storage-and-caching.md)** — Deep dive into APFS Copy-on-Write cloning, LRU garbage collection, and shared toolchain caches (`sccache`).

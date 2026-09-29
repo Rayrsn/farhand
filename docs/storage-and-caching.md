@@ -119,11 +119,51 @@ When the background collector wakes up or total workspace storage exceeds `--max
 |   (main, master) are NEVER  |
 |   evicted!                  |
 +-----------------------------+
+
+## 4. The Digest Index: Why Warm Builds Are Fast
+
+Each workspace carries a small file, `.farhand-hashindex.json`, holding the
+SHA-256 of every file the agent last hashed, keyed by relative path.
+
+Without it, every delta sync re-read and re-hashed the entire remote workspace,
+so a build where you changed one file still cost a full read of everything on
+the agent. With it, a warm sync stats every file and reads none of them:
+
 ```
+full re-hash scan   3.11 ms
+warm stat-only scan 1.13 ms     (320-file fixture)
+```
+
+What you see in the agent log:
+
+```
+DEBUG Workspace scan reused 62 of 62 digests (0 re-hashed)
+DEBUG Workspace scan reused 61 of 62 digests ( 1 re-hashed)
+```
+
+**When a digest is reused.** A cached digest is trusted only if the file's
+size, modification time, *and* kernel change time are all unchanged. The
+change time matters because a size and mtime check is blind to a same-size
+overwrite whose mtime was preserved — which is exactly what `rsync -a`,
+`tar -p`, `cp -p`, and `robocopy` produce. The change time is set by the
+kernel on every write and cannot be set back by userspace, so it closes that
+gap. On Windows the agent reads the NTFS change time, which for the same
+reason cannot be forged by `SetFileTime`.
+
+**When it is not.** A file modified in the same filesystem timestamp tick as
+the cached `stat` cannot move its mtime, so it is re-hashed rather than
+trusted — the same "racily clean" rule git uses. This costs a re-hash and
+never a stale result.
+
+**Is it safe to delete?** Yes. It is a cache, not state: deleting it costs one
+full re-hash on the next sync and nothing else. It is excluded from the
+manifest, from artifact retrieval, and from Section 5.1 deletion, so it is
+never transferred to your machine and never removed by GC's file-level logic.
+It disappears with the workspace when the workspace is deleted.
 
 ---
 
-## 4. Shared Host-Level Toolchain Caches
+## 5. Shared Host-Level Toolchain Caches
 
 In addition to per-workspace dependency persistence, daemon configurations should expose host-level shared caches so compilers can reuse compilation units across different workspaces:
 
@@ -150,7 +190,7 @@ These environment variables are pre-configured in Farhand's official `launchd` p
 
 ---
 
-## 5. Client-Driven Remote Cleanup (`fh clean`)
+## 6. Client-Driven Remote Cleanup (`fh clean`)
 
 Developers can proactively reclaim storage on the agent using the `fh clean` subcommand:
 

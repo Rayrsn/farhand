@@ -180,6 +180,7 @@ Live dashboard of remote activity, CPU, memory, disk, and active builds.
 | `--once` | Print a snapshot and exit. |
 | `-i, --interval <SECS>` | Refresh interval. Default `1`. |
 
+
 ### `fh agent info`
 
 Agent specifications, resource usage, and active jobs. `--json` for
@@ -224,14 +225,28 @@ drift from the flags. Default output directory `man`.
 
 | Code | Meaning |
 | :--- | :--- |
-| `0` | Success. |
+| `0` | Success. Artifacts, if any, were retrieved. |
 | `1`–`124` | The remote command's own exit code. |
-| `125` | Farhand infrastructure error — connection, auth, protocol, or usage. |
-| `126` / `127` | The remote command could not be executed / was not found. |
-| `128 + N` | The remote process was killed by signal `N`. |
-
-Any other non-zero code is the remote program's. Anything `125` is a problem
-with Farhand itself or how it was invoked, not with your build.
+| `125` | Farhand could not do its job — wrong host, bad token, TLS failure, or a usage error. Nothing ran. |
+| `127` | The agent could not execute the command: not found, or not executable. |
+>
+> The distinction that matters is **whose** failure it is. `1`–`124` means your
+> build ran and failed, and the number is its own. `125` means Farhand itself
+> could not run anything, so the build never started.
+>
+> Two things that will otherwise surprise you:
+>
+> - **A build killed by a signal reports `1`**, not `128 + N`. The agent reports
+>   a process that died without an exit status as a plain failure, so an
+>   OOM-killed build and one that legitimately returns `1` look identical from
+>   the exit code alone. Correlate with `fh history` or the agent log.
+> - **`126` is not used.** A command that cannot be executed reports `127`.
+>
+> `fh` never returns `128 + N`, and the `126–127` range described in the
+> project's `AGENTS.md` reserves a `126` that the code does not produce.
+>
+> Verified against a live agent: `exit 3` → `3`, a nonexistent command → `127`,
+> a non-executable file → `127`, `kill -TERM $$` → `1`, `kill -KILL $$` → `1`.
 
 ## `fhd` options
 

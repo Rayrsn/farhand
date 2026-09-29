@@ -51,6 +51,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   schema, the project/user/builtin resolution order, and the distinction
   between `ignoreExtra`, `outputs`, and `outputsIgnore`.
 
+- **An agent reference (`docs/agent.md`)** covering every `fhd` flag — resource
+  limits, disk and CAS tuning, pool tags, and TLS — together with an explicit
+  statement of the security posture: a valid token is equivalent to shell
+  access as the user running the daemon, and TLS is off by default.
+- **An ignore-rules guide (`docs/ignores.md`)** documenting the four sources
+  that decide what is synced, the built-in defaults that cannot be turned off,
+  `.gitignore` and `.farhand-ignore` handling, negation, and how to ask
+  `fh why`.
+- **The digest index** (`.farhand-hashindex.json`) is now documented in the
+  storage guide: why it exists, the `(size, mtime, change token)` gate and why
+  the change time is part of it, the racy-stamp rule, and that deleting it is
+  safe and costs only one re-hash.
 ### Fixed
 - **Documented reverse port forwarding, and fixed its config validation.** `-L/--forward`
   has shipped since 1.0.0 and appears in no user-facing documentation: not the
@@ -78,6 +90,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   source: the template commands were run live (including pushing to a running
   agent), and the documented configuration parses, with `doctor` confirming
   the TLS and toolchain fields resolve.
+
+- **Corrected the exit-code table**, which had been copied from `AGENTS.md`
+  without checking the code. A build killed by a signal reports `1`, not
+  `128 + N` — the agent maps a process that died without an exit status to a
+  plain failure — and `126` is never produced at all, though both `AGENTS.md`
+  and the first version of the CLI reference claimed otherwise. Verified
+  against a live agent: `exit 3` → `3`, a nonexistent command → `127`, a
+  non-executable file → `127`, `kill -TERM $$` → `1`, `kill -KILL $$` → `1`.
 - **The Homebrew formula shipped a published token.** `Formula/farhand.rb`
   carried a `service do` block that started `fhd --listen 0.0.0.0:9876` with
   `FARHAND_TOKEN: "replace-with-your-token"`, so a plain
