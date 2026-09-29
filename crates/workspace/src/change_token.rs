@@ -78,6 +78,9 @@ pub fn change_token(path: &Path, _meta: &std::fs::Metadata) -> i64 {
         return 0;
     }
 
+    // SAFETY: `FILE_BASIC_INFO` is a `#[repr(C)]` struct of plain integers,
+    // for which all-zero is a valid bit pattern, and every field is
+    // overwritten by the call below before anything reads it.
     let mut info: FILE_BASIC_INFO = unsafe { std::mem::zeroed() };
 
     // SAFETY: `info` is a correctly sized, zero-initialised FILE_BASIC_INFO

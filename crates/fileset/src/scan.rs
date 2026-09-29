@@ -507,15 +507,14 @@ mod tests {
     /// Overwrite with different content but *identical byte length*, then put
     /// the original mtime back. This is the case a `(size, mtime)` gate alone
     /// cannot see; the ctime in the gate is what catches it.
-    #[cfg(unix)]
     fn overwrite_preserving_mtime(path: &Path, body: &str, mtime: std::time::SystemTime) {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = fs::metadata(path).unwrap().permissions().mode();
         fs::write(path, body).unwrap();
-        fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
-
-        let file = fs::File::options().write(true).open(path).unwrap();
-        file.set_modified(mtime).unwrap();
+        fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
     }
 
     #[test]
