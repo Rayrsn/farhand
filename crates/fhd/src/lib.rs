@@ -68,6 +68,9 @@ pub async fn run_server(
     forward_allowlist: Vec<u16>,
     // Deadlines for the TLS handshake and for each pre-RUN frame read.
     timeouts: Timeouts,
+    // Optional bearer token for the metrics endpoint, required when
+    // --metrics-bind widens it beyond loopback.
+    metrics_token: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let max_runs = max_concurrent_runs.unwrap_or_else(|| {
         std::thread::available_parallelism()
@@ -123,7 +126,8 @@ pub async fn run_server(
                 info!("Metrics listening on {}", metrics_addr);
                 let metrics_ctx = Arc::clone(&ctx);
                 tokio::spawn(async move {
-                    metrics_server::serve_metrics(metrics_listener, metrics_ctx).await;
+                    metrics_server::serve_metrics(metrics_listener, metrics_ctx, metrics_token)
+                        .await;
                 });
             }
             Err(e) => {

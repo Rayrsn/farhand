@@ -17,7 +17,18 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use crate::session::ServerContext;
 
 /// Start serving `/metrics` on `listener` until the process exits.
-pub async fn serve_metrics(listener: tokio::net::TcpListener, ctx: Arc<ServerContext>) {
+/// Serve the metrics endpoint.
+///
+/// `scrape_token`, when set, is required in an `Authorization: Bearer` header
+/// or an `X-Farhand-Token` header. It is optional rather than mandatory
+/// because the endpoint binds loopback by default, where a local scraper is
+/// already a trusted process; it matters when an operator deliberately widens
+/// the bind to scrape Prometheus from another host.
+pub async fn serve_metrics(
+    listener: tokio::net::TcpListener,
+    ctx: Arc<ServerContext>,
+    scrape_token: Option<String>,
+) {
     let addr = listener
         .local_addr()
         .map(|a| a.to_string())
@@ -32,6 +43,7 @@ pub async fn serve_metrics(listener: tokio::net::TcpListener, ctx: Arc<ServerCon
             }
         };
         let ctx = Arc::clone(&ctx);
+        let scrape_token = scrape_token.clone();
         // One short-lived task per scrape; a scrape is cheap and this must
         // never be able to stall the accept loop.
         tokio::spawn(async move {
@@ -46,6 +58,47 @@ pub async fn serve_metrics(listener: tokio::net::TcpListener, ctx: Arc<ServerCon
                 .next()
                 .and_then(|line| line.split_whitespace().nth(1))
                 .unwrap_or("/");
+
+            let authorized = match &scrape_token {
+                None => true,
+                Some(expected) => {
+                    let provided = request.lines().find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        if name.eq_ignore_ascii_case("authorization") {
+                            Some(
+                                value
+                                    .trim()
+                                    .strip_prefix("Bearer ")
+                                    .unwrap_or_else(|| value.trim())
+                                    .to_string(),
+                            )
+                        } else if name.eq_ignore_ascii_case("x-farhand-token") {
+                            Some(value.trim().to_string())
+                        } else {
+                            None
+                        }
+                    });
+                    // Constant-time and over the digest, so the comparison
+                    // leaks neither the token's length nor its prefix.
+                    provided
+                        .as_deref()
+                        .map(|p| protocol::ct_eq_tokens(Some(p), Some(expected)))
+                        .unwrap_or(false)
+                }
+            };
+
+            // `/healthz` stays open: it returns a bare "ok" and leaks nothing,
+            // and a liveness probe has no reason to hold a credential. Only the
+            // data-bearing endpoint is gated.
+            if !authorized && path == "/metrics" {
+                let body = "unauthorized\n".to_string();
+                let response = format!(
+                    "HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Bearer\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+                return;
+            }
 
             let (status, content_type, body) = match path {
                 "/metrics" => ("200 OK", "text/plain; version=0.0.4", render(&ctx)),
@@ -459,7 +512,7 @@ mod tests {
     }
 
     /// A minimal context for rendering the exposition without touching the disk.
-    fn test_context() -> crate::session::ServerContext {
+    pub(super) fn test_context() -> crate::session::ServerContext {
         use std::collections::HashMap;
         crate::session::ServerContext {
             timeouts: crate::session::Timeouts::default(),
@@ -479,5 +532,91 @@ mod tests {
             connection_limiter: Arc::new(tokio::sync::Semaphore::new(32)),
             max_queued_runs: 16,
         }
+    }
+}
+
+#[cfg(test)]
+mod auth_tests {
+    use super::tests::test_context;
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    async fn scrape(port: u16, headers: &str) -> String {
+        let mut s = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
+        let req = format!("GET /metrics HTTP/1.1\r\nHost: x\r\n{headers}Connection: close\r\n\r\n");
+        s.write_all(req.as_bytes()).await.unwrap();
+        let mut out = String::new();
+        s.read_to_string(&mut out).await.unwrap();
+        out
+    }
+
+    /// The endpoint publishes hostnames, project names, and disk usage. It
+    /// binds loopback by default, but `--metrics-bind` exists for scraping
+    /// from another host, and then a token has to be required.
+    #[tokio::test]
+    async fn a_configured_scrape_token_is_required() {
+        let dir = std::env::temp_dir();
+        let ctx = Arc::new(test_context());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let _ = &dir;
+        tokio::spawn(serve_metrics(listener, ctx, Some("s3cret-scrape".into())));
+
+        let no_header = scrape(port, "").await;
+        assert!(no_header.starts_with("HTTP/1.1 401"), "{no_header}");
+
+        let wrong = scrape(port, "X-Farhand-Token: nope\r\n").await;
+        assert!(wrong.starts_with("HTTP/1.1 401"), "{wrong}");
+
+        let right = scrape(port, "X-Farhand-Token: s3cret-scrape\r\n").await;
+        assert!(right.starts_with("HTTP/1.1 200"), "{right}");
+        assert!(right.contains("farhand_up"), "{right}");
+    }
+
+    /// A liveness probe has no credential and `/healthz` leaks nothing, so it
+    /// must stay reachable even when the scrape token is enforced.
+    #[tokio::test]
+    async fn healthz_stays_open_for_probes() {
+        let ctx = Arc::new(test_context());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(serve_metrics(listener, ctx, Some("s3cret-scrape".into())));
+
+        let mut s = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
+        s.write_all(b"GET /healthz HTTP/1.1\r\nHost: x\r\n\r\n")
+            .await
+            .unwrap();
+        let mut out = String::new();
+        s.read_to_string(&mut out).await.unwrap();
+        assert!(out.starts_with("HTTP/1.1 200"), "{out}");
+    }
+
+    /// Prometheus itself can send a bearer token, so that form must work too.
+    #[tokio::test]
+    async fn bearer_authorization_is_accepted() {
+        let ctx = Arc::new(test_context());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(serve_metrics(listener, ctx, Some("s3cret-scrape".into())));
+
+        let res = scrape(port, "Authorization: Bearer s3cret-scrape\r\n").await;
+        assert!(res.starts_with("HTTP/1.1 200"), "{res}");
+    }
+
+    /// With no token configured the endpoint stays open, which is the
+    /// loopback default: a local scraper is already a trusted process.
+    #[tokio::test]
+    async fn no_token_means_no_auth() {
+        let ctx = Arc::new(test_context());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(serve_metrics(listener, ctx, None));
+
+        let res = scrape(port, "").await;
+        assert!(res.starts_with("HTTP/1.1 200"), "{res}");
     }
 }

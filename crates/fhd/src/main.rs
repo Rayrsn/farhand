@@ -72,6 +72,14 @@ struct Cli {
     forward_allow: Vec<u16>,
 
     #[arg(
+        long = "metrics-token",
+        value_name = "TOKEN",
+        env = "FARHAND_METRICS_TOKEN",
+        help = "Bearer token required to scrape metrics. Recommended whenever --metrics-bind is widened beyond loopback"
+    )]
+    metrics_token: Option<String>,
+
+    #[arg(
         long = "handshake-timeout-secs",
         value_name = "SECS",
         default_value_t = 30,
@@ -410,6 +418,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             handshake: std::time::Duration::from_secs(cli.handshake_timeout_secs),
             io: std::time::Duration::from_secs(cli.io_timeout_secs),
         },
+        cli.metrics_token,
     )
     .await?;
     Ok(())

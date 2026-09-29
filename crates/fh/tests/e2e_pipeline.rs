@@ -63,6 +63,7 @@ async fn spawn_test_server_full(
             // Default deny unless the test explicitly opts a port in.
             forward_allow,
             fhd::Timeouts::default(),
+            None, // metrics token
         )
         .await;
     });
@@ -111,6 +112,7 @@ async fn spawn_test_server_with_lock(
             // Default deny, exactly as a real agent ships.
             Vec::new(),
             fhd::Timeouts::default(),
+            None, // metrics token: unused by the test server
         )
         .await;
     });
@@ -168,6 +170,7 @@ async fn spawn_agent_tls(
             // the posture worth exercising.
             Vec::new(),
             fhd::Timeouts::default(),
+            None, // metrics token: unused by the test server
         )
         .await;
     });
@@ -3752,6 +3755,7 @@ async fn test_connection_limit_closes_excess_connections() {
             // the posture worth exercising.
             Vec::new(),
             fhd::Timeouts::default(),
+            None, // metrics token: unused by the test server
         )
         .await;
     });
@@ -4092,6 +4096,7 @@ async fn test_e2e_queue_full_rejection() {
             // the posture worth exercising.
             Vec::new(),
             fhd::Timeouts::default(),
+            None, // metrics token: unused by the test server
         )
         .await;
     });
