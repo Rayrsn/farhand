@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.10.2] - 2026-09-30
+
+### Fixed
+- **`test_e2e_multi_agent_pool_least_busy_dispatch` flaked on the macOS
+  runner.** The test read a frame from the agent after sending `RUN`, and that
+  read does not return until the command finishes — so both probes observed an
+  idle agent and `select_best_agent` decided on its latency tie-break rather
+  than on load. On a slower machine that is a coin flip. The blocking read now
+  happens after the assertions, the occupying run outlives the probe, and the
+  test asserts its own precondition so it can no longer pass silently on a
+  tie-break.
+
+  **No product code changed in this release.** The 1.10.1 binaries behave
+  identically; this fixes a CI signal about the test, not a defect users could
+  hit. It is published as a patch so the release branch is green on all three
+  platforms.
+
 ## [1.10.1] - 2026-09-30
 
 ### Fixed
@@ -618,7 +635,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Run observability (`fh history`) and packaging/distribution (release workflow, Homebrew, install scripts, systemd/launchd units)
 - APFS Copy-on-Write workspace branching, two-tier LRU + emergency disk GC, `fh clean`
 
-[Unreleased]: https://github.com/Rayrsn/farhand/compare/v1.10.1...HEAD
+[Unreleased]: https://github.com/Rayrsn/farhand/compare/v1.10.2...HEAD
+[1.10.2]: https://github.com/Rayrsn/farhand/compare/v1.10.1...v1.10.2
 [1.10.1]: https://github.com/Rayrsn/farhand/compare/v1.10.0...v1.10.1
 [1.10.0]: https://github.com/Rayrsn/farhand/compare/v1.9.0...v1.10.0
 [1.9.0]: https://github.com/Rayrsn/farhand/compare/v1.8.1...v1.9.0

@@ -22,10 +22,10 @@ name = "fh"
 path = "src/main.rs"
 
 [dependencies]
-protocol = { package = "farhand-protocol", version = "1.10.1", path = "../protocol" }
-fileset = { package = "farhand-fileset", version = "1.10.1", path = "../fileset" }
-config = { package = "farhand-config", version = "1.10.1", path = "../config" }
-templates = { package = "farhand-templates", version = "1.10.1", path = "../templates" }
+protocol = { package = "farhand-protocol", version = "1.10.2", path = "../protocol" }
+fileset = { package = "farhand-fileset", version = "1.10.2", path = "../fileset" }
+config = { package = "farhand-config", version = "1.10.2", path = "../config" }
+templates = { package = "farhand-templates", version = "1.10.2", path = "../templates" }
 tokio = { workspace = true, features = ["full"] }
 clap = { workspace = true, features = ["derive", "env"] }
 clap_complete.workspace = true
@@ -40,8 +40,8 @@ notify = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-fhd = { package = "farhand-agent", version = "1.10.1", path = "../fhd" }
-workspace = { package = "farhand-workspace", version = "1.10.1", path = "../workspace" }
+fhd = { package = "farhand-agent", version = "1.10.2", path = "../fhd" }
+workspace = { package = "farhand-workspace", version = "1.10.2", path = "../workspace" }
 tempfile = { workspace = true }
 # Only for the process-liveness probe in the cancellation e2e test
 # (signal 0); already in the dependency graph via fhd/workspace.
