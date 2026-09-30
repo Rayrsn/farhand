@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.10.1] - 2026-09-30
+
 ### Fixed
 - **Four ways one input could exhaust the agent.** All are reachable by a
   client, and all now refuse rather than exhaust.
@@ -616,7 +618,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Run observability (`fh history`) and packaging/distribution (release workflow, Homebrew, install scripts, systemd/launchd units)
 - APFS Copy-on-Write workspace branching, two-tier LRU + emergency disk GC, `fh clean`
 
-[Unreleased]: https://github.com/Rayrsn/farhand/compare/v1.10.0...HEAD
+[Unreleased]: https://github.com/Rayrsn/farhand/compare/v1.10.1...HEAD
+[1.10.1]: https://github.com/Rayrsn/farhand/compare/v1.10.0...v1.10.1
 [1.10.0]: https://github.com/Rayrsn/farhand/compare/v1.9.0...v1.10.0
 [1.9.0]: https://github.com/Rayrsn/farhand/compare/v1.8.1...v1.9.0
 [1.8.1]: https://github.com/Rayrsn/farhand/compare/v1.8.0...v1.8.1
