@@ -664,7 +664,9 @@ mod cas_gc_tests {
     }
 }
 
-#[cfg(test)]
+// Unix-only, and gated at the module rather than per test so the imports
+// below do not go unused on Windows and fail clippy there.
+#[cfg(all(test, unix))]
 mod symlink_accounting_tests {
     use super::*;
     use tempfile::tempdir;
