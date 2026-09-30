@@ -159,7 +159,16 @@ impl IgnoreMatcher {
                 rule.pattern.matches(basename) || rule.pattern.matches(clean_path)
             };
             if matches {
-                decided = Some(rule.pattern.as_str().to_string());
+                // A negation re-includes rather than excludes, so it must
+                // *clear* any earlier decision rather than be skipped: the
+                // last matching rule is the one that decides. Leaving the
+                // prior rule in place made `fh why` blame `*.log` for
+                // excluding a file `!important.log` had re-included.
+                decided = if rule.negated {
+                    None
+                } else {
+                    Some(rule.pattern.as_str().to_string())
+                };
             }
         }
         decided
@@ -220,5 +229,52 @@ mod tests {
 
         // Non-ignored files
         assert!(!matcher.should_ignore("src/lib.rs", false));
+    }
+}
+
+#[cfg(test)]
+mod negation_explanation_tests {
+    use super::*;
+
+    /// `should_ignore` handles negation; `matching_rule` did not, so a
+    /// re-included path could be explained as excluded. The common path in
+    /// `fh why` masked it by checking the scan first, which is exactly why it
+    /// survived — but the primitive was a trap for the next caller.
+    #[test]
+    fn a_negated_rule_is_never_reported_as_the_reason_for_excluding() {
+        let mut m = IgnoreMatcher::new();
+        m.add_patterns(&["*.log".to_string(), "!important.log".to_string()]);
+
+        assert!(m.should_ignore("debug.log", false));
+        assert!(!m.should_ignore("important.log", false));
+
+        // The excluded file names the rule that excluded it.
+        assert_eq!(
+            m.matching_rule("debug.log", false).as_deref(),
+            Some("*.log"),
+            "the wrong rule was blamed"
+        );
+        // The re-included file is not excluded, so no rule may claim to exclude it.
+        assert_eq!(
+            m.matching_rule("important.log", false),
+            None,
+            "a negated rule was reported as an exclusion"
+        );
+    }
+
+    #[test]
+    fn should_ignore_and_the_explanation_agree_on_negation() {
+        let mut m = IgnoreMatcher::new();
+        // Not a built-in default: `dist` would short-circuit in
+        // is_default_ignored before the rule machinery is ever consulted.
+        m.add_patterns(&["scratch".to_string(), "!scratch/keep.txt".to_string()]);
+
+        for path in ["scratch/app.js", "scratch/keep.txt", "src/main.rs"] {
+            assert_eq!(
+                m.should_ignore(path, false),
+                m.matching_rule(path, false).is_some(),
+                "should_ignore and matching_rule disagree about {path:?}"
+            );
+        }
     }
 }

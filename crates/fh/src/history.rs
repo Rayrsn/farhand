@@ -57,20 +57,13 @@ pub fn format_duration(ms: u64) -> String {
     }
 }
 
+/// Render a byte count.
+///
+/// The divisors were always 1024-based but the labels said `KB`/`MB`/`GB`, so
+/// the same 1024 bytes read "1.0 KB" here and "1.0 KiB" in `fh sync`. This now
+/// delegates to the one implementation, so the two cannot drift again.
 pub fn format_bytes(bytes: u64) -> String {
-    const KB: u64 = 1024;
-    const MB: u64 = 1024 * KB;
-    const GB: u64 = 1024 * MB;
-
-    if bytes >= GB {
-        format!("{:.1} GB", (bytes as f64) / (GB as f64))
-    } else if bytes >= MB {
-        format!("{:.1} MB", (bytes as f64) / (MB as f64))
-    } else if bytes >= KB {
-        format!("{:.1} KB", (bytes as f64) / (KB as f64))
-    } else {
-        format!("{} B", bytes)
-    }
+    crate::sync::human_bytes(bytes)
 }
 
 pub fn render_history_table(resp: &HistoryResponsePayload) {
