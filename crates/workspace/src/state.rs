@@ -1,6 +1,7 @@
 use glob::glob;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 use std::time::SystemTime;
@@ -24,6 +25,13 @@ pub struct WorkspaceState {
     /// have to read it back from here or their lock check can never match.
     #[serde(default)]
     pub project: String,
+    /// Toolchain pins in force when the last successful install ran.
+    ///
+    /// Compared against the run's toolchain on the next build, so pinning
+    /// `-T node=22` re-runs the dependency hook instead of trusting a
+    /// `node_modules` built under 18.
+    #[serde(default)]
+    pub toolchain: BTreeMap<String, String>,
 }
 
 fn default_version() -> u32 {
@@ -38,9 +46,18 @@ pub fn compute_lockfiles_hash(workspace_root: &Path, lockfiles: &[String]) -> Op
     let mut entries = Vec::new();
 
     for pattern in lockfiles {
-        let pattern_clean = pattern.trim_start_matches('/');
-        let full_pattern = workspace_root.join(pattern_clean);
-        if let Ok(paths) = glob(&full_pattern.to_string_lossy()) {
+        // The *pattern* needs normalising, not just the result. On Windows a
+        // `Path` renders with backslashes and `\` is glob's escape character,
+        // so the match found nothing and the hash came back empty — which
+        // made the install hook believe dependencies had never been fetched.
+        //
+        // Note this does *not* use `protocol::to_wire_path`, which is for
+        // relative wire paths: it trims the leading `/`, turning an absolute
+        // glob into a relative one that matches nothing on every platform.
+        let pattern_rel = pattern.trim_start_matches('/').replace('\\', "/");
+        let root_str = workspace_root.to_string_lossy().replace('\\', "/");
+        let pattern_str = format!("{}/{}", root_str.trim_end_matches('/'), pattern_rel);
+        if let Ok(paths) = glob(&pattern_str) {
             for entry in paths.flatten() {
                 if entry.is_file() {
                     if let Ok(bytes) = fs::read(&entry) {
@@ -49,7 +66,7 @@ pub fn compute_lockfiles_hash(workspace_root: &Path, lockfiles: &[String]) -> Op
                         let file_hash = hex::encode(file_hasher.finalize());
                         let rel = entry.strip_prefix(workspace_root).unwrap_or(&entry);
                         let wire_path = protocol::to_wire_path(rel);
-                        entries.push(format!("{}:{}", wire_path, file_hash));
+                        entries.push(format!("{wire_path}:{file_hash}"));
                     }
                 }
             }
@@ -132,6 +149,7 @@ mod tests {
             last_installed_at: SystemTime::now(),
             template: "npm".to_string(),
             project: "my-repo:feat/payments".to_string(),
+            toolchain: std::collections::BTreeMap::new(),
         };
 
         write_state(dir.path(), &state).unwrap();
@@ -143,5 +161,38 @@ mod tests {
         );
         assert_eq!(loaded.template, state.template);
         assert_eq!(loaded.project, state.project);
+    }
+}
+
+#[cfg(test)]
+mod lockfile_pattern_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    /// The *pattern* needs normalising, not just the result: on Windows
+    /// `Path` renders as `C:\ws\Cargo.lock` and `\` is glob's escape
+    /// character, so the match found nothing and the hash came back empty.
+    /// That made the install hook believe dependencies had never been fetched.
+    #[test]
+    fn a_plain_lockfile_is_found_and_hashed() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("deps.lock"), "dep-version-1\n").unwrap();
+
+        let first = compute_lockfiles_hash(dir.path(), &["deps.lock".to_string()]);
+        assert!(first.is_some(), "a declared lockfile was not found");
+
+        // Changing it must change the hash, or the install hook would never
+        // re-run when dependencies actually move.
+        fs::write(dir.path().join("deps.lock"), "dep-version-2\n").unwrap();
+        let second = compute_lockfiles_hash(dir.path(), &["deps.lock".to_string()]);
+        assert!(second.is_some());
+        assert_ne!(first, second, "the hash did not track the file's content");
+    }
+
+    #[test]
+    fn a_leading_slash_pattern_still_resolves() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("Cargo.lock"), "x\n").unwrap();
+        assert!(compute_lockfiles_hash(dir.path(), &["/Cargo.lock".to_string()]).is_some());
     }
 }

@@ -176,12 +176,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
-name = "byteorder"
-version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
-
-[[package]]
 name = "bytes"
 version = "1.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -563,7 +557,6 @@ dependencies = [
  "libc",
  "portable-pty",
  "serde_json",
- "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -587,6 +580,7 @@ dependencies = [
  "libc",
  "notify",
  "serde_json",
+ "serde_yaml",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
@@ -629,7 +623,6 @@ dependencies = [
 name = "farhand-protocol"
 version = "1.10.0"
 dependencies = [
- "byteorder",
  "hex",
  "rcgen",
  "rustls",

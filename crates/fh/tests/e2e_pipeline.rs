@@ -632,7 +632,7 @@ async fn test_e2e_artifact_retrieval_preset_fallback() {
     // Create Cargo.toml in project to trigger "rust" preset
     fs::write(
         project_dir.path().join("Cargo.toml"),
-        "[package]\nname = \"test\"\n",
+        "[package]\nname = \"test\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[lib]\npath = \"lib.rs\"\n",
     )
     .unwrap();
 
@@ -879,7 +879,7 @@ fn test_cli_init_command() {
     // 3. With --force and --with-template on a rust project
     std::fs::write(
         project_dir.path().join("Cargo.toml"),
-        "[package]\nname = \"my-test-app\"\n",
+        "[package]\nname = \"my-test-app\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[lib]\npath = \"lib.rs\"\n",
     )
     .unwrap();
     let output3 = fh_command_blocking()
@@ -910,9 +910,10 @@ async fn test_e2e_template_monorepo_union_and_explicit_template() {
     // Setup monorepo: both Cargo.toml and package.json exist
     fs::write(
         project_dir.path().join("Cargo.toml"),
-        "[package]\nname = \"mono\"\n",
+        "[package]\nname = \"mono\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[lib]\npath = \"lib.rs\"\n",
     )
     .unwrap();
+    fs::write(project_dir.path().join("lib.rs"), "// fixture\n").unwrap();
     fs::write(
         project_dir.path().join("package.json"),
         "{\"name\": \"mono\"}\n",

@@ -79,7 +79,7 @@ pub struct SyncRequest<'a> {
 pub async fn sync_once(
     req: SyncRequest<'_>,
 ) -> Result<SyncReport, Box<dyn std::error::Error + Send + Sync>> {
-    let scanned = fileset::scan(req.project_dir, &[])
+    let scanned = fileset::scan_shared(req.project_dir, &[])
         .map_err(|e| format!("failed to scan project files: {e}"))?;
 
     let manifest = ManifestPayload {
@@ -193,7 +193,7 @@ pub async fn why(
 ) -> Result<WhyOutcome, Box<dyn std::error::Error + Send + Sync>> {
     let wanted = normalize_query(req.project_dir, raw);
 
-    let scanned = fileset::scan(req.project_dir, &[])
+    let scanned = fileset::scan_shared(req.project_dir, &[])
         .map_err(|e| format!("failed to scan project files: {e}"))?;
 
     let Some(meta) = scanned.get(&wanted) else {

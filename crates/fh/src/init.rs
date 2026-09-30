@@ -33,6 +33,16 @@ pub struct InitResult {
     pub template_path: Option<PathBuf>,
 }
 
+/// Render a string as a valid YAML scalar.
+///
+/// Delegates to the serialiser rather than quoting by hand, so the result is
+/// correct for colons, quotes, backslashes, `#`, and newlines alike.
+fn yaml_scalar(value: &str) -> String {
+    serde_yaml::to_string(value)
+        .map(|s| s.trim_end().to_string())
+        .unwrap_or_else(|_| "\"\"".to_string())
+}
+
 pub fn init_project(opts: &InitOptions) -> Result<InitResult, InitError> {
     let target_dir = if opts.path.exists() {
         opts.path
@@ -84,13 +94,13 @@ pub fn init_project(opts: &InitOptions) -> Result<InitResult, InitError> {
     };
 
     let template_line = if let Some(t) = &detected_template {
-        format!("template: {}", t)
+        format!("template: {}", yaml_scalar(t))
     } else {
         "# template: rust  # (rust, npm, go, python, maven, gradle)".to_string()
     };
 
     let host_line = match &opts.host {
-        Some(h) => format!("host: \"{}\"", h),
+        Some(h) => format!("host: {}", yaml_scalar(h)),
         None => "host: \"${FARHAND_HOST:-127.0.0.1:9876}\"".to_string(),
     };
 
@@ -103,10 +113,15 @@ pub fn init_project(opts: &InitOptions) -> Result<InitResult, InitError> {
                  Prefer `fh init --token-env` (token: \"${{FARHAND_TOKEN}}\") or \
                  `fh init` without flags and export FARHAND_TOKEN."
             );
-            format!("token: \"{}\"", tok)
+            format!("token: {}", yaml_scalar(tok))
         }
         None => "token: \"${FARHAND_TOKEN}\"".to_string(),
     };
+
+    // Serialised rather than interpolated: a project directory named
+    // `my: proj`, or a token containing a quote, used to produce a file that
+    // either failed to parse or gained keys of its own.
+    let name_value = yaml_scalar(&project_name);
 
     let content = format!(
         r#"# ==============================================================================
@@ -127,7 +142,7 @@ pub fn init_project(opts: &InitOptions) -> Result<InitResult, InitError> {
 {token_line}
 
 # Project identifier and persistent workspace folder key on the remote agent
-name: {project_name}
+name: {name_value}
 
 # Build environment preset (provides automatic dependency caching & ignores)
 {template_line}
@@ -196,12 +211,19 @@ mod tests {
         assert_eq!(res.project_name, "test-project");
         assert!(res.config_path.exists());
 
+        // Assert the file *parses* and carries the right values, rather than
+        // matching a rendered form. Quoting is the serialiser's decision now,
+        // and a string match on it would break for the right reasons.
         let content = fs::read_to_string(&res.config_path).unwrap();
-        assert!(content.contains("name: test-project"));
-        assert!(content.contains("host: \"10.0.0.1:9876\""));
-        assert!(content.contains("token: \"secret123\""));
-        assert!(content.contains("compression: zstd"));
-        assert!(content.contains("outDir: \".\""));
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&content)
+            .unwrap_or_else(|e| panic!("generated config does not parse: {e}\n{content}"));
+        assert_eq!(parsed["name"].as_str(), Some("test-project"));
+        assert_eq!(parsed["host"].as_str(), Some("10.0.0.1:9876"));
+        assert_eq!(parsed["token"].as_str(), Some("secret123"));
+        assert_eq!(parsed["compression"].as_str(), Some("zstd"));
+        assert_eq!(parsed["outDir"].as_str(), Some("."));
+        // The guidance comments must survive the round trip.
+        assert!(content.contains("FARHAND_TOKEN"), "comments were dropped");
     }
 
     #[test]
@@ -308,5 +330,35 @@ mod tests {
 
         let template_content = fs::read_to_string(&t_path).unwrap();
         assert!(template_content.contains("name: go"));
+    }
+}
+
+#[cfg(test)]
+mod yaml_escaping_tests {
+    use super::yaml_scalar;
+
+    /// The rendered value must always parse back to exactly the input.
+    #[test]
+    fn rendered_scalars_round_trip() {
+        for hostile in [
+            "my: proj",
+            "quote\"inside",
+            "back\\slash",
+            "hash # comment",
+            "- looks like a list",
+            "yes",
+            "123",
+            "{ brace",
+            "",
+        ] {
+            let doc = format!("v: {}\n", yaml_scalar(hostile));
+            let parsed: serde_yaml::Value =
+                serde_yaml::from_str(&doc).unwrap_or_else(|e| panic!("{doc:?} failed: {e}"));
+            assert_eq!(
+                parsed["v"].as_str().map(str::to_string),
+                Some(hostile.to_string()),
+                "round-trip changed {hostile:?}"
+            );
+        }
     }
 }

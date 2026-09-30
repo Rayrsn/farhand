@@ -84,11 +84,23 @@ pub fn resolve_tls_config(
 }
 
 /// Connects to a remote agent daemon over raw TCP or TLS depending on configuration.
+/// How long to wait for the TCP connect before giving up.
+///
+/// Generous, because a slow link or a cold DNS is not a failure, but bounded:
+/// without it a black-holed address hangs the build with no output at all.
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
 pub async fn connect_to_agent(
     host: &str,
     tls_config: Option<&TlsConfig>,
 ) -> Result<MaybeTlsStream<TcpStream>, Box<dyn std::error::Error + Send + Sync>> {
-    let tcp_stream = TcpStream::connect(host).await?;
+    // Bounded, so a firewalled or black-holed host fails with a message
+    // instead of hanging `fh cargo build` indefinitely with no output. The
+    // pool and doctor paths already wrapped their own connects; putting the
+    // deadline in the one function every caller goes through covers the rest.
+    let tcp_stream = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(host))
+        .await
+        .map_err(|_| format!("timed out after {CONNECT_TIMEOUT:?} connecting to {host}"))??;
     if let Some(tls) = tls_config {
         if tls.enabled {
             let server_host = split_server_host(host);

@@ -379,6 +379,27 @@ fn remote_checks(input: &DoctorInput<'_>, probe: &Probe) -> Vec<Check> {
         ),
     ));
 
+    // A client and an agent from different releases fail the handshake with a
+    // version mismatch, which reads like a protocol bug rather than a stale
+    // install. Naming it here turns a confusing failure into a one-line fix.
+    if let Some(agent_version) = &status.version {
+        if agent_version != env!("CARGO_PKG_VERSION") {
+            checks.push(Check::warn(
+                "Versions",
+                format!(
+                    "client {} but agent {agent_version}",
+                    env!("CARGO_PKG_VERSION")
+                ),
+                "update the agent to match: cargo install --force farhand-agent \
+                 (or install the matching client, farhand-cli)",
+            ));
+        } else {
+            checks.push(Check::ok(
+                "Versions",
+                format!("client and agent both {agent_version}"),
+            ));
+        }
+    }
     // Disk is the resource that silently fails builds.
     match (status.disk_free_bytes, status.disk_total_bytes) {
         (Some(free), Some(total)) => checks.push(Check::ok(

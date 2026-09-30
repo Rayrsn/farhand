@@ -311,6 +311,7 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
             max_runs: ctx.max_runs,
             queue_depth: depth,
             hostname: get_hostname(),
+            version: Some(env!("CARGO_PKG_VERSION").to_string()),
             tags: ctx.tags.clone(),
             disk_free_bytes,
             disk_total_bytes,
@@ -1043,19 +1044,43 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
         let current_lock_hash =
             workspace::state::compute_lockfiles_hash(&workspace_dir, &template.hints.lockfiles);
         let prev_state = workspace::state::read_state(&workspace_dir);
+        // Same normalisation as the state write, or the comparison would
+        // always differ.
+        let requested_toolchain: std::collections::BTreeMap<String, String> = run
+            .toolchain
+            .as_ref()
+            .map(|t| t.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+            .unwrap_or_default();
 
-        let need_install = if let Some(ref current_hash) = current_lock_hash {
+        let need_install = if let Some(current_hash) = &current_lock_hash {
             run.no_cache
                 || match &prev_state {
-                    Some(s) => s.last_success_lockfile_hash != *current_hash,
+                    Some(s) => &s.last_success_lockfile_hash != current_hash,
                     None => true,
                 }
         } else if template.hints.lockfiles.is_empty() {
             run.no_cache || prev_state.is_none()
         } else {
-            // Lockfiles were declared in the template, but none exist in the workspace
-            false
+            // Lockfiles were declared by the template but none exist yet. That
+            // is the normal first-run state — a Rust project before `cargo
+            // fetch` has written `Cargo.lock` — and skipping the install there
+            // left the workspace with no dependencies at all.
+            run.no_cache || prev_state.is_none()
         };
+
+        // A workspace installed under one template must not be trusted under
+        // another, and a pinned toolchain change invalidates the install just
+        // as surely as a lockfile change does. `WorkspaceState.template` was
+        // written on every run and never read, so switching `rust` to `npm`, or
+        // node 18 to 22, left a stale `node_modules` in place and skipped the
+        // very hook that would have fixed it.
+        let need_install = need_install
+            || prev_state
+                .as_ref()
+                .is_some_and(|s| s.template != template.name)
+            || prev_state
+                .as_ref()
+                .is_some_and(|s| s.toolchain != requested_toolchain);
 
         if need_install {
             let start_banner = format!(
@@ -1133,6 +1158,13 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
                 // back from here, so this is what makes the "never delete a
                 // workspace with an active run" check able to match at all.
                 project: hello.project.clone(),
+                // Sorted so the comparison is order-independent; a HashMap
+                // would make the check flap between two equivalent runs.
+                toolchain: run
+                    .toolchain
+                    .as_ref()
+                    .map(|t| t.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                    .unwrap_or_default(),
             };
             if let Err(e) = workspace::state::write_state(&workspace_dir, &new_state) {
                 warn!("Failed to write workspace state: {}", e);

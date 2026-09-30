@@ -510,6 +510,7 @@ mod tests {
                 last_installed_at: SystemTime::now(),
                 template: "npm".to_string(),
                 project: "my-repo:feat1".to_string(),
+                toolchain: std::collections::BTreeMap::new(),
             },
         )
         .unwrap();
@@ -546,6 +547,7 @@ mod tests {
                 last_installed_at: SystemTime::now(),
                 template: "npm".to_string(),
                 project: "my-repo:feat1".to_string(),
+                toolchain: std::collections::BTreeMap::new(),
             },
         )
         .unwrap();

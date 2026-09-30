@@ -485,6 +485,22 @@ pub fn scan(
     Ok(files)
 }
 
+/// [`scan`], reusing digests this process already computed for the same root.
+pub fn scan_shared(
+    root: &Path,
+    extra_ignores: &[String],
+) -> Result<HashMap<String, FileMeta>, FilesetError> {
+    use std::collections::HashMap as Map;
+    static CACHES: std::sync::OnceLock<std::sync::Mutex<Map<PathBuf, HashCache>>> =
+        std::sync::OnceLock::new();
+    let caches = CACHES.get_or_init(|| std::sync::Mutex::new(Map::new()));
+
+    let mut guard = caches.lock().unwrap_or_else(|e| e.into_inner());
+    let cache = guard.entry(root.to_path_buf()).or_default();
+    let (files, _) = scan_cached(root, extra_ignores, cache)?;
+    Ok(files)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

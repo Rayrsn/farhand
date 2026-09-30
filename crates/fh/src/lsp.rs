@@ -95,7 +95,7 @@ async fn sync_project<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
     local_dir: &Path,
     compression: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let scanned_files = fileset::scan(local_dir, &[])?;
+    let scanned_files = fileset::scan_shared(local_dir, &[])?;
     let manifest_files: Vec<protocol::FileEntry> = scanned_files
         .values()
         .map(|meta| protocol::FileEntry {

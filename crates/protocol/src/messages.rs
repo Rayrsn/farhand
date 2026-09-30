@@ -234,6 +234,11 @@ pub struct StatusResponsePayload {
     #[serde(rename = "queueDepth")]
     pub queue_depth: usize,
     pub hostname: String,
+    /// The agent's version, so a client can detect a stale daemon. Without it
+    /// a client two minor versions behind fails the handshake with a message
+    /// that reads like a protocol bug rather than an out-of-date install.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
     #[serde(
@@ -392,6 +397,7 @@ mod tests {
     #[test]
     fn test_status_response_payload_enriched_telemetry() {
         let status = StatusResponsePayload {
+            version: None,
             active_runs: 1,
             max_runs: 4,
             queue_depth: 0,

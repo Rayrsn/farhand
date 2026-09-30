@@ -23,6 +23,13 @@ use tokio::sync::Mutex;
 
 const EXIT_INFRA_ERROR: i32 = 125;
 
+/// Exit code for a usage error: bad flags, malformed values, unusable input.
+///
+/// Distinct from [`EXIT_INFRA_ERROR`], which means Farhand could not reach or
+/// talk to the agent. A caller scripting `fh` needs to tell "you asked for
+/// something impossible" apart from "the build box is down"; both were 125.
+const EXIT_USAGE: i32 = 2;
+
 /// Compute the environment forwarded to the agent (see [`fh::envfilter`]).
 /// Explicit `-e KEY=VAL` overrides win over the denylist.
 fn collect_forward_env(
@@ -441,7 +448,7 @@ async fn run_build(p: RunParams<'_>) -> Result<i32, Box<dyn std::error::Error + 
 
     // 3. Scan local files & Build MANIFEST
     let scan_start = Instant::now();
-    let scanned_files = match fileset::scan(project_dir, &[]) {
+    let scanned_files = match fileset::scan_shared(project_dir, &[]) {
         Ok(f) => f,
         Err(e) => {
             eprintln!("Error: failed to scan project files: {}", e);
@@ -1275,7 +1282,7 @@ async fn run_cli() {
                     exit(0);
                 } else {
                     eprintln!("Error: template '{}' not found", name);
-                    exit(EXIT_INFRA_ERROR);
+                    exit(EXIT_USAGE);
                 }
             }
             TemplateAction::Init { name } => {
@@ -1331,7 +1338,7 @@ async fn run_cli() {
                 "Error: unknown --compression '{}'. Allowed values: zstd, gzip, none",
                 compression
             );
-            exit(EXIT_INFRA_ERROR);
+            exit(EXIT_USAGE);
         }
     }
 
@@ -1536,7 +1543,7 @@ async fn run_cli() {
     {
         if command.is_empty() {
             eprintln!("Error: no LSP command specified. Usage: fh lsp -- <LSP_BINARY> [ARGS]...");
-            exit(EXIT_INFRA_ERROR);
+            exit(EXIT_USAGE);
         }
         let target_host = agent.unwrap_or(host);
         match fh::run_lsp(
@@ -1569,7 +1576,7 @@ async fn run_cli() {
             Some(t) => t,
             None => {
                 eprintln!("Error: template '{}' not found locally", name);
-                exit(EXIT_INFRA_ERROR);
+                exit(EXIT_USAGE);
             }
         };
 
@@ -1656,7 +1663,7 @@ async fn run_cli() {
     );
     if effective_command.is_empty() && !takes_no_command {
         eprintln!("Error: no remote command specified. Usage: fh [OPTIONS] <COMMAND>... or fh watch <COMMAND>... or fh shell");
-        exit(EXIT_INFRA_ERROR);
+        exit(EXIT_USAGE);
     }
 
     let resolved_cfg_outputs = cfg.resolved_outputs();
@@ -1707,7 +1714,7 @@ async fn run_cli() {
                 ".farhand.yaml"
             };
             eprintln!("Error: invalid forward '{spec}' from {source}: {e}");
-            exit(EXIT_INFRA_ERROR);
+            exit(EXIT_USAGE);
         }
     }
     let mut run_env = collect_forward_env(cli.no_env, cfg.forward_env, &cfg.env, &cli.env);
