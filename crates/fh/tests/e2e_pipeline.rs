@@ -1607,7 +1607,39 @@ async fn test_e2e_client_disconnect_releases_run_slot() {
     assert!(log.data.contains("started"));
 
     drop(stream);
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    // Wait for the slot rather than assuming a fixed delay is enough. The agent
+    // tears the process tree down with `taskkill /T`, which spawns a process and
+    // is easily slower than 500 ms on a loaded runner. Asserting immediately
+    // turned a passing invariant into a coin flip: the follow-up run would
+    // arrive while the permit was still held and be QUEUED, which is exactly
+    // the leak this test exists to catch.
+    let mut released = false;
+    for _ in 0..100 {
+        let mut probe = TcpStream::connect(&server_addr).await.unwrap();
+        write_json_frame(
+            &mut probe,
+            MsgType::Status,
+            &protocol::StatusRequestPayload {
+                token: token.clone(),
+            },
+        )
+        .await
+        .unwrap();
+        let (msg, payload) = read_frame(&mut probe).await.unwrap();
+        assert_eq!(msg, MsgType::StatusResp);
+        let status: protocol::StatusResponsePayload = decode_json(&payload).unwrap();
+        if status.active_runs == 0 && status.queue_depth == 0 {
+            released = true;
+            break;
+        }
+        drop(probe);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(
+        released,
+        "the cancelled run never released its concurrency permit"
+    );
 
     let mut stream2 = connect_and_sync(&server_addr, &token, "disconnect-test").await;
     let run2 = empty_run(vec![

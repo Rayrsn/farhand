@@ -19,6 +19,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   test asserts its own precondition so it can no longer pass silently on a
   tie-break.
 
+- **`test_e2e_client_disconnect_releases_run_slot` raced its own teardown.**
+  The test slept a fixed 500 ms after dropping the client, then asserted the
+  run permit had been released. The agent tears the process tree down with
+  `taskkill /T`, which spawns a process and is routinely slower than that on a
+  loaded runner, so the follow-up run could arrive while the permit was still
+  held and be QUEUED — the precise failure the test exists to detect. It now
+  waits for the permit to actually free, and fails with a clear message if it
+  never does.
+
   **No product code changed in this release.** The 1.10.1 binaries behave
   identically; this fixes a CI signal about the test, not a defect users could
   hit. It is published as a patch so the release branch is green on all three
