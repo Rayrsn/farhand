@@ -734,6 +734,15 @@ mod tests {
         write(root, "a.txt", "content");
         let index = root.join(HASH_INDEX_FILENAME);
 
+        // Let the clock advance before the index is written. The racy-clean
+        // rule refuses to reuse any entry whose mtime is not strictly older
+        // than the index's own write, and on Windows file times come from a
+        // system clock that ticks at roughly 15.6 ms — so writing both in the
+        // same tick makes the entry racy by construction and the reuse below
+        // would legitimately not happen. The rule is behaving as designed;
+        // the fixture has to be older than the index to test anything.
+        std::thread::sleep(std::time::Duration::from_millis(30));
+
         let mut first = HashCache::default();
         let (files, _) = scan_cached(root, &index_excluded(), &mut first).unwrap();
         save_hash_cache(&index, &first).unwrap();
