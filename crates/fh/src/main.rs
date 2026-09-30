@@ -1137,6 +1137,163 @@ fn print_sync_report(report: &fh::sync::SyncReport, list: bool, dry_run: bool) {
     }
 }
 
+/// Run `fh doctor` and exit.
+///
+/// Extracted verbatim from the dispatch chain: the largest single arm, and
+/// self-contained once the values it reports on are passed in. Moving code
+/// like this verbatim is the point — the alternative is 800 lines of
+/// dispatch where a change to `doctor` means reading the whole function.
+#[allow(clippy::too_many_arguments)]
+async fn run_doctor(
+    host: &str,
+    token: &str,
+    project_name: &str,
+    project_dir: &Path,
+    config_path: &Path,
+    run_toolchain: &Option<HashMap<String, String>>,
+    tls_config: &Option<config::TlsConfig>,
+) {
+    let declared: Vec<(String, String)> = run_toolchain
+        .iter()
+        .flat_map(|m| m.iter())
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    // A token stored as a literal in a committed config file is a real
+    // risk; the `${VAR}` form is not. Compare the raw file, not the value
+    // after interpolation, which would look identical either way.
+    let raw_config = std::fs::read_to_string(config_path).unwrap_or_default();
+    let plaintext_token_in_config = raw_config.lines().any(|line| {
+        let line = line.trim();
+        line.starts_with("token:")
+            && !line.contains("${")
+            && !line.trim_start_matches("token:").trim().is_empty()
+    });
+
+    let checks = fh::doctor::run(fh::doctor::DoctorInput {
+        host,
+        token,
+        config_path: Some(config_path),
+        project_name,
+        project_dir,
+        toolchains: &declared,
+        tls: tls_config.as_ref(),
+        plaintext_token_in_config,
+    })
+    .await;
+
+    let mut failures = 0;
+    let mut warnings = 0;
+    for check in &checks {
+        let mark = match check.severity {
+            None => "ok  ",
+            Some(fh::doctor::Severity::Warn) => {
+                warnings += 1;
+                "warn"
+            }
+            Some(fh::doctor::Severity::Fail) => {
+                failures += 1;
+                "FAIL"
+            }
+        };
+        println!("[{mark}] {:<15} {}", check.name, check.detail);
+        if let Some(hint) = &check.hint {
+            println!("{:<22}-> {hint}", "");
+        }
+    }
+
+    if failures > 0 {
+        println!("\n{failures} problem(s) found, {warnings} warning(s).");
+        exit(EXIT_INFRA_ERROR);
+    }
+    if warnings > 0 {
+        println!("\nNo blocking problems, {warnings} warning(s).");
+    } else {
+        println!("\nEverything checks out.");
+    }
+    exit(0);
+}
+
+/// Handle `fh sync` and `fh why`.
+///
+/// Both answer questions about the transfer itself rather than running a
+/// build, so they branch out before the run pipeline is set up.
+async fn run_sync_or_why(
+    sub: &Subcommands,
+    host: &str,
+    token: &str,
+    project_name: &str,
+    project_dir: &Path,
+    compression: &Option<String>,
+    tls_config: &Option<config::TlsConfig>,
+) {
+    let request = fh::sync::SyncRequest {
+        host,
+        token,
+        project_name,
+        project_dir,
+        // `why` is inherently a read-only question.
+        dry_run: matches!(sub, Subcommands::Why { .. }),
+        compression: compression.clone(),
+        tls_config: tls_config.as_ref(),
+    };
+
+    if let Subcommands::Why { path } = sub {
+        let code = match fh::sync::why(request, path).await {
+            Ok(fh::sync::WhyOutcome::OutsideProject) => {
+                eprintln!("{path} is not inside the project directory.");
+                1
+            }
+            Ok(fh::sync::WhyOutcome::Ignored { reason }) => {
+                println!("{path}");
+                match reason {
+                    Some(r) => println!("  excluded — {r}"),
+                    None => println!("  excluded — matched an ignore rule"),
+                }
+                println!("  nothing is sent for this path");
+                0
+            }
+            Ok(fh::sync::WhyOutcome::WillUpload { size, hash }) => {
+                println!("{path}");
+                println!(
+                    "  will be uploaded — {} is not on the agent",
+                    fh::sync::human_bytes(size)
+                );
+                println!("  sha256 {hash}");
+                0
+            }
+            Ok(fh::sync::WhyOutcome::AlreadyPresent { size, hash }) => {
+                println!("{path}");
+                println!(
+                    "  already on the agent — content-addressed hit, nothing to send ({})",
+                    fh::sync::human_bytes(size)
+                );
+                println!("  sha256 {hash}");
+                0
+            }
+            Err(e) => {
+                eprintln!("Error: {e}");
+                EXIT_INFRA_ERROR
+            }
+        };
+        exit(code);
+    }
+
+    let list = matches!(sub, Subcommands::Sync { list: true, .. });
+    let dry_run = matches!(sub, Subcommands::Sync { dry_run: true, .. }) || list;
+    let report = fh::sync::sync_once(fh::sync::SyncRequest { dry_run, ..request }).await;
+
+    match report {
+        Ok(report) => {
+            print_sync_report(&report, list, dry_run);
+            exit(0);
+        }
+        Err(e) => {
+            eprintln!("Error: {e}");
+            exit(EXIT_INFRA_ERROR);
+        }
+    }
+}
+
 #[tokio::main]
 async fn run_cli() {
     let raw_args: Vec<String> = std::env::args().collect();
@@ -1749,141 +1906,39 @@ async fn run_cli() {
         }
     }
 
-    let effective_compression = cli.compression.or(cfg.compression);
-
     // Handle Doctor: a read-only diagnosis of everything that commonly goes
     // wrong, answered without syncing or running anything.
     if let Some(Subcommands::Doctor) = cli.subcommand {
-        let declared: Vec<(String, String)> = run_toolchain
-            .iter()
-            .flat_map(|m| m.iter())
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        // A token stored as a literal in a committed config file is a real
-        // risk; the `${VAR}` form is not. Compare the raw file, not the value
-        // after interpolation, which would look identical either way.
-        let raw_config = std::fs::read_to_string(&config_path).unwrap_or_default();
-        let plaintext_token_in_config = raw_config.lines().any(|line| {
-            let line = line.trim();
-            line.starts_with("token:")
-                && !line.contains("${")
-                && !line.trim_start_matches("token:").trim().is_empty()
-        });
-
-        let checks = fh::doctor::run(fh::doctor::DoctorInput {
-            host: &host,
-            token: &token,
-            config_path: Some(config_path.as_path()),
-            project_name: &project_name,
-            project_dir: &project_dir,
-            toolchains: &declared,
-            tls: tls_config.as_ref(),
-            plaintext_token_in_config,
-        })
+        run_doctor(
+            &host,
+            &token,
+            &project_name,
+            &project_dir,
+            &config_path,
+            &run_toolchain,
+            &tls_config,
+        )
         .await;
-
-        let mut failures = 0;
-        let mut warnings = 0;
-        for check in &checks {
-            let mark = match check.severity {
-                None => "ok  ",
-                Some(fh::doctor::Severity::Warn) => {
-                    warnings += 1;
-                    "warn"
-                }
-                Some(fh::doctor::Severity::Fail) => {
-                    failures += 1;
-                    "FAIL"
-                }
-            };
-            println!("[{mark}] {:<15} {}", check.name, check.detail);
-            if let Some(hint) = &check.hint {
-                println!("{:<22}-> {hint}", "");
-            }
-        }
-
-        if failures > 0 {
-            println!("\n{failures} problem(s) found, {warnings} warning(s).");
-            exit(EXIT_INFRA_ERROR);
-        }
-        if warnings > 0 {
-            println!("\nNo blocking problems, {warnings} warning(s).");
-        } else {
-            println!("\nEverything checks out.");
-        }
-        exit(0);
     }
+
+    // Resolved before the dispatch: `sync` and `why` both need it, and
+    // it is a pure precedence merge of flag over config.
+    let effective_compression = cli.compression.or(cfg.compression);
 
     // Handle Sync and Why subcommands. Both answer questions about the
     // transfer itself rather than running a build, so they branch out before
     // the run pipeline is set up.
     if let Some(sub @ (Subcommands::Sync { .. } | Subcommands::Why { .. })) = &cli.subcommand {
-        let request = fh::sync::SyncRequest {
-            host: &host,
-            token: &token,
-            project_name: &project_name,
-            project_dir: &project_dir,
-            // `why` is inherently a read-only question.
-            dry_run: matches!(sub, Subcommands::Why { .. }),
-            compression: effective_compression.clone(),
-            tls_config: tls_config.as_ref(),
-        };
-
-        if let Subcommands::Why { path } = sub {
-            let code = match fh::sync::why(request, path).await {
-                Ok(fh::sync::WhyOutcome::OutsideProject) => {
-                    eprintln!("{path} is not inside the project directory.");
-                    1
-                }
-                Ok(fh::sync::WhyOutcome::Ignored { reason }) => {
-                    println!("{path}");
-                    match reason {
-                        Some(r) => println!("  excluded — {r}"),
-                        None => println!("  excluded — matched an ignore rule"),
-                    }
-                    println!("  nothing is sent for this path");
-                    0
-                }
-                Ok(fh::sync::WhyOutcome::WillUpload { size, hash }) => {
-                    println!("{path}");
-                    println!(
-                        "  will be uploaded — {} is not on the agent",
-                        fh::sync::human_bytes(size)
-                    );
-                    println!("  sha256 {hash}");
-                    0
-                }
-                Ok(fh::sync::WhyOutcome::AlreadyPresent { size, hash }) => {
-                    println!("{path}");
-                    println!(
-                        "  already on the agent — content-addressed hit, nothing to send ({})",
-                        fh::sync::human_bytes(size)
-                    );
-                    println!("  sha256 {hash}");
-                    0
-                }
-                Err(e) => {
-                    eprintln!("Error: {e}");
-                    EXIT_INFRA_ERROR
-                }
-            };
-            exit(code);
-        }
-
-        let list = matches!(sub, Subcommands::Sync { list: true, .. });
-        let dry_run = matches!(sub, Subcommands::Sync { dry_run: true, .. }) || list;
-        let report = fh::sync::sync_once(fh::sync::SyncRequest { dry_run, ..request }).await;
-
-        match report {
-            Ok(report) => {
-                print_sync_report(&report, list, dry_run);
-                exit(0);
-            }
-            Err(e) => {
-                eprintln!("Error: {e}");
-                exit(EXIT_INFRA_ERROR);
-            }
-        }
+        run_sync_or_why(
+            sub,
+            &host,
+            &token,
+            &project_name,
+            &project_dir,
+            &effective_compression,
+            &tls_config,
+        )
+        .await;
     }
 
     if is_watch {

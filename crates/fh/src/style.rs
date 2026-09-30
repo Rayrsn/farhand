@@ -18,21 +18,44 @@
 
 use std::sync::LazyLock;
 
-/// Whether ANSI escapes may be emitted.
-static ENABLED: LazyLock<bool> = LazyLock::new(|| {
-    if std::env::var_os("CLICOLOR_FORCE").is_some_and(|v| v != "0") {
+/// The decision itself, as a pure function of the environment and whether we
+/// are attached to a terminal.
+///
+/// Split out from [`ENABLED`] so it can be tested without depending on where
+/// the test happens to run. The earlier version asserted `!enabled()`, which
+/// passed under CI (no tty) and failed for anyone running `cargo test` in a
+/// terminal.
+fn should_style(
+    no_color: Option<&std::ffi::OsStr>,
+    clicolor: Option<&std::ffi::OsStr>,
+    term: Option<&std::ffi::OsStr>,
+    force: Option<&std::ffi::OsStr>,
+    is_tty: bool,
+) -> bool {
+    if force.is_some_and(|v| v != "0") {
         return true;
     }
-    if std::env::var_os("NO_COLOR").is_some() {
+    if no_color.is_some() {
         return false;
     }
-    if std::env::var_os("CLICOLOR").is_some_and(|v| v == "0") {
+    if clicolor.is_some_and(|v| v == "0") {
         return false;
     }
-    if std::env::var_os("TERM").is_some_and(|v| v == "dumb") {
+    if term.is_some_and(|v| v == "dumb") {
         return false;
     }
-    std::io::IsTerminal::is_terminal(&std::io::stdout())
+    is_tty
+}
+
+/// Whether ANSI escapes may be emitted.
+static ENABLED: LazyLock<bool> = LazyLock::new(|| {
+    should_style(
+        std::env::var_os("NO_COLOR").as_deref(),
+        std::env::var_os("CLICOLOR").as_deref(),
+        std::env::var_os("TERM").as_deref(),
+        std::env::var_os("CLICOLOR_FORCE").as_deref(),
+        std::io::IsTerminal::is_terminal(&std::io::stdout()),
+    )
 });
 
 fn enabled() -> bool {
@@ -76,28 +99,53 @@ pub fn dim(text: &str) -> String {
 mod tests {
     use super::*;
 
+    /// The decision, tested directly rather than through the ambient
+    /// environment. The previous version asserted `!enabled()`, which depends
+    /// on whether the test runner has a terminal: green in CI, red for anyone
+    /// running `cargo test` in their shell.
+    #[test]
+    fn the_decision_honours_each_variable() {
+        fn s(v: &str) -> Option<&std::ffi::OsStr> {
+            Some(std::ffi::OsStr::new(v))
+        }
+
+        assert!(
+            should_style(None, None, None, None, true),
+            "a tty gets colour"
+        );
+        assert!(
+            !should_style(None, None, None, None, false),
+            "a pipe does not"
+        );
+
+        // Every opt-out beats an implicit tty.
+        assert!(!should_style(s("1"), None, None, None, true), "NO_COLOR");
+        assert!(!should_style(None, s("0"), None, None, true), "CLICOLOR=0");
+        assert!(
+            !should_style(None, None, s("dumb"), None, true),
+            "TERM=dumb"
+        );
+        // NO_COLOR is honoured for *any* value, including empty.
+        assert!(
+            !should_style(s(""), None, None, None, true),
+            "NO_COLOR empty"
+        );
+
+        // The explicit override wins over all of them.
+        assert!(
+            should_style(s("1"), s("0"), s("dumb"), s("1"), false),
+            "CLICOLOR_FORCE"
+        );
+    }
+
     /// The guarantee callers rely on: with styling off, output must be exactly
     /// the input. Anything else corrupts CI logs and `--json` consumers.
     #[test]
     fn helpers_are_identity_when_disabled() {
-        // A child process is not a terminal, so `enabled()` is false here
-        // regardless of the ambient environment.
-        assert!(!enabled(), "the test process stdout should not be a tty");
         for text in ["plain", "with \"quotes\"", "emoji 🎉", ""] {
             for f in [red, green, yellow, blue, bold, dim] {
                 assert_eq!(f(text), text, "{f:?} altered its input");
             }
         }
-    }
-
-    #[test]
-    fn no_color_is_honoured_even_on_a_terminal() {
-        // The rule is the precedence order, stated once: an explicit opt-out
-        // beats the implicit "we are attached to a tty".
-        std::env::set_var("NO_COLOR", "1");
-        std::env::set_var("CLICOLOR_FORCE", "");
-        // OnceLock already resolved to false in the other test; assert the
-        // documented ordering rather than re-deriving it here.
-        assert!(std::env::var_os("NO_COLOR").is_some());
     }
 }
