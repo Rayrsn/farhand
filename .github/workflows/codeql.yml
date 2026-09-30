@@ -1,0 +1,51 @@
+name: CodeQL
+
+# Static analysis over the Rust sources, on a schedule and on demand.
+#
+# The rest of CI is tests, lints, and fuzzing. None of those look for the
+# shape of a bug: an unchecked index, a path joined without validation, a
+# comparison that leaks a secret through timing. For a daemon that accepts
+# commands over the network, that is a distinct class from "the tests pass".
+#
+# It is deliberately advisory rather than a PR gate: a new CodeQL alert on
+# unchanged code should not block unrelated work, but it should be visible.
+# Read the job's annotations before assuming silence means clean.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "23 4 * * 2"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      packages: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [rust]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@28a198b61426c7dc2cfc2fd971fb4b7a0726c1f # v3.29.0
+        with:
+          languages: ${{ matrix.language }}
+          queries: security-and-quality
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@28a198b61426c7dc2cfc2fd971fb4b7a0726c1f # v3.29.0
+        with:
+          category: /language:${{ matrix.language }}

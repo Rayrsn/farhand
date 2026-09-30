@@ -58,15 +58,44 @@ jobs:
             bash -n "${script}"
           done
 
-      - name: The install script's source fallback must be reachable
+      - name: Every PowerShell installer must parse
+        shell: pwsh
         run: |
-          # install.sh falls back to building from a local checkout when no
-          # release tarball is reachable. That fallback is guarded by a shell
-          # condition, so nothing but executing it proves the guard still
-          # matches this repository's layout.
-          test -f crates/fh/Cargo.toml
-          test -f crates/fhd/Cargo.toml
-          test -f Cargo.toml
+          # install.ps1 and setup_remote_ssh.ps1 are 27 KB between them and are
+          # the primary install path on Windows. Nothing executed them, so a
+          # syntax error shipped broken and only a Windows user would find it.
+          #
+          # The parser alone is the cheap gate; PSScriptAnalyzer is installed
+          # when available and skipped otherwise, so this cannot flake on a
+          # runner without it.
+          $failed = $false
+          Get-ChildItem -Path scripts,dist -Filter *.ps1 -Recurse | ForEach-Object {
+            Write-Host "parsing $($_.Name)"
+            $errors = $null
+            $null = [System.Management.Automation.Language.Parser]::ParseFile(
+              $_.FullName, [ref]$null, [ref]$errors)
+            if ($errors -and $errors.Count -gt 0) {
+              $failed = $true
+              $errors | ForEach-Object { Write-Error "$($_.Extent.File):$($_.Extent.StartLineNumber): $($_.Message)" }
+            }
+          }
+          if ($failed) { exit 1 }
+
+      - name: install.sh must not silently build from the working directory
+        run: |
+          # This check used to assert that install.sh's "fall back to building
+          # the checkout you happen to be standing in" guard still matched this
+          # repository's layout. That fallback is gone: it installed whatever
+          # unrelated farhand checkout the working directory contained, under
+          # the name Farhand, with no message.
+          #
+          # The guard is now inverted — assert the fallback cannot come back,
+          # and that the script points at `cargo install` instead.
+          if grep -qE 'cargo build .*farhand-(cli|agent)' scripts/install.sh; then
+            echo "::error::install.sh builds farhand from the working directory again"
+            exit 1
+          fi
+          grep -q 'cargo install farhand-cli' scripts/install.sh
 
   # The release ships musl binaries, but the test matrix only covers glibc,
   # macOS, and Windows. libc types differ between the two C libraries (e.g.
