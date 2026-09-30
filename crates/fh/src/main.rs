@@ -329,8 +329,10 @@ where
             MsgType::Queued if wait_queued => {
                 if let Ok(q) = decode_json::<protocol::QueuedPayload>(&payload) {
                     println!(
-                        "[queued] Agent busy ({}), position in queue: {}. Waiting for lock...",
-                        q.reason, q.position
+                        "[{}] Agent busy ({}), position in queue: {}. Waiting for lock...",
+                        fh::style::yellow("queued"),
+                        q.reason,
+                        q.position
                     );
                 }
             }
@@ -498,8 +500,10 @@ async fn run_build(p: RunParams<'_>) -> Result<i32, Box<dyn std::error::Error + 
                     }
                 };
                 println!(
-                    "[farhand] Build queued on agent (reason: {}, position: {}). Waiting for remote workspace...",
-                    queued.reason, queued.position
+                    "[farhand] {} on agent (reason: {}, position: {}). Waiting for remote workspace...",
+                    fh::style::yellow("Build queued"),
+                    queued.reason,
+                    queued.position
                 );
             }
             MsgType::Need => {
@@ -1025,7 +1029,10 @@ async fn run_watch(p: RunParams<'_>, debounce_ms: u64) -> i32 {
             let code = code.unwrap_or(-1);
             failed = failed || (code != 0);
             if code != 0 {
-                println!("\n\u{1b}[31m✗ build failed (exit {code})\u{1b}[0m — still watching");
+                println!(
+                    "\n{} — still watching",
+                    fh::style::red(&format!("✗ build failed (exit {code})"))
+                );
             }
 
             // Settle and drain events triggered by local artifact extraction or touch
