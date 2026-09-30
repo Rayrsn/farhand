@@ -59,11 +59,14 @@ async fn spawn_test_server_full(
             None,
             None,
             None, // metrics port: unused by the test server
-            None, // metrics bind: unused
-            // Default deny unless the test explicitly opts a port in.
-            forward_allow,
-            fhd::Timeouts::default(),
-            None, // metrics token
+            fhd::ServerOptions {
+                forward_allowlist: forward_allow,
+                // Unlimited in tests: the guards have their own coverage, and a
+                // default here would silently skip extraction in unrelated cases.
+                max_unpacked_bytes: Some(u64::MAX),
+                max_artifact_bytes: Some(u64::MAX),
+                ..Default::default()
+            },
         )
         .await;
     });
@@ -108,11 +111,7 @@ async fn spawn_test_server_with_lock(
             None,
             Some(server_locks),
             None, // metrics port: unused by the test server
-            None, // metrics bind: unused
-            // Default deny, exactly as a real agent ships.
-            Vec::new(),
-            fhd::Timeouts::default(),
-            None, // metrics token: unused by the test server
+            fhd::ServerOptions::default(),
         )
         .await;
     });
@@ -164,13 +163,7 @@ async fn spawn_agent_tls(
             None,
             None,
             None, // metrics port: unused by the test server
-            None, // metrics bind: unused
-            // These tests drive raw protocol frames and never ask for a port
-            // forward, so the default-deny allowlist is both correct here and
-            // the posture worth exercising.
-            Vec::new(),
-            fhd::Timeouts::default(),
-            None, // metrics token: unused by the test server
+            fhd::ServerOptions::default(),
         )
         .await;
     });
@@ -3749,13 +3742,7 @@ async fn test_connection_limit_closes_excess_connections() {
             None,
             None,
             None, // metrics port: unused by the test server
-            None, // metrics bind: unused
-            // These tests drive raw protocol frames and never ask for a port
-            // forward, so the default-deny allowlist is both correct here and
-            // the posture worth exercising.
-            Vec::new(),
-            fhd::Timeouts::default(),
-            None, // metrics token: unused by the test server
+            fhd::ServerOptions::default(),
         )
         .await;
     });
@@ -4090,13 +4077,7 @@ async fn test_e2e_queue_full_rejection() {
             Some(1), // max_queued_runs = 1
             None,
             None, // metrics port: unused by the test server
-            None, // metrics bind: unused
-            // These tests drive raw protocol frames and never ask for a port
-            // forward, so the default-deny allowlist is both correct here and
-            // the posture worth exercising.
-            Vec::new(),
-            fhd::Timeouts::default(),
-            None, // metrics token: unused by the test server
+            fhd::ServerOptions::default(),
         )
         .await;
     });

@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Four ways one input could exhaust the agent.** All are reachable by a
+  client, and all now refuse rather than exhaust.
+
+  **An uploaded archive had no expansion budget.** The compressed frame is
+  bounded by `MAX_PAYLOAD_SIZE`, but nothing bounded what it expanded *to*, so
+  a few KiB of highly compressible input could fill the host disk. Added
+  `unpack_tar_limited`, with the agent defaulting to 2 GiB and the library
+  defaulting to 8 GiB, charged from each entry's declared size before anything
+  is written — so an over-budget archive is refused, not half-extracted.
+
+  **The returned artifact archive was assembled entirely in memory.** A
+  workspace with a multi-gigabyte `target/` would OOM the daemon on a
+  *successful* build. The size is now measured from the resolved paths before
+  anything is packed, and an oversized artifact is skipped with a message
+  naming `--max-artifact-mb` (default 2048). The build itself still succeeds
+  and its exit code still propagates.
+
+  **The reverse-forward channel map was unbounded.** Each channel costs two
+  tasks, a socket, and a 128-slot queue, and a client could open thousands
+  without any forward succeeding. Capped at 128 per connection, refused with a
+  channel close.
+
+  **PTY teardown sent SIGTERM and stopped.** A child that traps it survived the
+  disconnect forever, still holding the workspace lock and a core. It now
+  escalates to SIGKILL after three seconds, which is what the non-PTY path has
+  always done and what AGENTS.md §3.4 already promised for the whole compiler
+  tree.
+
+  Verified against a live agent: an oversized artifact is refused while the
+  build still reports success, and a normal artifact still returns intact.
+
+  Also: `run_server` had grown to nineteen positional arguments, so the policy
+  tunables are now grouped in a `ServerOptions` struct.
+
 ## [1.10.0] - 2026-09-29
 
 ### Added

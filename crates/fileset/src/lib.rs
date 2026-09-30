@@ -15,5 +15,6 @@ pub use scan::{
     HASH_INDEX_FILENAME,
 };
 pub use tar::{
-    pack_tar, pack_tar_with_algo, pack_tar_with_algo_progress, unpack_tar, CompressionAlgo,
+    pack_tar, pack_tar_with_algo, pack_tar_with_algo_progress, unpack_tar, unpack_tar_limited,
+    CompressionAlgo, DEFAULT_MAX_UNPACKED_BYTES,
 };

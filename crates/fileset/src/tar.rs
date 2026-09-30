@@ -150,26 +150,48 @@ pub fn pack_tar(root: &Path, paths: &[String]) -> Result<Vec<u8>, FilesetError> 
 
 /// Unpack a compressed or plain tar archive into `dest_dir` with strict Zip-Slip path sanitization.
 /// Automatically detects compression format (Zstandard, Gzip, or uncompressed) via magic bytes.
+/// Default ceiling on the total bytes one archive may expand to.
+///
+/// A compressed frame is bounded by `MAX_PAYLOAD_SIZE`, but nothing bounded
+/// what it expanded *to*: a few KiB of highly-compressible input can unpack to
+/// tens of gigabytes and fill the host disk. The agent applies a tighter limit
+/// of its own because its input is a remote client.
+pub const DEFAULT_MAX_UNPACKED_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+
 pub fn unpack_tar(dest_dir: &Path, data: &[u8]) -> Result<(), FilesetError> {
+    unpack_tar_limited(dest_dir, data, DEFAULT_MAX_UNPACKED_BYTES)
+}
+
+/// [`unpack_tar`] with an explicit ceiling on expanded bytes.
+pub fn unpack_tar_limited(
+    dest_dir: &Path,
+    data: &[u8],
+    max_unpacked_bytes: u64,
+) -> Result<(), FilesetError> {
     if data.is_empty() {
         return Ok(());
     }
 
     if data.starts_with(&[0x28, 0xB5, 0x2F, 0xFD]) {
         let decoder = zstd::stream::read::Decoder::new(data)?;
-        unpack_archive_reader(dest_dir, decoder)
+        unpack_archive_reader(dest_dir, decoder, max_unpacked_bytes)
     } else if data.starts_with(&[0x1F, 0x8B]) {
         let decoder = GzDecoder::new(data);
-        unpack_archive_reader(dest_dir, decoder)
+        unpack_archive_reader(dest_dir, decoder, max_unpacked_bytes)
     } else {
-        unpack_archive_reader(dest_dir, data)
+        unpack_archive_reader(dest_dir, data, max_unpacked_bytes)
     }
 }
 
-fn unpack_archive_reader<R: std::io::Read>(dest_dir: &Path, reader: R) -> Result<(), FilesetError> {
+fn unpack_archive_reader<R: std::io::Read>(
+    dest_dir: &Path,
+    reader: R,
+    max_unpacked_bytes: u64,
+) -> Result<(), FilesetError> {
     fs::create_dir_all(dest_dir)?;
     let canonical_dest = dest_dir.canonicalize()?;
     let mut archive = Archive::new(reader);
+    let mut written: u64 = 0;
 
     for entry_res in archive
         .entries()
@@ -196,6 +218,17 @@ fn unpack_archive_reader<R: std::io::Read>(dest_dir: &Path, reader: R) -> Result
         let canonical_parent = parent.canonicalize()?;
         if !canonical_parent.starts_with(&canonical_dest) {
             return Err(FilesetError::EscapesTargetRoot(path_str.to_owned()));
+        }
+
+        // Charge the entry against the budget from its declared size before
+        // writing anything, so an over-large archive is refused rather than
+        // half-extracted.
+        let declared = entry.header().size().unwrap_or(0);
+        written = written.saturating_add(declared);
+        if written > max_unpacked_bytes {
+            return Err(FilesetError::Tar(format!(
+                "archive expands to more than the {max_unpacked_bytes} byte limit"
+            )));
         }
 
         entry
@@ -469,5 +502,45 @@ mod fuzz_lite {
                 assert_dest_sane(&dest);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod expansion_budget_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    /// The compressed frame is bounded by `MAX_PAYLOAD_SIZE`, but nothing
+    /// bounded what it expanded *to*. A small, highly compressible payload
+    /// could fill the host disk.
+    #[test]
+    fn unpack_refuses_an_archive_that_expands_past_its_budget() {
+        // 4 MiB of zeroes compresses to a few KiB.
+        let payload = vec![0u8; 4 * 1024 * 1024];
+        let mut archive = tar::Builder::new(Vec::new());
+        let mut header = tar::Header::new_gnu();
+        header.set_size(payload.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        archive
+            .append_data(&mut header, "big.bin", &payload[..])
+            .unwrap();
+        let compressed = archive.into_inner().unwrap();
+
+        let small = tempdir().unwrap();
+        // Well under the limit: fine.
+        unpack_tar_limited(small.path(), &compressed, 64 * 1024 * 1024).unwrap();
+        assert!(small.path().join("big.bin").exists());
+
+        let tight = tempdir().unwrap();
+        let err = unpack_tar_limited(tight.path(), &compressed, 1024 * 1024).unwrap_err();
+        assert!(
+            err.to_string().contains("expands to more than"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            !tight.path().join("big.bin").exists(),
+            "an over-budget archive must not be extracted at all"
+        );
     }
 }

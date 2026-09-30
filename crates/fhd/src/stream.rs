@@ -20,6 +20,13 @@ use tokio::process::Command;
 use tokio::sync::Mutex;
 use tracing::warn;
 
+/// Most reverse-forward channels a single connection may hold open.
+///
+/// Each one costs two tasks, a socket, and a 128-slot queue, and the map was
+/// previously unbounded, so a client could open thousands and exhaust the
+/// daemon's descriptors without ever needing a forward to succeed.
+const MAX_PORT_CHANNELS: usize = 128;
+
 /// Longest single line forwarded before it is split across frames.
 ///
 /// A build that emits one enormous line with no newline — a minified bundle, a
@@ -117,6 +124,17 @@ pub async fn handle_port_open<W: AsyncWrite + Unpin + Send + 'static>(
     // TCP service on the agent host — a locally-bound admin API, a metrics
     // endpoint, a database — which is a far larger capability than "run this
     // build". The operator opts individual ports in explicitly.
+    if channels.lock().await.len() >= MAX_PORT_CHANNELS {
+        warn!(
+            "Refusing port forward to {}: already at the {}-channel limit",
+            target_port, MAX_PORT_CHANNELS
+        );
+        let close = PortClosePayload { channel_id };
+        let mut w = writer.lock().await;
+        let _ = write_json_frame(&mut *w, MsgType::PortClose, &close).await;
+        return;
+    }
+
     if !allowlist.contains(&target_port) {
         warn!(
             "Refusing port forward to {}: not in the agent's --forward-allow list",
@@ -612,6 +630,18 @@ pub async fn run_pty_child_and_stream<
                             // child's process group (AGENTS.md §3.4).
                             unsafe {
                                 libc::kill(-(pid as i32), libc::SIGTERM);
+                            }
+                            // Escalate. SIGTERM alone left a child that traps
+                            // it running forever, still holding the workspace
+                            // lock and a core. The non-PTY path has always
+                            // escalated (see `exec::kill_process_group`); §3.4
+                            // promises the same for the whole compiler tree, so
+                            // this closes the gap rather than adding a new rule.
+                            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                            // SAFETY: as above; the group may still contain
+                            // descendants that ignored SIGTERM.
+                            unsafe {
+                                libc::kill(-(pid as i32), libc::SIGKILL);
                             }
                         }
                         #[cfg(windows)]

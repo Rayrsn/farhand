@@ -308,6 +308,8 @@ mod tests {
     #[test]
     fn exposition_is_well_formed_for_every_series() {
         let ctx = crate::session::ServerContext {
+            max_unpacked_bytes: u64::MAX,
+            max_artifact_bytes: u64::MAX,
             timeouts: crate::session::Timeouts::default(),
             forward_allowlist: Vec::new(),
             expected_token: None,
@@ -370,6 +372,8 @@ mod tests {
     #[test]
     fn active_builds_are_reported_per_project() {
         let ctx = crate::session::ServerContext {
+            max_unpacked_bytes: u64::MAX,
+            max_artifact_bytes: u64::MAX,
             timeouts: crate::session::Timeouts::default(),
             forward_allowlist: Vec::new(),
             expected_token: None,
@@ -515,6 +519,8 @@ mod tests {
     pub(super) fn test_context() -> crate::session::ServerContext {
         use std::collections::HashMap;
         crate::session::ServerContext {
+            max_unpacked_bytes: u64::MAX,
+            max_artifact_bytes: u64::MAX,
             timeouts: crate::session::Timeouts::default(),
             forward_allowlist: Vec::new(),
             expected_token: None,

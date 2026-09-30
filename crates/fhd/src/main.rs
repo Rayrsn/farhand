@@ -72,6 +72,22 @@ struct Cli {
     forward_allow: Vec<u16>,
 
     #[arg(
+        long = "max-unpack-mb",
+        value_name = "MB",
+        default_value_t = 2048,
+        help = "Maximum size a single uploaded archive may expand to"
+    )]
+    max_unpack_mb: u64,
+
+    #[arg(
+        long = "max-artifact-mb",
+        value_name = "MB",
+        default_value_t = 2048,
+        help = "Maximum size of the artifact archive returned after a successful build"
+    )]
+    max_artifact_mb: u64,
+
+    #[arg(
         long = "metrics-token",
         value_name = "TOKEN",
         env = "FARHAND_METRICS_TOKEN",
@@ -412,13 +428,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cli.max_queued_runs,
         Some(lock_manager),
         cli.metrics_port,
-        Some(cli.metrics_bind),
-        cli.forward_allow,
-        fhd::Timeouts {
-            handshake: std::time::Duration::from_secs(cli.handshake_timeout_secs),
-            io: std::time::Duration::from_secs(cli.io_timeout_secs),
+        fhd::ServerOptions {
+            timeouts: fhd::Timeouts {
+                handshake: std::time::Duration::from_secs(cli.handshake_timeout_secs),
+                io: std::time::Duration::from_secs(cli.io_timeout_secs),
+            },
+            max_unpacked_bytes: Some(cli.max_unpack_mb * 1024 * 1024),
+            max_artifact_bytes: Some(cli.max_artifact_mb * 1024 * 1024),
+            forward_allowlist: cli.forward_allow,
+            metrics_bind: Some(cli.metrics_bind),
+            metrics_token: cli.metrics_token,
         },
-        cli.metrics_token,
     )
     .await?;
     Ok(())

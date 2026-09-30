@@ -74,6 +74,19 @@ impl Default for Timeouts {
 #[derive(Clone)]
 pub struct ServerContext {
     pub timeouts: Timeouts,
+    /// Ceiling on the bytes a single uploaded archive may expand to.
+    ///
+    /// Lower than the library default because this input comes from a remote
+    /// client: a compressed frame is capped, but what it expands to was not,
+    /// so a small hostile payload could fill the host disk.
+    pub max_unpacked_bytes: u64,
+    /// Ceiling on the bytes a returned artifact archive may contain.
+    ///
+    /// The archive is assembled in memory and shipped as a single frame, so an
+    /// unbounded one turns a successful multi-gigabyte build into an agent
+    /// OOM. The size is measured before packing, so the limit is reached by
+    /// refusing rather than by allocating.
+    pub max_artifact_bytes: u64,
     /// Ports a client may ask the agent to forward to via `-L`. Empty refuses
     /// every request: an authenticated client could otherwise reach any TCP
     /// service on the agent's loopback, which is a much larger blast radius

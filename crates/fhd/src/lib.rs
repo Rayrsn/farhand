@@ -42,6 +42,31 @@ use tracing::{error, info, warn};
 /// struct would only move the same fields one call frame away. See
 /// `ServerContext` for the subset the connection handler needs.
 #[allow(clippy::too_many_arguments)]
+/// Tunables for [`run_server`] that describe policy rather than identity.
+#[derive(Debug, Clone, Default)]
+pub struct ServerOptions {
+    /// Deadlines for the TLS handshake and for each pre-RUN frame read.
+    pub timeouts: Timeouts,
+    /// Ceiling on what one uploaded archive may expand to. Defaults to 2 GiB,
+    /// below the library default, because this input comes from a client.
+    pub max_unpacked_bytes: Option<u64>,
+    /// Ceiling on the bytes a returned artifact archive may contain. The
+    /// archive is built in memory, so this is the difference between refusing
+    /// a large build and OOM-ing the agent on a successful one.
+    pub max_artifact_bytes: Option<u64>,
+    /// Ports a client may ask the agent to forward to via `-L`. Empty refuses
+    /// every request.
+    pub forward_allowlist: Vec<u16>,
+    /// Address the metrics endpoint binds to. Defaults to loopback: the
+    /// endpoint is unauthenticated, so binding it publicly would publish
+    /// hostnames, project names, and disk sizes to anyone who could reach it.
+    pub metrics_bind: Option<String>,
+    /// Optional bearer token for the metrics endpoint, required whenever the
+    /// bind address is widened beyond loopback.
+    pub metrics_token: Option<String>,
+}
+
+#[allow(clippy::too_many_arguments)]
 pub async fn run_server(
     listener: TcpListener,
     expected_token: Option<String>,
@@ -59,19 +84,20 @@ pub async fn run_server(
     // When set, serve Prometheus metrics on this port, alongside the agent
     // protocol on the main listener.
     metrics_port: Option<u16>,
-    // Address the metrics endpoint binds to. Defaults to loopback: the
-    // endpoint is unauthenticated, so binding it publicly would publish
-    // hostnames, project names, and disk sizes to anyone who asks.
-    metrics_bind: Option<String>,
-    // Ports a client may ask the agent to forward to via `-L`. Empty refuses
-    // every request.
-    forward_allowlist: Vec<u16>,
-    // Deadlines for the TLS handshake and for each pre-RUN frame read.
-    timeouts: Timeouts,
-    // Optional bearer token for the metrics endpoint, required when
-    // --metrics-bind widens it beyond loopback.
-    metrics_token: Option<String>,
+    // Tunables that do not identify the agent: deadlines, expansion budget,
+    // forwarding policy, and metrics exposure. Grouped because they kept
+    // turning into more positional arguments, and a caller passing nineteen
+    // booleans and durations cannot be read.
+    options: ServerOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let ServerOptions {
+        timeouts,
+        max_unpacked_bytes,
+        max_artifact_bytes,
+        forward_allowlist,
+        metrics_bind,
+        metrics_token,
+    } = options;
     let max_runs = max_concurrent_runs.unwrap_or_else(|| {
         std::thread::available_parallelism()
             .map(|n| n.get())
@@ -94,6 +120,8 @@ pub async fn run_server(
     };
 
     let ctx = Arc::new(ServerContext {
+        max_unpacked_bytes: max_unpacked_bytes.unwrap_or(2 * 1024 * 1024 * 1024),
+        max_artifact_bytes: max_artifact_bytes.unwrap_or(2 * 1024 * 1024 * 1024),
         timeouts,
         forward_allowlist,
         expected_token,
@@ -905,9 +933,15 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
         info!("Unpacking {} delta bytes into workspace", payload.len());
         let unpack_dir = workspace_dir.clone();
         let unpack_payload = payload;
-        tokio::task::spawn_blocking(move || fileset::unpack_tar(&unpack_dir, &unpack_payload))
-            .await
-            .map_err(|e| -> Box<dyn std::error::Error> { Box::new(std::io::Error::other(e)) })??;
+        // A tighter ceiling than the library default: this input arrives from a
+        // remote client, so the expansion budget is a security boundary rather
+        // than a convenience.
+        let max_unpacked = ctx.max_unpacked_bytes;
+        tokio::task::spawn_blocking(move || {
+            fileset::unpack_tar_limited(&unpack_dir, &unpack_payload, max_unpacked)
+        })
+        .await
+        .map_err(|e| -> Box<dyn std::error::Error> { Box::new(std::io::Error::other(e)) })??;
 
         if let Some(cas) = &ctx.cas_store {
             for entry in &manifest.files {
@@ -1152,15 +1186,30 @@ pub async fn handle_connection<S: AsyncRead + AsyncWrite + Unpin + Send + 'stati
             run.template.as_deref(),
         );
         if !artifact_paths.is_empty() {
-            info!(
-                "Packing {} artifact paths using compression '{}'",
-                artifact_paths.len(),
-                negotiated_compression
-            );
-            let algo = fileset::CompressionAlgo::from_str_opt(Some(&negotiated_compression));
-            let tar_bytes = fileset::pack_tar_with_algo(&workspace_dir, &artifact_paths, algo)?;
-            artifact_size = tar_bytes.len() as u64;
-            artifact_payload = Some(tar_bytes);
+            // Measure before packing. The archive is built entirely in memory,
+            // so a workspace with a multi-gigabyte `target/` would otherwise
+            // OOM the daemon on a *successful* build. Stat-ing the resolved
+            // paths is cheap and lets us refuse before allocating anything.
+            let artifact_limit = ctx.max_artifact_bytes;
+            let prospective = workspace::sum_artifact_bytes(&workspace_dir, &artifact_paths);
+            if prospective > artifact_limit {
+                warn!(
+                    "Refusing to return artifacts: {} bytes exceeds the {} byte limit. \
+                     Raise --max-artifact-mb, or narrow `outputs` in the project config.",
+                    prospective, artifact_limit
+                );
+                artifact_size = 0;
+            } else {
+                info!(
+                    "Packing {} artifact paths ({prospective} bytes) using compression '{}'",
+                    artifact_paths.len(),
+                    negotiated_compression
+                );
+                let algo = fileset::CompressionAlgo::from_str_opt(Some(&negotiated_compression));
+                let tar_bytes = fileset::pack_tar_with_algo(&workspace_dir, &artifact_paths, algo)?;
+                artifact_size = tar_bytes.len() as u64;
+                artifact_payload = Some(tar_bytes);
+            }
         }
     }
 
@@ -1214,6 +1263,8 @@ mod tests {
 
     fn ctx_with(token: Option<&str>) -> ServerContext {
         ServerContext {
+            max_unpacked_bytes: u64::MAX,
+            max_artifact_bytes: u64::MAX,
             timeouts: Timeouts::default(),
             forward_allowlist: Vec::new(),
             expected_token: token.map(str::to_string),

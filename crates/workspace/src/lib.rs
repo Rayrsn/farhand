@@ -207,6 +207,27 @@ pub fn diff_manifests(
     })
 }
 
+/// Total on-disk size of the paths an artifact transfer would include.
+///
+/// Used to refuse an oversized artifact *before* anything is packed, since the
+/// archive is built in memory. Symlinks are counted as links, never followed,
+/// so a link cannot inflate the total.
+pub fn sum_artifact_bytes(workspace_root: &Path, rel_paths: &[String]) -> u64 {
+    let mut total = 0u64;
+    for rel in rel_paths {
+        let Ok(rel_buf) = protocol::from_wire_path(rel) else {
+            continue;
+        };
+        let path = workspace_root.join(rel_buf);
+        match std::fs::symlink_metadata(&path) {
+            Ok(m) if m.is_dir() => total = total.saturating_add(calculate_dir_size(&path)),
+            Ok(m) => total = total.saturating_add(m.len()),
+            Err(_) => continue,
+        }
+    }
+    total
+}
+
 /// Safely remove files listed in `to_delete` from `workspace_root` and prune empty parent folders.
 pub fn apply_deletions(workspace_root: &Path, to_delete: &[String]) -> std::io::Result<usize> {
     if !workspace_root.exists() {

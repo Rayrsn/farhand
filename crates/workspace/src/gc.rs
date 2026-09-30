@@ -43,6 +43,12 @@ pub fn calculate_dir_size(path: &Path) -> u64 {
     let mut total = 0u64;
     if let Ok(entries) = fs::read_dir(path) {
         for entry in entries.flatten() {
+            // `DirEntry::metadata` does not follow symlinks: a link reports
+            // `is_symlink` and its own length, so `is_dir` is false and a
+            // link to a directory is never recursed into. That is what keeps
+            // a self-referential link from recursing forever and a link to `/`
+            // from inflating the total. `fs::symlink_metadata` would say the
+            // same thing; `fs::metadata` would NOT, and would reintroduce both.
             if let Ok(meta) = entry.metadata() {
                 if meta.is_dir() {
                     total += calculate_dir_size(&entry.path());
@@ -652,6 +658,45 @@ mod cas_gc_tests {
             names,
             vec!["myrepo"],
             "cas dir must not count as a workspace"
+        );
+    }
+}
+
+#[cfg(test)]
+mod symlink_accounting_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    /// Characterisation, not a regression: `DirEntry::metadata` already does
+    /// not follow symlinks, so this behaviour was never broken. The test pins
+    /// it, because switching to `fs::metadata` — the obvious-looking
+    /// "fix" — would reintroduce two real failures at once: infinite recursion
+    /// on a self-referential link, and a workspace reporting the size of the
+    /// whole filesystem, which the quota path would then act on by evicting
+    /// other workspaces.
+    #[cfg(unix)]
+    #[test]
+    fn symlinks_are_counted_as_links_and_never_recursed_into() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("real.bin"), vec![7u8; 4096]).unwrap();
+        let before = calculate_dir_size(root);
+
+        // A self-referential link, and a link to a large tree.
+        let big = tempdir().unwrap();
+        fs::write(big.path().join("payload.bin"), vec![1u8; 4 * 1024 * 1024]).unwrap();
+        std::os::unix::fs::symlink(root, root.join("self")).unwrap();
+        std::os::unix::fs::symlink(big.path(), root.join("big")).unwrap();
+
+        let after = calculate_dir_size(root);
+
+        assert!(
+            after < 64 * 1024,
+            "a 4 MiB tree behind a link was counted: {before} -> {after}"
+        );
+        assert!(
+            after >= before,
+            "the real file's own bytes must still count"
         );
     }
 }
