@@ -830,7 +830,7 @@ async fn run_build(p: RunParams<'_>) -> Result<i32, Box<dyn std::error::Error + 
 /// behavior itself. It takes the same `RunParams` as a one-shot build, so
 /// watch mode and `fh <build>` cannot drift apart in what they send. It does
 /// not return: it loops until the user interrupts a run, then exits.
-async fn run_watch(p: RunParams<'_>, debounce_ms: u64) -> ! {
+async fn run_watch(p: RunParams<'_>, debounce_ms: u64) -> i32 {
     let RunParams {
         host,
         token,
@@ -850,6 +850,7 @@ async fn run_watch(p: RunParams<'_>, debounce_ms: u64) -> ! {
         tls_config,
         telemetry,
     } = p;
+    let mut failed = false;
 
     // The project's own ignore patterns (every matched template's
     // `ignoreExtra`) are compiled once here rather than per event.
@@ -1017,6 +1018,16 @@ async fn run_watch(p: RunParams<'_>, debounce_ms: u64) -> ! {
                 break;
             }
 
+            // A watch loop whose whole job is telling you the build is broken
+            // must not swallow the result. Previously every code other than
+            // 130 fell through untouched, so a build failing every time looked
+            // exactly like a healthy one.
+            let code = code.unwrap_or(-1);
+            failed = failed || (code != 0);
+            if code != 0 {
+                println!("\n\u{1b}[31m✗ build failed (exit {code})\u{1b}[0m — still watching");
+            }
+
             // Settle and drain events triggered by local artifact extraction or touch
             tokio::time::sleep(std::time::Duration::from_millis(150)).await;
             while rx.try_recv().is_ok() {}
@@ -1024,7 +1035,12 @@ async fn run_watch(p: RunParams<'_>, debounce_ms: u64) -> ! {
             println!("\n👁️  Watching for changes...");
         }
     }
-    exit(0);
+
+    // The rollup that `-v` shows for a one-shot build was unreachable here:
+    // `run_watch` ended in `exit(0)`, so this could never run. The exit code
+    // reflects the last state, not history — Ctrl-C still stops the watch.
+    telemetry.print_summary(project_name, host);
+    i32::from(failed)
 }
 
 /// Stack for the thread that runs the client.
@@ -1864,7 +1880,7 @@ async fn run_cli() {
     }
 
     if is_watch {
-        Box::pin(run_watch(
+        let watch_exit = Box::pin(run_watch(
             RunParams {
                 host: &host,
                 token: &token,
@@ -1887,6 +1903,9 @@ async fn run_cli() {
             cli.watch_debounce,
         ))
         .await;
+        // Watch mode reports whether any build failed, rather than exiting 0
+        // regardless — a watch loop is exactly where a swallowed failure hurts.
+        exit(watch_exit);
     }
 
     let exit_code = match Box::pin(run_build(RunParams {
