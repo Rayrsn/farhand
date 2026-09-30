@@ -512,12 +512,21 @@ mod tests {
     fn index_excluded() -> Vec<String> {
         vec![HASH_INDEX_FILENAME.to_string()]
     }
+    /// Write a fixture file, then let the filesystem clock advance.
+    ///
+    /// The digest cache refuses to reuse an entry whose mtime is not strictly
+    /// older than the moment it was recorded — git's racy-clean rule. On
+    /// Windows file times come from a system clock ticking at roughly 15.6 ms,
+    /// so a file written and then immediately scanned lands in the same tick and
+    /// is legitimately racy. The rule is correct; a fixture that cannot
+    /// distinguish "unchanged" from "changed in the same tick" is not.
     fn write(root: &Path, name: &str, body: &str) {
         let p = root.join(name);
         if let Some(parent) = p.parent() {
             fs::create_dir_all(parent).unwrap();
         }
         fs::write(p, body).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(30));
     }
 
     /// Overwrite with different content but *identical byte length*, then put
@@ -733,15 +742,6 @@ mod tests {
         let root = tmp.path();
         write(root, "a.txt", "content");
         let index = root.join(HASH_INDEX_FILENAME);
-
-        // Let the clock advance before the index is written. The racy-clean
-        // rule refuses to reuse any entry whose mtime is not strictly older
-        // than the index's own write, and on Windows file times come from a
-        // system clock that ticks at roughly 15.6 ms — so writing both in the
-        // same tick makes the entry racy by construction and the reuse below
-        // would legitimately not happen. The rule is behaving as designed;
-        // the fixture has to be older than the index to test anything.
-        std::thread::sleep(std::time::Duration::from_millis(30));
 
         let mut first = HashCache::default();
         let (files, _) = scan_cached(root, &index_excluded(), &mut first).unwrap();
