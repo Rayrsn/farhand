@@ -1663,7 +1663,11 @@ async fn test_e2e_multi_agent_pool_least_busy_dispatch() {
         .unwrap();
 
     let run = RunPayload {
-        argv: vec!["sh".into(), "-c".into(), "echo busy && sleep 3".into()],
+        // Long enough to outlive the probe below. At `sleep 3` the run could
+        // finish before the test looked, both agents then reported idle, and the
+        // tie-break fell to latency — which is how this flaked on a slower
+        // runner while passing everywhere else.
+        argv: vec!["sh".into(), "-c".into(), "echo busy && sleep 20".into()],
         outputs: None,
         cwd: None,
         template: None,
@@ -1678,7 +1682,6 @@ async fn test_e2e_multi_agent_pool_least_busy_dispatch() {
     write_json_frame(&mut stream_a, MsgType::Run, &run)
         .await
         .unwrap();
-    let _ = read_frame(&mut stream_a).await.unwrap(); // log "busy"
 
     // Both agents are in the pool
     let agents = vec![
@@ -1696,9 +1699,46 @@ async fn test_e2e_multi_agent_pool_least_busy_dispatch() {
         },
     ];
 
+    // Establish the precondition explicitly rather than assuming it. STATUS is
+    // a pre-authentication control request, so it must be the first frame.
+    let mut agent_a_busy = false;
+    for _ in 0..50 {
+        let mut probe = TcpStream::connect(&addr_a).await.unwrap();
+        write_json_frame(
+            &mut probe,
+            MsgType::Status,
+            &protocol::StatusRequestPayload {
+                token: token.clone(),
+            },
+        )
+        .await
+        .unwrap();
+        let (msg, payload) = read_frame(&mut probe).await.unwrap();
+        assert_eq!(msg, MsgType::StatusResp);
+        let status: protocol::StatusResponsePayload = decode_json(&payload).unwrap();
+        eprintln!(
+            "[dbg] poll active_runs={} queue={}",
+            status.active_runs, status.queue_depth
+        );
+        if status.active_runs > 0 {
+            agent_a_busy = true;
+            break;
+        }
+        drop(probe);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(
+        agent_a_busy,
+        "precondition failed: agent A never reported an active run, so this test \
+         would be asserting on a tie-break rather than on load"
+    );
+
     // select_best_agent should pick agent B because agent A has active_runs == 1
     let best = fh::select_best_agent(&agents, None, false).await.unwrap();
     assert_eq!(best.host, addr_b);
+
+    // Drain the occupying run so the test does not leave a `sleep 20` behind.
+    let _ = read_frame(&mut stream_a).await.unwrap();
 }
 
 #[tokio::test]
