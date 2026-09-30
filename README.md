@@ -52,12 +52,33 @@ Logs stream directly into your terminal in real time, and build artifacts (like 
 
 ## Why Farhand?
 
-| Feature | Farhand (`fh`) | `ssh` + `rsync` scripts | Remote Desktop / SSH VSCode |
-| :--- | :---: | :---: | :---: |
-| **No External System Binaries** | **Yes** (pure static Rust) | No (requires `rsync`, `ssh`, `tar`) | No (heavy daemon) |
-| **Zstandard (zstd) Wire Compression** | **Yes** (negotiated, 3–5x faster) | No (gzip or none) | N/A |
-| **Global Content-Addressable Storage (CAS)** | **Yes** (zero-copy CoW hydration) | No | No |
-| **Persistent Dependency Cache** | **Yes** (`node_modules` stays remote) | Often wipes or conflicts | Local to remote box |
+| | **Farhand** | VS Code Remote SSH | Bazel remote exec | mosh + tmux | `ssh` + `rsync` |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **Scope** | Run one command on a build box | Full remote dev environment | Hermetic reproducible builds | Resilient shell over lossy links | Ad-hoc file + command copy |
+| **Zstd wire compression** | **Yes**, negotiated | No | Bazel-specific | No | gzip or none |
+| **Cross-project content dedup (CAS)** | **Yes** | No | Content-addressable store | No | No |
+| **Dependency cache survives between runs** | **Yes**, per branch | Yes | Yes (natively) | n/a | Often wiped or conflicts |
+| **Bring a dev server back to `localhost`** | **Yes**, `-L` | Yes | No | No | Needs a separate `ssh -L` |
+| **Cancel kills the whole remote process tree** | **Yes** | Yes | Yes | n/a | Often orphans it |
+| **Language-server offload** | **Yes** | Yes | No | No | No |
+| **Multi-agent failover** | **Yes** | No | Yes | No | No |
+| **External binaries required** | **None** | VS Code, extension host | Bazel, RBE | mosh, tmux | ssh, rsync, tar |
+| **Local CPU still used for build** | Never | Configurable | Never | Yes, always | Yes, always |
+| **Windows agent host** | **Yes** | No | Rarely | No | No |
+| **Hermetic/reproducible by construction** | No — it runs *your* build | No | **Yes** | No | No |
+| **Works without a project system (no Bazel setup)** | **Yes** | Yes | **No** | Yes | Yes |
+
+**Where Farhand loses, plainly.** It is not a hermetic build system: Bazel
+reproduces a result from a content-addressed graph, while Farhand runs whatever
+your project's own tooling runs and inherits its determinism. It cannot replace
+Bazel for that reason. It has no Windows agent story beyond the basics, it
+cannot make your local machine faster by moving only part of a build, and
+because the remote box keeps its own `node_modules`/`target`, a mismatch
+between local and remote toolchain versions is your problem to manage. VS Code
+Remote gives you a whole remote environment, not just a command runner.
+
+If you need reproducible builds, use Bazel. If you want a thin, fast way to run
+a project's own build and a dev server on a spare machine, that is this.
 | **Multi-Branch APFS CoW Forking** | **Yes** (< 100ms, 0-byte duplicate) | No (duplicates entire folder) | No |
 | **Delta Source Sync** | **Yes** (SHA-256 manifests over TCP) | Yes (rsync delta) | N/A (entire edit remote) |
 | **Clean Process Cancellation** | **Yes** (kills remote process tree) | No (orphans compiler processes) | Yes |
@@ -88,6 +109,37 @@ Logs stream directly into your terminal in real time, and build artifacts (like 
 - 📊 **Run Observability**: Query execution history, exit codes, synced bytes, and duration using `fh history` and host status via `fh status`.
 - 🔍 **Transfer Transparency (`fh sync`, `fh why`)**: See exactly what a build would upload — file count, bytes, and the share of the project that would cross the network — with `fh sync --dry-run`; ask about any single path with `fh why`, which names the ignore rule that excluded it or reports the content-addressed hit that skipped it.
 - 🩺 **`fh doctor`**: One read-only pass over everything that commonly breaks a remote build — where it is pointed, whether the token is present and stored safely, whether the transport is encrypted, declared toolchains, and the agent's connectivity, disk, queue, and load. It distinguishes "cannot reach the agent" from "reached it and it rejected your token", and exits 125 when something is actually broken.
+
+---
+
+## How It Works
+
+```
+   your machine                              the build box
+┌────────────────────────┐              ┌──────────────────────────┐
+│  you edit files        │              │  fhd                     │
+│        │               │              │    ├── auth + TLS        │
+│        ▼               │   one TCP    │    ├── workspace per     │
+│  fh                    │  connection  │    │   project + branch    │
+│    ├── scan + SHA-256  ├─────────────►│    │     (CoW-cloned)       │
+│    ├── diff vs agent   │   frames:     │    ├── CAS: content       │
+│    ├── delta tar ──────┼─────────────►│    │   addressed, shared   │
+│    │                   │              │    ├── run in its own     │
+│    ◄── live stdout ────┼──────────────┤    │   process group       │
+│    ◄── stderr ─────────┼──────────────┤    └── send artifacts      │
+│    ◄── artifacts ──────┼──────────────┤                          │
+│    │                   │              │  ~/.farhand/workspaces/  │
+│    └── -L 3000:3000 ───┼─────────────►│      my-app__main        │
+└────────────────────────┘              │      my-app__feat-x     │
+                                        │      cas/objects/…       │
+                                        └──────────────────────────┘
+```
+
+Logs, file deltas, artifact transfer, and port forwards all ride the same
+multiplexed connection — there is no second tunnel to open and no extra port
+on the agent. `-L` reopens a port on *your* loopback that the agent relays to
+its own, so a dev server on the build box appears at `localhost` locally.
+Full protocol detail in [the architecture guide](docs/architecture.md).
 
 ---
 
@@ -375,6 +427,31 @@ reproduction steps in **[BENCHMARKS.md](BENCHMARKS.md)**:
 Reproduce: `scripts/run_benchmarks.sh` regenerates `BENCHMARKS.md` from
 criterion's saved estimates.
 
+### End to end, on a real project
+
+The microbenchmarks above measure the parts. This is the whole command,
+`fh <anything>`, against a live agent over loopback, on a 304-file Rust
+project (~1.2 MiB of source):
+
+| Run | Wall clock | Agent scan |
+| :--- | ---: | :--- |
+| First build (cold workspace) | 255 ms | 305 files hashed |
+| Second build | 168 ms | 305 files re-hashed — see below |
+| Third and every run after | **~150 ms** | 304 digests reused, 0 re-hashed |
+
+**Two honest notes.** The second run deliberately re-hashes everything: a
+file whose mtime is not strictly older than the digest index's own write is
+treated as unsafe rather than trusted, and everything synced a moment earlier
+falls inside that window. The gate engages from the third run on, and costs
+one re-hash in exchange for never trusting a file that changed in the same
+tick it was recorded.
+
+And the 150 ms floor is process start, handshake, and round trips — at 304
+small files the fixed costs dominate, so the end-to-end win here is roughly
+40%. The win is in the scan itself (3.11 ms → 1.13 ms on this fixture), and
+that is the term that grows with your tree; on a project ten times this size
+the fixed costs are the same and the scan is the part that hurts.
+
 ---
 
 ## Detailed Documentation
@@ -394,6 +471,11 @@ Deep-dive guides covering architecture, server setup, and configuration:
 - 🔌 **[Reverse Port Forwarding Guide](docs/port-forwarding.md)** — Run a dev server, database, or any port on the build box and reach it at `localhost` with `-L`, multiplexed over the existing build connection.
 - ☁️ **[Remote Access via Cloudflare Tunnel](docs/cloudflared-tunnel.md)** — Connect securely over the internet with `cloudflared access tcp` without opening inbound router ports.
 - 📏 **[Benchmarks](BENCHMARKS.md)** — Reproducible criterion numbers behind the performance claims above.
+
+## Recipes
+
+- 🍳 **[Migrate from `rsync` + `ssh`](recipes/migrating-from-rsync.md)** — what the script did, what replaces each part, and how to check a path is actually being sent.
+- ⚙️ **[Run in GitHub Actions](recipes/github-actions.md)** — using a cheap hosted runner for orchestration while the build happens on a machine you control.
 
 ## Project & Community
 
