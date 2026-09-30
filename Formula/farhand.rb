@@ -1,26 +1,26 @@
 class Farhand < Formula
   desc "Remote build and test offloader with zero external system binaries"
   homepage "https://github.com/Rayrsn/farhand"
-  version "1.10.1"
+  version "1.10.2"
   license "MIT OR Apache-2.0"
 
   on_macos do
     if Hardware::CPU.arm?
       url "https://github.com/Rayrsn/farhand/releases/download/v#{version}/farhand-aarch64-apple-darwin.tar.gz"
-      sha256 "6b3bad316fddd5c07d8dce6ddc4b419d2261029a0632c0b4073e8f06ee135cec"
+      sha256 "d7f32c7f2f1243dce85a77639ccc6850ed89c637d0c0fcd00a60632910866138"
     else
       url "https://github.com/Rayrsn/farhand/releases/download/v#{version}/farhand-x86_64-apple-darwin.tar.gz"
-      sha256 "9edf62808460909324592b3a328ad85a5cf11277f66f0f7d9b7497d650c8e72a"
+      sha256 "d6abd10c758291d0549526100d9da3e0f5ed8a3e237e27b71ce6d0f151838b74"
     end
   end
 
   on_linux do
     if Hardware::CPU.arm?
       url "https://github.com/Rayrsn/farhand/releases/download/v#{version}/farhand-aarch64-unknown-linux-musl.tar.gz"
-      sha256 "233f9a5b4c9e0c77a00f75124790f90d713b8d37f923789bcaaf6f24a2324cee"
+      sha256 "d57230d7f6d589c4ba641d5f5a75f9b42a410a4fcd4caa9941a13dd41cbf834e"
     else
       url "https://github.com/Rayrsn/farhand/releases/download/v#{version}/farhand-x86_64-unknown-linux-musl.tar.gz"
-      sha256 "a77d83d28c8d0e604726fa827193449e1eed534cdf3aea59959dae9ae4ca3238"
+      sha256 "2a5f4a9b4866ac0018ceccccdb8870e33909214fd902315e4e3cd0a8b7277bcd"
     end
   end
 
