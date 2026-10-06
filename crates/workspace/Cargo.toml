@@ -17,15 +17,15 @@ rust-version.workspace = true
 name = "workspace"
 
 [dependencies]
-protocol = { package = "farhand-protocol", version = "1.10.2", path = "../protocol" }
-fileset = { package = "farhand-fileset", version = "1.10.2", path = "../fileset" }
+protocol = { package = "farhand-protocol", version = "1.10.3", path = "../protocol" }
+fileset = { package = "farhand-fileset", version = "1.10.3", path = "../fileset" }
 sha2 = { workspace = true }
 hex = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 walkdir = { workspace = true }
 glob = { workspace = true }
-templates = { package = "farhand-templates", version = "1.10.2", path = "../templates" }
+templates = { package = "farhand-templates", version = "1.10.3", path = "../templates" }
 tokio = { workspace = true, features = ["sync"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -43,8 +43,8 @@ windows-sys = { version = "0.61", features = [
 [dev-dependencies]
 tempfile = { workspace = true }
 criterion = { workspace = true }
-fileset = { package = "farhand-fileset", version = "1.10.2", path = "../fileset" }
-protocol = { package = "farhand-protocol", version = "1.10.2", path = "../protocol" }
+fileset = { package = "farhand-fileset", version = "1.10.3", path = "../fileset" }
+protocol = { package = "farhand-protocol", version = "1.10.3", path = "../protocol" }
 
 [[bench]]
 name = "cas_cow"

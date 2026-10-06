@@ -89,6 +89,15 @@ impl Progress {
         self.last_width
             .set(line.chars().count() + padding.chars().count());
     }
+    #[cfg(test)]
+    pub(crate) fn start_with_terminal(label: &'static str, enabled: bool) -> Self {
+        Progress {
+            enabled,
+            label,
+            started: Instant::now(),
+            last_width: Cell::new(0),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -97,13 +106,19 @@ mod tests {
 
     #[test]
     fn nothing_is_drawn_without_a_terminal() {
-        // The test harness captures stdout, so `is_visible` must be false and
+        // When not in a terminal, `is_visible` must be false and
         // every method must be a safe no-op rather than emitting bytes.
-        let p = Progress::start("packing");
+        let p = Progress::start_with_terminal("packing", false);
         assert!(!p.is_visible());
         p.update(1, 10);
         p.update(10, 10);
         p.clear();
         p.finish("done");
+    }
+
+    #[test]
+    fn progress_visibility_matches_terminal_state() {
+        let p = Progress::start("packing");
+        assert_eq!(p.is_visible(), std::io::stdout().is_terminal());
     }
 }

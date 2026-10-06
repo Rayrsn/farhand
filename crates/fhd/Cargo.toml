@@ -22,10 +22,10 @@ name = "fhd"
 path = "src/main.rs"
 
 [dependencies]
-protocol = { package = "farhand-protocol", version = "1.10.2", path = "../protocol" }
-fileset = { package = "farhand-fileset", version = "1.10.2", path = "../fileset" }
-workspace = { package = "farhand-workspace", version = "1.10.2", path = "../workspace" }
-templates = { package = "farhand-templates", version = "1.10.2", path = "../templates" }
+protocol = { package = "farhand-protocol", version = "1.10.3", path = "../protocol" }
+fileset = { package = "farhand-fileset", version = "1.10.3", path = "../fileset" }
+workspace = { package = "farhand-workspace", version = "1.10.3", path = "../workspace" }
+templates = { package = "farhand-templates", version = "1.10.3", path = "../templates" }
 tokio = { workspace = true, features = ["full"] }
 clap = { workspace = true, features = ["derive", "env"] }
 tracing.workspace = true

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.10.3] - 2026-10-06
+
+### Fixed
+- **Daemon stream buffering delayed command output until process termination.**
+  `fhd`'s `stream_lines` previously read until EOF before returning any log
+  payloads, buffering all child process output in memory and causing commands
+  (such as `npm run test:ci`) to display no output until the entire command finished.
+  `stream_lines` now streams lines incrementally as they arrive in real time.
+
+- **Added `farhand-out` to default ignores.**
+  Downloaded artifact directories are now excluded from scanning and hashing by
+  default in `DEFAULT_IGNORES`, preventing unnecessary pre-run indexing overhead
+  on subsequent runs.
+
 ## [1.10.2] - 2026-09-30
 
 ### Fixed
