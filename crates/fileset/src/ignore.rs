@@ -17,6 +17,7 @@ pub const DEFAULT_IGNORES: &[&str] = &[
     ".farhand-state.json",
     ".farhand-runs",
     ".farhand-last-used",
+    "farhand-out",
 ];
 
 /// Returns true if any component of the forward-slash relative path matches a default ignore.

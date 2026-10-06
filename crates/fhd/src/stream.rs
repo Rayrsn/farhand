@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
-use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::process::Command;
 use tokio::sync::Mutex;
 use tracing::warn;
@@ -47,13 +47,14 @@ const MAX_LOG_LINE: usize = 64 * 1024;
 /// become U+FFFD instead of ending the stream, and no more than `MAX_LOG_LINE`
 /// is ever held for a line. A trailing fragment with no newline yet is
 /// buffered until the next read completes it.
-async fn stream_lines<R>(mut reader: R, stream: &'static str) -> Vec<LogPayload>
+async fn stream_lines<R, F, Fut>(mut reader: R, stream: &'static str, mut on_line: F)
 where
     R: tokio::io::AsyncRead + Unpin,
+    F: FnMut(LogPayload) -> Fut,
+    Fut: std::future::Future<Output = bool>,
 {
     use tokio::io::AsyncReadExt;
 
-    let mut payloads = Vec::new();
     let mut pending: Vec<u8> = Vec::new();
     let mut buf = vec![0u8; 8192];
 
@@ -67,38 +68,39 @@ where
         for (i, b) in buf[..n].iter().enumerate() {
             if *b == b'\n' {
                 pending.extend_from_slice(&buf[start..i]);
-                payloads.push(LogPayload {
+                let payload = LogPayload {
                     stream: stream.into(),
                     data: line_to_payload(&pending),
-                });
+                };
                 pending.clear();
                 start = i + 1;
+                if !on_line(payload).await {
+                    return;
+                }
             } else if pending.len() >= MAX_LOG_LINE {
                 // Emit an over-long line rather than growing without bound.
                 pending.extend_from_slice(&buf[start..=i]);
-                payloads.push(LogPayload {
+                let payload = LogPayload {
                     stream: stream.into(),
                     data: line_to_payload(&pending),
-                });
+                };
                 pending.clear();
                 start = i + 1;
+                if !on_line(payload).await {
+                    return;
+                }
             }
         }
         pending.extend_from_slice(&buf[start..n]);
-
-        if payloads.is_empty() {
-            continue;
-        }
     }
 
     if !pending.is_empty() {
-        payloads.push(LogPayload {
+        let payload = LogPayload {
             stream: stream.into(),
             data: line_to_payload(&pending),
-        });
+        };
+        let _ = on_line(payload).await;
     }
-
-    payloads
 }
 
 /// Decode one line's bytes into a log payload, trimming the `\r` of a CRLF and
@@ -254,15 +256,17 @@ pub async fn run_child_and_stream<
                     }
                 }
             } else {
-                for payload in stream_lines(BufReader::new(out), "stdout").await {
-                    let mut w = writer_out.lock().await;
-                    if write_json_frame(&mut *w, MsgType::Log, &payload)
-                        .await
-                        .is_err()
-                    {
-                        break;
+                let writer = Arc::clone(&writer_out);
+                stream_lines(out, "stdout", |payload| {
+                    let writer = Arc::clone(&writer);
+                    async move {
+                        let mut w = writer.lock().await;
+                        write_json_frame(&mut *w, MsgType::Log, &payload)
+                            .await
+                            .is_ok()
                     }
-                }
+                })
+                .await;
             }
         }
     });
@@ -291,15 +295,17 @@ pub async fn run_child_and_stream<
                     }
                 }
             } else {
-                for payload in stream_lines(BufReader::new(err), "stderr").await {
-                    let mut w = writer_err.lock().await;
-                    if write_json_frame(&mut *w, MsgType::Log, &payload)
-                        .await
-                        .is_err()
-                    {
-                        break;
+                let writer = Arc::clone(&writer_err);
+                stream_lines(err, "stderr", |payload| {
+                    let writer = Arc::clone(&writer);
+                    async move {
+                        let mut w = writer.lock().await;
+                        write_json_frame(&mut *w, MsgType::Log, &payload)
+                            .await
+                            .is_ok()
                     }
-                }
+                })
+                .await;
             }
         }
     });
@@ -735,6 +741,19 @@ pub async fn execute_and_stream<
 mod tests {
     use super::*;
 
+    async fn stream_lines_to_vec<R>(reader: R, stream: &'static str) -> Vec<LogPayload>
+    where
+        R: tokio::io::AsyncRead + Unpin,
+    {
+        let mut payloads = Vec::new();
+        stream_lines(reader, stream, |payload| {
+            payloads.push(payload);
+            async { true }
+        })
+        .await;
+        payloads
+    }
+
     fn joined(payloads: &[LogPayload]) -> String {
         payloads.iter().map(|p| p.data.as_str()).collect()
     }
@@ -750,7 +769,7 @@ mod tests {
         bytes.extend_from_slice(b"\n");
         bytes.extend_from_slice(b"after\n");
 
-        let payloads = stream_lines(bytes.as_slice(), "stdout").await;
+        let payloads = stream_lines_to_vec(bytes.as_slice(), "stdout").await;
         let text = joined(&payloads);
 
         assert!(
@@ -766,14 +785,14 @@ mod tests {
     /// CRLF is trimmed and normalised to a single `\n`, as before.
     #[tokio::test]
     async fn crlf_is_normalised() {
-        let payloads = stream_lines(&b"one\r\ntwo\r\n"[..], "stdout").await;
+        let payloads = stream_lines_to_vec(&b"one\r\ntwo\r\n"[..], "stdout").await;
         assert_eq!(joined(&payloads), "one\ntwo\n");
     }
 
     /// A final line with no trailing newline must still be delivered.
     #[tokio::test]
     async fn trailing_line_without_newline_is_delivered() {
-        let payloads = stream_lines(&b"a\nb"[..], "stdout").await;
+        let payloads = stream_lines_to_vec(&b"a\nb"[..], "stdout").await;
         assert_eq!(joined(&payloads), "a\nb\n");
     }
 
@@ -783,7 +802,7 @@ mod tests {
     async fn an_unterminated_huge_line_is_split_rather_than_buffered() {
         let huge = vec![b'x'; MAX_LOG_LINE * 3];
 
-        let payloads = stream_lines(huge.as_slice(), "stdout").await;
+        let payloads = stream_lines_to_vec(huge.as_slice(), "stdout").await;
 
         assert!(
             payloads.len() >= 3,
@@ -797,6 +816,37 @@ mod tests {
     /// Empty input produces nothing rather than one empty line.
     #[tokio::test]
     async fn empty_output_produces_no_payloads() {
-        assert!(stream_lines(&b""[..], "stdout").await.is_empty());
+        assert!(stream_lines_to_vec(&b""[..], "stdout").await.is_empty());
+    }
+
+    /// Lines are streamed incrementally as they arrive, before EOF is reached.
+    #[tokio::test]
+    async fn streaming_yields_lines_before_eof() {
+        use tokio::io::AsyncWriteExt;
+        let (mut client, server) = tokio::io::duplex(1024);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+
+        let handle = tokio::spawn(async move {
+            stream_lines(server, "stdout", |payload| {
+                let tx = tx.clone();
+                async move { tx.send(payload).await.is_ok() }
+            })
+            .await;
+        });
+
+        // Write line 1 without closing the stream
+        client.write_all(b"first line\n").await.unwrap();
+        let first = rx.recv().await.expect("received first line before EOF");
+        assert_eq!(first.data, "first line\n");
+
+        // Write line 2 without closing the stream
+        client.write_all(b"second line\n").await.unwrap();
+        let second = rx.recv().await.expect("received second line before EOF");
+        assert_eq!(second.data, "second line\n");
+
+        // Now close the stream (EOF)
+        drop(client);
+        handle.await.unwrap();
+        assert!(rx.recv().await.is_none());
     }
 }
