@@ -44,6 +44,24 @@ thiserror = { workspace = true }
 [target.'cfg(not(target_os = "linux"))'.dependencies]
 rodio.workspace = true
 
+# Compile-check the non-Linux audio path from a Linux box as well.
+#
+# `play_rodio` sits behind `cfg(not(target_os = "linux"))`, so on Linux it is
+# simply absent from the build: `cargo clippy --all-targets` and `cargo test`
+# both pass while the whole function goes unchecked. That is not theoretical —
+# it shipped three wrong rodio API calls that only the macOS and Windows CI
+# jobs caught. Adding rodio here as a gnu-Linux dev-dependency makes the
+# pre-push hook type-check that path locally.
+#
+# Scoped to `target_env = "gnu"` on purpose: `alsa-sys` cannot build for musl,
+# and the musl release job runs `cargo check --all-targets`, so an unscoped
+# dev-dependency would drag ALSA into the static release gate and break it.
+#
+# This needs ALSA's headers (`libasound2-dev`) for test builds on Linux; CI
+# installs it explicitly. It never affects `cargo build` or a release artifact.
+[target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dev-dependencies]
+rodio.workspace = true
+
 [dev-dependencies]
 fhd = { package = "farhand-agent", version = "1.11.0", path = "../fhd" }
 workspace = { package = "farhand-workspace", version = "1.11.0", path = "../workspace" }

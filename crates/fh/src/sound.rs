@@ -175,6 +175,8 @@ pub fn play_success(flag_off: bool) {
         SoundMode::Off => {}
         #[cfg(not(target_os = "linux"))]
         SoundMode::Platform | SoundMode::RawPulse => play_rodio(&samples, rate, channels, budget),
+        // On Linux test builds `play_rodio` is compiled but never dispatched to;
+        // the reference in `platform_path_type_checks` keeps it from being dead.
         #[cfg(target_os = "linux")]
         SoundMode::Platform => {}
         #[cfg(target_os = "linux")]
@@ -182,9 +184,16 @@ pub fn play_success(flag_off: bool) {
     }
 }
 
-/// Play via `rodio` (non-Linux: CoreAudio/WASAPI). On Linux `rodio` is not a
-/// dependency, so the raw-socket path is used instead.
-#[cfg(not(target_os = "linux"))]
+/// Play via `rodio` (non-Linux: CoreAudio/WASAPI).
+///
+/// Also compiled for Linux *test* builds (glibc only), so the pre-push hook
+/// type-checks this path on a Linux box instead of skipping it. See the
+/// `cfg(all(target_os = "linux", target_env = "gnu"))` dev-dependency note in
+/// `crates/fh/Cargo.toml`.
+#[cfg(any(
+    not(target_os = "linux"),
+    all(target_os = "linux", target_env = "gnu", test)
+))]
 fn play_rodio(samples: &[i16], sample_rate: u32, channels: u16, _budget: Duration) {
     use rodio::buffer::SamplesBuffer;
     use rodio::{OutputStreamBuilder, Sink};
@@ -591,6 +600,18 @@ mod tests {
         std::env::set_var("FARHAND_SOUND", "on");
         assert_eq!(mode_from_env(true), SoundMode::Off);
         std::env::remove_var("FARHAND_SOUND");
+    }
+
+    /// Forces `play_rodio` to be compiled on a Linux test build.
+    ///
+    /// Taking the function's address type-checks its body — including every
+    /// rodio API call — without opening an audio device or making a sound. This
+    /// is what stops the non-Linux path from rotting unnoticed behind a
+    /// `cfg(not(target_os = "linux"))`.
+    #[test]
+    #[cfg(any(not(target_os = "linux"), all(target_os = "linux", target_env = "gnu")))]
+    fn platform_path_type_checks() {
+        let _f: fn(&[i16], u32, u16, Duration) = play_rodio;
     }
 
     /// Exercises the raw PulseAudio client against a live server. Ignored by
