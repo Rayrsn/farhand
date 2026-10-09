@@ -19,8 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   PulseAudio *native protocol* directly over the server's unix socket, which
   deliberately avoids linking `libasound` — a linked ALSA library would break
   the fully static musl release binary. That Linux path is experimental and
-  opt-in via `FARHAND_SOUND=raw`; the clip is decoded with `minimp3` (pure
-  Rust, no C dependencies) so it compiles for the static musl target.
+  opt-in via `FARHAND_SOUND=raw`.
+
+  The clip ships as 16-bit PCM WAV rather than MP3, and `rodio` is built with
+  `default-features = false, features = ["playback"]`, so playback pulls in no
+  decoder at all. That keeps the dependency tree clean: `rodio`'s default
+  features drag in the symphonia decoders, which are MPL-2.0, and the one pure
+  Rust MP3 decoder we evaluated (`minimp3`) depends on `slice-ring-buffer`,
+  which carries unpatched double-free advisories (RUSTSEC-2025-0044).
 
   Disable it with the new `--no-sound` flag or `FARHAND_SOUND=off`. It is
   always off in CI.

@@ -20,8 +20,8 @@
 
 use std::time::Duration;
 
-/// The project's pronunciation, embedded into the binary.
-const CLIP: &[u8] = include_bytes!("../assets/pronunciation.mp3");
+/// The project's pronunciation, embedded into the binary as 16-bit PCM WAV.
+const CLIP: &[u8] = include_bytes!("../assets/pronunciation.wav");
 
 /// Which output backend (if any) the client should attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,27 +77,73 @@ fn ci_detected() -> bool {
     false
 }
 
-/// Decode the embedded clip to interleaved mono/stereo `i16` PCM.
+/// Parse the embedded clip into interleaved `i16` PCM.
+///
+/// The clip ships as 16-bit PCM WAV rather than MP3 so that playback needs no
+/// decoder at all. That is a deliberate trade: every pure-Rust MP3 decoder we
+/// could reach either drags in copyleft (symphonia is MPL-2.0) or, in
+/// minimp3's case, a `slice-ring-buffer` with unpatched double-free advisories
+/// (RUSTSEC-2025-0044). Reading a RIFF header costs us a few dozen lines and
+/// removes an entire dependency from a tool that otherwise has a strict licence
+/// and advisory policy.
 fn decode_clip() -> Option<(Vec<i16>, u32, u16)> {
-    use minimp3::Decoder;
-    let mut decoder = Decoder::new(std::io::Cursor::new(CLIP));
-    let mut samples: Vec<i16> = Vec::new();
-    let mut sample_rate: u32 = 44_100;
-    let mut channels: u16 = 2;
-
-    // `minimp3` decodes frame-by-frame. Concatenate until it reports EOF (an
-    // error). A decode failure mid-stream keeps whatever was decoded so far.
-    while let Ok(frame) = decoder.next_frame() {
-        if frame.channels > 0 {
-            sample_rate = frame.sample_rate.max(1) as u32;
-            channels = frame.channels as u16;
-        }
-        if frame.data.is_empty() {
-            break;
-        }
-        samples.extend_from_slice(&frame.data);
+    let bytes = CLIP;
+    if bytes.len() < 44 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+        return None;
     }
 
+    let mut sample_rate = 0u32;
+    let mut channels = 0u16;
+    let mut bits = 0u16;
+    let mut audio_format = 0u16;
+    let mut data: Option<&[u8]> = None;
+
+    // Walk the RIFF chunk list; `fmt ` and `data` are what we need, and any
+    // other chunk (LIST, fact, …) is skipped by its declared size.
+    let mut pos = 12usize;
+    while pos + 8 <= bytes.len() {
+        let id = &bytes[pos..pos + 4];
+        let size = u32::from_le_bytes([
+            bytes[pos + 4],
+            bytes[pos + 5],
+            bytes[pos + 6],
+            bytes[pos + 7],
+        ]) as usize;
+        let body_start = pos + 8;
+        let body_end = body_start.checked_add(size)?;
+        if body_end > bytes.len() {
+            return None;
+        }
+        match id {
+            b"fmt " if body_end - body_start >= 16 => {
+                let b = &bytes[body_start..body_end];
+                audio_format = u16::from_le_bytes([b[0], b[1]]);
+                channels = u16::from_le_bytes([b[2], b[3]]);
+                sample_rate = u32::from_le_bytes([b[4], b[5], b[6], b[7]]);
+                bits = u16::from_le_bytes([b[14], b[15]]);
+            }
+            b"data" => data = Some(&bytes[body_start..body_end]),
+            _ => {}
+        }
+        // Chunks are word-aligned: an odd size is followed by a pad byte.
+        pos = body_end + (size & 1);
+    }
+
+    // Only uncompressed 16-bit PCM is supported; anything else would need a
+    // decoder, which is exactly what this format choice avoids.
+    if audio_format != 1 || bits != 16 || channels == 0 || sample_rate == 0 {
+        return None;
+    }
+    let raw = data?;
+    if raw.len() < 2 || raw.len() % 2 != 0 {
+        return None;
+    }
+    let samples: Vec<i16> = raw
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| i16::from_le_bytes(*c))
+        .collect();
     if samples.is_empty() {
         return None;
     }
@@ -141,18 +187,18 @@ pub fn play_success(flag_off: bool) {
 #[cfg(not(target_os = "linux"))]
 fn play_rodio(samples: &[i16], sample_rate: u32, channels: u16, _budget: Duration) {
     use rodio::buffer::SamplesBuffer;
-    use rodio::{OutputStream, Sink};
+    use rodio::{OutputStreamBuilder, Sink};
 
-    let (_stream, handle) = match OutputStream::try_default() {
-        Ok(v) => v,
-        Err(_) => return,
+    let Ok(stream) = OutputStreamBuilder::open_default_stream() else {
+        return;
     };
-    let source = SamplesBuffer::new(channels, sample_rate, samples.to_vec());
-    let sink = match Sink::try_new(&handle) {
-        Ok(s) => s,
-        Err(_) => return,
-    };
+    // rodio plays `f32`; minimp3 hands us interleaved `i16`. Scale to [-1, 1].
+    let pcm: Vec<f32> = samples.iter().map(|s| *s as f32 / 32_768.0).collect();
+    let source = SamplesBuffer::new(channels.max(1), sample_rate.max(1), pcm);
+    // `stream` must outlive the sink: the mixer is borrowed from it.
+    let sink = Sink::connect_new(stream.mixer());
     sink.append(source);
+    // Block until the clip finishes, so it is actually heard before we exit.
     sink.sleep_until_end();
 }
 

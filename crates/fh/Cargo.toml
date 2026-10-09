@@ -30,7 +30,6 @@ tokio = { workspace = true, features = ["full"] }
 clap = { workspace = true, features = ["derive", "env"] }
 clap_complete.workspace = true
 clap_mangen.workspace = true
-minimp3.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 serde_json = { workspace = true }
@@ -40,8 +39,8 @@ crossterm = { workspace = true }
 notify = { workspace = true }
 thiserror = { workspace = true }
 
-# Audio output + mp3 decode on non-Linux. Linux uses a raw PulseAudio native
-# socket (no libasound link) so the static musl build stays dependency-free.
+# Audio output on non-Linux. Linux uses a raw PulseAudio native socket (no
+# libasound link) so the static musl build stays dependency-free.
 [target.'cfg(not(target_os = "linux"))'.dependencies]
 rodio.workspace = true
 

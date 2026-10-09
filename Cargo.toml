@@ -35,13 +35,16 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 clap = { version = "4.5", features = ["derive", "env"] }
 clap_complete = "4.5"
 clap_mangen = "0.3"
-# Decodes the embedded pronunciation clip to PCM. Pure Rust, no C deps, so it
-# compiles for the static musl release build.
-minimp3 = "0.6"
 # Audio output on non-Linux. Not built into the Linux/musl binary (Linux plays
 # over the native PulseAudio protocol instead), so its libasound dependency never
 # reaches the static musl artifact.
-rodio = "0.21"
+#
+# `default-features = false, features = ["playback"]` is deliberate: rodio's
+# default features pull in the symphonia decoders, which are MPL-2.0 and fail
+# the cargo-deny licence gate. We only ever hand rodio PCM we parsed ourselves
+# out of the embedded WAV, so `playback` (which is just `dep:cpal`) is the whole
+# of what we need — no decoder, no copyleft.
+rodio = { version = "0.21", default-features = false, features = ["playback"] }
 sha2 = "0.11.0"
 hex = "0.4"
 tempfile = "3.17"
