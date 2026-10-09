@@ -69,9 +69,11 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 
 CANDIDATE_URLS=()
 if [ "$VERSION" = "latest" ]; then
+  # Only one naming is published for a floating "latest" fetch: the direct,
+  # version-less asset. The versioned asset needs the tag, which is unknown
+  # here — that is handled by the explicit-version branch below.
   CANDIDATE_URLS+=(
     "https://github.com/${REPO}/releases/latest/download/farhand-${TARGET}.tar.gz"
-    "https://github.com/${REPO}/releases/latest/download/farhand-v1.0.0-${TARGET}.tar.gz"
   )
 else
   case "$VERSION" in
@@ -174,7 +176,7 @@ else
   echo "    cargo install farhand-cli      # provides fh" >&2
   echo "    cargo install farhand-agent    # provides fhd" >&2
   echo "" >&2
-  echo "  Or pin a specific release:  bash <(curl -sL $0) --version 1.10.0" >&2
+  echo "  Or pin a specific release:  bash <(curl -sL $0) --version <tag>" >&2
   exit 1
 fi
 

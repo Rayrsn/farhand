@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Success notification sound.** When a remote run returns exit code 0, `fh`
+  plays a short clip of the project pronunciation. Purely cosmetic and
+  best-effort: it runs after the exit code is decided and every audio failure
+  is swallowed, so audio can never turn a passing build into a failing one.
+
+  Audio output honours the project's "no system binaries" rule on every
+  platform. macOS and Windows link the OS audio *library* through `rodio`
+  (CoreAudio/WASAPI) rather than executing a player. Linux instead speaks the
+  PulseAudio *native protocol* directly over the server's unix socket, which
+  deliberately avoids linking `libasound` — a linked ALSA library would break
+  the fully static musl release binary. That Linux path is experimental and
+  opt-in via `FARHAND_SOUND=raw`; the clip is decoded with `minimp3` (pure
+  Rust, no C dependencies) so it compiles for the static musl target.
+
+  Disable it with the new `--no-sound` flag or `FARHAND_SOUND=off`. It is
+  always off in CI.
+
 ## [1.10.3] - 2026-10-06
 
 ### Fixed
@@ -658,7 +676,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Run observability (`fh history`) and packaging/distribution (release workflow, Homebrew, install scripts, systemd/launchd units)
 - APFS Copy-on-Write workspace branching, two-tier LRU + emergency disk GC, `fh clean`
 
-[Unreleased]: https://github.com/Rayrsn/farhand/compare/v1.10.2...HEAD
+[Unreleased]: https://github.com/Rayrsn/farhand/compare/v1.10.3...HEAD
+[1.10.3]: https://github.com/Rayrsn/farhand/compare/v1.10.2...v1.10.3
 [1.10.2]: https://github.com/Rayrsn/farhand/compare/v1.10.1...v1.10.2
 [1.10.1]: https://github.com/Rayrsn/farhand/compare/v1.10.0...v1.10.1
 [1.10.0]: https://github.com/Rayrsn/farhand/compare/v1.9.0...v1.10.0

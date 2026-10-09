@@ -131,8 +131,74 @@ deliberately a separate, manual step so a bad package cannot ship on its own.
   with optional scopes, e.g. `fix(watch): prevent infinite rebuild loop`.
 - One logical change per PR. Update `CHANGELOG.md` under **Unreleased** for
   user-visible changes.
-- Bump `[workspace.package].version` in `Cargo.toml` for feature releases
-  (minor) or fixes (patch) — the release workflow publishes on `v*` tags.
+- Bump the version as described in [Versioning](#versioning).
+
+## Versioning
+
+Farhand follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+There is exactly **one** place the version is written by hand:
+
+```
+Cargo.toml → [workspace.package] → version
+```
+
+Every crate inherits it with `version.workspace = true`, and the published
+package names (`farhand-cli`, `farhand-protocol`, …) never change across
+releases — only the version moves.
+
+### What a bump touches
+
+| File | On a version bump |
+| :--- | :--- |
+| `Cargo.toml` | Edit by hand. The single source of truth. |
+| `crates/*/Cargo.toml`, `fuzz/Cargo.toml` | Every intra-workspace **path dependency** must carry the same version. CI enforces this at `major.minor` and fails on drift. |
+| `Cargo.lock` | Never edit. `cargo check` regenerates it. |
+| `flake.nix`, `default.nix` | Never edit. Both read the version out of `Cargo.toml` via `builtins.fromTOML`. |
+| `Formula/farhand.rb` | **Release-time only** — see below. |
+| `SECURITY.md` | Move the "latest" row up to the new line. |
+| `CHANGELOG.md` | Add the release heading and its compare link at tag time. |
+
+### Choosing the bump
+
+- **minor** — a new capability or stage lands: a new subcommand, a new flag, a
+  new protocol feature. The middle number goes up and the patch number resets
+  to `0`.
+- **patch** — a fix or hardening with no new surface. Only the patch number
+  goes up.
+
+Deliberately avoid concrete version numbers in prose and in examples. A literal
+like "pin `--version 1.2.3`", or "`1.2` vs `1.2.0`", is true on the day it is
+written and a lie the next, and nobody re-reads it. Write `<tag>`,
+`<major>.<minor>`, or `X.Y.Z` instead, and point at the file that actually
+holds the value.
+
+Bump the version when you *complete* the change, not when you open the PR.
+The workspace version is therefore allowed to sit one ahead of the newest
+published release; that is intentional, so release artifacts built from a tag
+are already labelled correctly.
+
+### Releasing
+
+The order matters, because several checks compare against the **published**
+release rather than the working tree:
+
+1. Land the bump and the changelog entry under **Unreleased**, with CI green.
+2. **Wait for a fully green CI matrix.** Never tag on a red matrix — a release
+   cut from a partial matrix ships a broken artifact.
+3. Tag `vX.Y.Z`. The release workflow builds the binaries and publishes to
+   crates.io.
+4. Verify the shipped artifacts (checksums, and actually run the binaries).
+   A green workflow is not evidence that the artifacts work.
+5. **Only now** update `Formula/farhand.rb` — its version and the `sha256`
+   checksums of the artifacts that now exist. The nightly
+   `homebrew-formula` job compares the formula against the latest GitHub
+   release tag and fails on a mismatch, so the formula must never be bumped
+   ahead of an actual release. A formula that lags silently serves a stale
+   version; one that runs ahead breaks the build.
+
+`SECURITY.md` lists only the newest line as supported. When a release lands,
+the previous line moves to the "upgrade" row so the table never advertises
+support for something nobody patches.
 
 ## Unsafe code
 

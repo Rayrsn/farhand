@@ -3,7 +3,7 @@
 #   irm https://raw.githubusercontent.com/Rayrsn/farhand/main/scripts/install.ps1 | iex
 #
 # Options:
-#   & { irm https://raw.githubusercontent.com/Rayrsn/farhand/main/scripts/install.ps1 } -Version "v1.0.0"
+#   & { irm https://raw.githubusercontent.com/Rayrsn/farhand/main/scripts/install.ps1 } -Version "vX.Y.Z"
 #   & { irm https://raw.githubusercontent.com/Rayrsn/farhand/main/scripts/install.ps1 } -InstallDir "C:\Tools\farhand"
 
 [CmdletBinding()]
@@ -41,8 +41,10 @@ try {
     # 3. Determine download URLs
     $CandidateUrls = @()
     if ($Version -eq "latest") {
+        # Only one naming is published for a floating "latest" fetch: the
+        # direct, version-less asset. The versioned asset needs the tag, which
+        # is unknown here — that is handled by the branch below.
         $CandidateUrls += "https://github.com/$Repo/releases/latest/download/farhand-$Target.zip"
-        $CandidateUrls += "https://github.com/$Repo/releases/latest/download/farhand-v1.0.0-$Target.zip"
     } else {
         $Tag = if ($Version.StartsWith("v")) { $Version } else { "v$Version" }
         $CandidateUrls += "https://github.com/$Repo/releases/download/$Tag/farhand-$Tag-$Target.zip"

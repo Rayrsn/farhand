@@ -248,9 +248,13 @@ jobs:
       - name: Every path dependency must carry the workspace version
         run: |
           set -euo pipefail
+          # A line carrying both `version =` and `path =` is an
+          # intra-workspace reference. Its version becomes the published
+          # requirement, so it has to track the workspace version.
           # Compared at major.minor, because a path dep is normally written
-          # `1.10` while the workspace says `1.10.0`. Those are the same
-          # requirement; a string compare would report drift on every release.
+          # `<major>.<minor>` while the workspace says `<major>.<minor>.<patch>`.
+          # Those are the same requirement; a string compare would report drift
+          # on every release.
           workspace_version="$(awk -F'"' '/^version = /{print $2; exit}' Cargo.toml | cut -d. -f1,2)"
           echo "workspace version: ${workspace_version}"
           failed=0
