@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.11.0] - 2026-10-09
+
 ### Added
 - **Success notification sound.** When a remote run returns exit code 0, `fh`
   plays a short clip of the project pronunciation. Purely cosmetic and
@@ -682,7 +684,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Run observability (`fh history`) and packaging/distribution (release workflow, Homebrew, install scripts, systemd/launchd units)
 - APFS Copy-on-Write workspace branching, two-tier LRU + emergency disk GC, `fh clean`
 
-[Unreleased]: https://github.com/Rayrsn/farhand/compare/v1.10.3...HEAD
+[Unreleased]: https://github.com/Rayrsn/farhand/compare/v1.11.0...HEAD
+[1.11.0]: https://github.com/Rayrsn/farhand/compare/v1.10.3...v1.11.0
 [1.10.3]: https://github.com/Rayrsn/farhand/compare/v1.10.2...v1.10.3
 [1.10.2]: https://github.com/Rayrsn/farhand/compare/v1.10.1...v1.10.2
 [1.10.1]: https://github.com/Rayrsn/farhand/compare/v1.10.0...v1.10.1
