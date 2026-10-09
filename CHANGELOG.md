@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.11.1] - 2026-10-09
+
+### Fixed
+- **Local Linux type-checking for non-Linux audio.** The `play_rodio` audio path
+  (used on macOS and Windows) was previously gated behind `#[cfg(not(target_os = "linux"))]`,
+  causing API calls to go unchecked during local Linux development and pre-push
+  validation. Added a glibc Linux dev-dependency on `rodio` and a dedicated type-check
+  test so local tests and Clippy verify the code path without affecting static musl
+  release builds or runtime dependencies.
+
 ## [1.11.0] - 2026-10-09
 
 ### Added
@@ -684,7 +694,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Run observability (`fh history`) and packaging/distribution (release workflow, Homebrew, install scripts, systemd/launchd units)
 - APFS Copy-on-Write workspace branching, two-tier LRU + emergency disk GC, `fh clean`
 
-[Unreleased]: https://github.com/Rayrsn/farhand/compare/v1.11.0...HEAD
+[Unreleased]: https://github.com/Rayrsn/farhand/compare/v1.11.1...HEAD
+[1.11.1]: https://github.com/Rayrsn/farhand/compare/v1.11.0...v1.11.1
 [1.11.0]: https://github.com/Rayrsn/farhand/compare/v1.10.3...v1.11.0
 [1.10.3]: https://github.com/Rayrsn/farhand/compare/v1.10.2...v1.10.3
 [1.10.2]: https://github.com/Rayrsn/farhand/compare/v1.10.1...v1.10.2

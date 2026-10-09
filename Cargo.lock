@@ -641,7 +641,7 @@ dependencies = [
 
 [[package]]
 name = "farhand-agent"
-version = "1.11.0"
+version = "1.11.1"
 dependencies = [
  "clap",
  "farhand-fileset",
@@ -658,7 +658,7 @@ dependencies = [
 
 [[package]]
 name = "farhand-cli"
-version = "1.11.0"
+version = "1.11.1"
 dependencies = [
  "clap",
  "clap_complete",
@@ -685,7 +685,7 @@ dependencies = [
 
 [[package]]
 name = "farhand-config"
-version = "1.11.0"
+version = "1.11.1"
 dependencies = [
  "serde",
  "serde_yaml",
@@ -695,7 +695,7 @@ dependencies = [
 
 [[package]]
 name = "farhand-fileset"
-version = "1.11.0"
+version = "1.11.1"
 dependencies = [
  "criterion",
  "farhand-protocol",
@@ -716,7 +716,7 @@ dependencies = [
 
 [[package]]
 name = "farhand-protocol"
-version = "1.11.0"
+version = "1.11.1"
 dependencies = [
  "hex",
  "rcgen",
@@ -733,7 +733,7 @@ dependencies = [
 
 [[package]]
 name = "farhand-templates"
-version = "1.11.0"
+version = "1.11.1"
 dependencies = [
  "farhand-protocol",
  "glob",
@@ -746,7 +746,7 @@ dependencies = [
 
 [[package]]
 name = "farhand-workspace"
-version = "1.11.0"
+version = "1.11.1"
 dependencies = [
  "criterion",
  "farhand-fileset",
