@@ -9,6 +9,7 @@ pub mod init;
 pub mod lsp;
 pub mod pool;
 pub mod progress;
+pub mod sound;
 pub mod style;
 pub mod sync;
 pub mod top;

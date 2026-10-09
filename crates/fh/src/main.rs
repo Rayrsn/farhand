@@ -2002,5 +2002,12 @@ async fn run_cli() {
         telemetry.print_summary(&project_name, &host);
     }
 
+    // Success chime: a short clip of the project pronunciation once the remote
+    // command reports success. Entirely cosmetic and best-effort, so it runs
+    // after the exit code is decided and can never change the result.
+    if exit_code == 0 {
+        fh::sound::play_success(cli.no_sound);
+    }
+
     exit(exit_code);
 }

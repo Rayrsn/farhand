@@ -152,6 +152,13 @@ pub(crate) struct Cli {
     )]
     pub(crate) watch_debounce: u64,
 
+    /// Suppress the success notification sound.
+    #[arg(
+        long = "no-sound",
+        help = "Do not play the success sound when a remote run finishes"
+    )]
+    pub(crate) no_sound: bool,
+
     #[arg(
         long = "compression",
         help = "Wire compression algorithm ('zstd', 'gzip', or 'none')"
