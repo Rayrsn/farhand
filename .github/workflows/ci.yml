@@ -26,6 +26,10 @@ jobs:
         with:
           components: clippy, rustfmt
 
+      - name: Install ALSA library headers (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+
       - name: Rust cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
@@ -165,6 +169,9 @@ jobs:
           toolchain: 1.88.0
           components: clippy, rustfmt
 
+      - name: Install ALSA library headers
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+
       - name: Check workspace compiles on MSRV
         run: cargo check --workspace --all-targets --locked
 
@@ -177,6 +184,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install ALSA library headers
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
 
       - name: Install Rust nightly
         uses: dtolnay/rust-toolchain@be39649afda95dbf70f87cce95f68b8d5797b296 # nightly
