@@ -1306,6 +1306,19 @@ fn process_is_alive(pid: u32) -> bool {
     // from files the remote shell wrote).
     let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
     if rc == 0 {
+        // In containerized or subreaper-less environments, terminated children
+        // reparented to an init that does not reap zombies remain in the process
+        // table as defunct/zombie entries. A zombie has already terminated.
+        #[cfg(target_os = "linux")]
+        if let Ok(status) = std::fs::read_to_string(format!("/proc/{pid}/status")) {
+            for line in status.lines() {
+                if let Some(state) = line.strip_prefix("State:") {
+                    if state.trim_start().starts_with('Z') {
+                        return false;
+                    }
+                }
+            }
+        }
         return true;
     }
     // EPERM: the process exists but is owned by another user.

@@ -19,6 +19,10 @@ updates:
     open-pull-requests-limit: 5
     commit-message:
       prefix: "ci"
+    groups:
+      codeql:
+        patterns:
+          - "github/codeql-action/*"
     ignore:
       # dtolnay/rust-toolchain is pinned three times for three *different*
       # toolchains (stable, the 1.88.0 MSRV job, nightly). Dependabot models

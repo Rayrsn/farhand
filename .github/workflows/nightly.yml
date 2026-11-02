@@ -28,6 +28,9 @@ jobs:
           toolchain: nightly
           components: rust-src
 
+      - name: Install ALSA library headers
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+
       - name: Library tests under ThreadSanitizer
         run: |
           RUSTFLAGS="-Zsanitizer=thread" \
@@ -197,6 +200,9 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+
+      - name: Install ALSA library headers
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
 
       - name: Run criterion benchmarks
         run: cargo bench --workspace --locked

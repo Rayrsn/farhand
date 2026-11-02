@@ -64,7 +64,10 @@ skip-tree = []
 # -----------------------------------------------------------------------------
 [advisories]
 version = 2
-ignore = []
+ignore = [
+    # unsafe-libyaml was archived upstream on 2024-03-25; used transitively by serde_yaml.
+    "RUSTSEC-2024-0449",
+]
 yanked = "deny"
 
 # -----------------------------------------------------------------------------
